@@ -8,6 +8,7 @@ import android.net.Uri
 import android.net.http.SslError
 import android.util.Log
 import android.view.View
+import android.view.ViewGroup
 import android.webkit.ConsoleMessage
 import android.webkit.PermissionRequest
 import android.webkit.SslErrorHandler
@@ -27,11 +28,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.input.TextFieldLineLimits
 import androidx.compose.foundation.text.input.rememberTextFieldState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Surface
@@ -55,18 +58,18 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.app.ActivityCompat
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import com.yukino.tool.TAG
-import com.yukino.tool.util.currentActivity
 import com.yukino.tool.util.findActivity
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
+@SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun WebBrowser(
     onWebView: (WebView) -> Unit = {}
 ) {
 
     var url by rememberSaveable {
-        mutableStateOf("https://www.baidu.com")
+        mutableStateOf("https://www.google.com")
     }
 
     var enableLoadNewUrl by remember {
@@ -86,8 +89,6 @@ fun WebBrowser(
     LaunchedEffect(url, block = {
         innerWebView?.loadUrl(url)
     })
-
-    val pullToRefreshState = rememberPullToRefreshState()
 
     val coroutineScope = rememberCoroutineScope()
 
@@ -140,14 +141,26 @@ fun WebBrowser(
                 progress = { progress },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(2.dp),
+                    .height(3.dp)
             )
         }
+        var isRefreshing by remember {
+            mutableStateOf(false)
+        }
+        val pullToRefreshState = rememberPullToRefreshState()
         Box(
             modifier = Modifier
+                .pullToRefresh(isRefreshing = isRefreshing, state = pullToRefreshState, onRefresh = {
+                    coroutineScope.launch {
+                        isRefreshing = true
+                        innerWebView?.reload()
+                        isRefreshing = false
+                    }
+                })
                 .weight(1f)
         ) {
             AndroidView(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
                 factory = {
                     WebView.setWebContentsDebuggingEnabled(true)
                     WebView(it).apply {
@@ -162,10 +175,10 @@ fun WebBrowser(
                         webView.settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                         webView.settings.mediaPlaybackRequiresUserGesture = false
                         //布局参数，类似css width: 100%, height: 100%
-//                            webView.layoutParams = ViewGroup.LayoutParams(
-//                                ViewGroup.LayoutParams.MATCH_PARENT,
-//                                ViewGroup.LayoutParams.MATCH_PARENT
-//                            )
+                        webView.layoutParams = ViewGroup.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT
+                        )
 
                         //浏览器设置
                         webView.webChromeClient = object : WebChromeClient() {
@@ -310,13 +323,14 @@ fun WebBrowser(
                         }
                         innerWebView = webView
                         onWebView(webView)
-                        SwipeRefreshLayout(it).apply {
-                            setOnRefreshListener {
-                                coroutineScope.launch {
-                                    webView.reload()
-                                }
-                            }
-                        }
+//                        SwipeRefreshLayout(it).apply {
+//                            this.isRefreshing = true
+//                            setOnRefreshListener {
+//                                coroutineScope.launch {
+//                                    webView.reload()
+//                                }
+//                            }
+//                        }
                     }
                 }
             )
