@@ -28,25 +28,20 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.input.TextFieldLineLimits
 import androidx.compose.foundation.text.input.rememberTextFieldState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
-import androidx.compose.material3.pulltorefresh.pullToRefresh
-import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -56,12 +51,9 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.app.ActivityCompat
-import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import com.yukino.tool.TAG
 import com.yukino.tool.util.findActivity
-import kotlinx.coroutines.launch
 
-@OptIn(ExperimentalMaterial3Api::class)
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun WebBrowser(
@@ -78,7 +70,7 @@ fun WebBrowser(
 
     //加载进度
     var progress by remember {
-        mutableStateOf(0f)
+        mutableFloatStateOf(0f)
     }
 
     //内部webview
@@ -89,8 +81,6 @@ fun WebBrowser(
     LaunchedEffect(url, block = {
         innerWebView?.loadUrl(url)
     })
-
-    val coroutineScope = rememberCoroutineScope()
 
     val urlState = rememberTextFieldState(initialText = url)
 
@@ -144,23 +134,11 @@ fun WebBrowser(
                     .height(3.dp)
             )
         }
-        var isRefreshing by remember {
-            mutableStateOf(false)
-        }
-        val pullToRefreshState = rememberPullToRefreshState()
         Box(
             modifier = Modifier
-                .pullToRefresh(isRefreshing = isRefreshing, state = pullToRefreshState, onRefresh = {
-                    coroutineScope.launch {
-                        isRefreshing = true
-                        innerWebView?.reload()
-                        isRefreshing = false
-                    }
-                })
                 .weight(1f)
         ) {
             AndroidView(
-                modifier = Modifier.verticalScroll(rememberScrollState()),
                 factory = {
                     WebView.setWebContentsDebuggingEnabled(true)
                     WebView(it).apply {

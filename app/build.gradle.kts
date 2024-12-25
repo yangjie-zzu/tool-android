@@ -1,9 +1,13 @@
+import com.android.build.gradle.internal.api.BaseVariantOutputImpl
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     kotlin("plugin.serialization") version "2.1.0"
     id("org.jetbrains.kotlin.plugin.compose") version "2.0.0"
 }
+
+val baseAppName = "tool"
 
 android {
     namespace = "com.yukino.tool"
@@ -20,15 +24,32 @@ android {
         vectorDrawables {
             useSupportLibrary = true
         }
+        resValue("string", "app_name", baseAppName)
+    }
+
+    signingConfigs {
+        create("release") {
+            storeFile = file(System.getenv("ANDROID_SIGNE_PATH"))
+            storePassword = System.getenv("ANDROID_SIGNE_STORE_PASSWORD")
+            keyAlias = System.getenv("ANDROID_SIGNE_ALIAS")
+            keyPassword = System.getenv("ANDROID_SIGNE_PASSWORD")
+        }
     }
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            signingConfig = signingConfigs.getByName("release")
+        }
+
+        debug {
+            applicationIdSuffix = ".debug"
+            isDebuggable = true
+            resValue("string", "app_name", "$baseAppName(debug)")
         }
     }
     compileOptions {
@@ -47,6 +68,11 @@ android {
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+    }
+    android.applicationVariants.all {
+        outputs.all {
+            (this as BaseVariantOutputImpl).outputFileName = "${applicationId}-${defaultConfig.versionName}.apk"
         }
     }
 }
