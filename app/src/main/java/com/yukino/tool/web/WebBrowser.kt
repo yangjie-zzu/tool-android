@@ -42,6 +42,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -53,6 +54,9 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.app.ActivityCompat
 import com.yukino.tool.TAG
 import com.yukino.tool.util.findActivity
+import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
@@ -78,11 +82,9 @@ fun WebBrowser(
         mutableStateOf(null)
     }
 
-    LaunchedEffect(url, block = {
-        innerWebView?.loadUrl(url)
-    })
-
     val urlState = rememberTextFieldState(initialText = url)
+
+    val rememberCoroutineScope = rememberCoroutineScope()
 
     Column(
         modifier = Modifier
@@ -119,6 +121,7 @@ fun WebBrowser(
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                 onKeyboardAction = {
                     url = urlState.text.toString()
+                    innerWebView?.loadUrl(url)
                 },
             )
             Switch(checked = enableLoadNewUrl, onCheckedChange = {
@@ -136,12 +139,13 @@ fun WebBrowser(
         }
         Box(
             modifier = Modifier
+//                .height(200.dp)
                 .weight(1f)
         ) {
             AndroidView(
                 factory = {
                     WebView.setWebContentsDebuggingEnabled(true)
-                    WebView(it).apply {
+                    MyWebView(it).apply {
                         val webView = this
                         Log.i(TAG, "webview版本：${webView.settings.userAgentString}")
                         webView.visibility = View.INVISIBLE
@@ -299,16 +303,17 @@ fun WebBrowser(
                                 }
                             }
                         }
+                        webView.scrollListener = object : ScrollListener {
+                            override suspend fun onPullRefresh() {
+                                withContext(rememberCoroutineScope.coroutineContext) {
+                                    webView.reload()
+                                }
+
+                            }
+                        }
+                        webView.loadUrl(url)
                         innerWebView = webView
                         onWebView(webView)
-//                        SwipeRefreshLayout(it).apply {
-//                            this.isRefreshing = true
-//                            setOnRefreshListener {
-//                                coroutineScope.launch {
-//                                    webView.reload()
-//                                }
-//                            }
-//                        }
                     }
                 }
             )
