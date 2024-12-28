@@ -37,7 +37,6 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -55,8 +54,6 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.app.ActivityCompat
 import com.yukino.tool.TAG
 import com.yukino.tool.util.findActivity
-import kotlinx.coroutines.async
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 @SuppressLint("SetJavaScriptEnabled")
@@ -69,7 +66,7 @@ fun WebBrowser(
         mutableStateOf("https://www.google.com")
     }
 
-    var enableLoadNewUrl by remember {
+    var enableJump by remember {
         mutableStateOf(true)
     }
 
@@ -125,8 +122,8 @@ fun WebBrowser(
                     innerWebView?.loadUrl(url)
                 },
             )
-            Switch(checked = enableLoadNewUrl, onCheckedChange = {
-                enableLoadNewUrl = it
+            Switch(checked = enableJump, onCheckedChange = {
+                enableJump = it
             })
         }
         //如果未加载完成，则显示进度条
@@ -256,6 +253,7 @@ fun WebBrowser(
                                 urlParam: String?,
                                 favicon: Bitmap?
                             ) {
+                                url = urlParam ?: ""
                                 urlState.edit {
                                     this.replace(0, this.length, urlParam ?: "")
                                 }
@@ -301,7 +299,7 @@ fun WebBrowser(
                                     return false
                                 } else {
                                     Log.i(TAG, "shouldOverrideUrlLoading: 不处理")
-                                    return !enableLoadNewUrl
+                                    return !enableJump
                                 }
                             }
                         }
