@@ -47,6 +47,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
@@ -143,6 +144,7 @@ fun WebBrowser(
                 .weight(1f)
         ) {
             AndroidView(
+                modifier = Modifier.clipToBounds(),
                 factory = {
                     WebView.setWebContentsDebuggingEnabled(true)
                     MyWebView(it).apply {
