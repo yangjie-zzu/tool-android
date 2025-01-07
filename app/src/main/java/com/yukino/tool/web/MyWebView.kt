@@ -29,9 +29,9 @@ class MyWebView(context: Context) : WebView(context) {
     private var isPull: Boolean? = null
 
     override fun onOverScrolled(sX: Int, sY: Int, clampedX: Boolean, clampedY: Boolean) {
-        Log.i(TAG, "onOverScrolled: sX: $sX, sY: $sY, clampedX: $clampedX, clampedY: $clampedY")
-        Log.i(TAG, "canScrollVertically 1: ${this.canScrollVertically(1)}")
-        Log.i(TAG, "canScrollVertically -1: ${this.canScrollVertically(-1)}")
+//        Log.i(TAG, "onOverScrolled: sX: $sX, sY: $sY, clampedX: $clampedX, clampedY: $clampedY")
+//        Log.i(TAG, "canScrollVertically 1: ${this.canScrollVertically(1)}")
+//        Log.i(TAG, "canScrollVertically -1: ${this.canScrollVertically(-1)}")
         isTop = sY == 0 && clampedY
         return super.onOverScrolled(sX, sY, clampedX, clampedY)
     }
@@ -52,7 +52,7 @@ class MyWebView(context: Context) : WebView(context) {
             }
         }
         if (event?.action == MotionEvent.ACTION_UP) {
-            Log.i(TAG, "onTouchEvent: isTop: $isTop, isRefreshing: $isRefreshing, downY: $downY, y: ${event.y}, isPull: $isPull")
+//            Log.i(TAG, "onTouchEvent: isTop: $isTop, isRefreshing: $isRefreshing, downY: $downY, y: ${event.y}, isPull: $isPull")
             CoroutineScope(Dispatchers.Default).launch {
                 try {
                     val tempDownY = downY
@@ -72,7 +72,7 @@ class MyWebView(context: Context) : WebView(context) {
         return super.onTouchEvent(event)
     }
 
-    fun resetPullRefreshState() {
+    private fun resetPullRefreshState() {
         isTop = true
         isRefreshing = false
         downY = null

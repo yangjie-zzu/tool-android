@@ -2,6 +2,8 @@ package com.yukino.tool.web
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.content.ActivityNotFoundException
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.net.Uri
@@ -34,8 +36,10 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.input.TextFieldLineLimits
 import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -53,6 +57,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.app.ActivityCompat
 import com.yukino.tool.TAG
+import com.yukino.tool.util.currentActivity
 import com.yukino.tool.util.findActivity
 import kotlinx.coroutines.withContext
 
@@ -84,6 +89,8 @@ fun WebBrowser(
 
     val rememberCoroutineScope = rememberCoroutineScope()
 
+    val activity = currentActivity()
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -91,7 +98,7 @@ fun WebBrowser(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(Color.Gray)
+                .background(MaterialTheme.colorScheme.primary)
                 .height(40.dp)
                 .padding(start = 10.dp, end = 10.dp, top = 5.dp, bottom = 5.dp)
                 ,
@@ -122,9 +129,19 @@ fun WebBrowser(
                     innerWebView?.loadUrl(url)
                 },
             )
-            Switch(checked = enableJump, onCheckedChange = {
-                enableJump = it
-            })
+            Switch(
+                checked = enableJump,
+                onCheckedChange = {
+                    enableJump = it
+                },
+                colors = SwitchDefaults.colors(
+                    checkedTrackColor = MaterialTheme.colorScheme.background,
+                    checkedThumbColor = MaterialTheme.colorScheme.primary,
+                    uncheckedBorderColor = Color.Transparent,
+                    uncheckedThumbColor = MaterialTheme.colorScheme.onTertiary,
+                    uncheckedTrackColor = Color.LightGray
+                )
+            )
         }
         //如果未加载完成，则显示进度条
         if (progress < 1) {
@@ -137,7 +154,6 @@ fun WebBrowser(
         }
         Box(
             modifier = Modifier
-//                .height(200.dp)
                 .weight(1f)
         ) {
             AndroidView(
@@ -214,10 +230,7 @@ fun WebBrowser(
                                 filePathCallback: ValueCallback<Array<Uri>>?,
                                 fileChooserParams: FileChooserParams?
                             ): Boolean {
-                                Log.d(
-                                    TAG,
-                                    "onShowFileChooser: $fileChooserParams ${fileChooserParams?.isCaptureEnabled}"
-                                )
+//                                Log.d(TAG, "onShowFileChooser: $fileChooserParams ${fileChooserParams?.isCaptureEnabled}")
                                 return false
                             }
 
@@ -272,6 +285,7 @@ fun WebBrowser(
                                 view: WebView?,
                                 request: WebResourceRequest?
                             ): WebResourceResponse? {
+//                                Log.i(TAG, "shouldInterceptRequest: ${request?.url}")
                                 return super.shouldInterceptRequest(view, request)
                             }
 
@@ -289,16 +303,23 @@ fun WebBrowser(
                                 request: WebResourceRequest?
                             ): Boolean {
                                 val requestUrl = request?.url
+                                val scheme = requestUrl?.scheme
+                                if (scheme != "http" && scheme != "https") {
+                                    try {
+                                        activity.startActivity(Intent.parseUri(requestUrl?.toString(), Intent.URI_INTENT_SCHEME))
+                                        return true
+                                    } catch (e: ActivityNotFoundException) {
+                                        Log.e(TAG, "shouldOverrideUrlLoading: ", e)
+                                        return true
+                                    }
+                                }
                                 val loadUrl = Uri.parse(url)
-                                Log.i(
-                                    TAG,
-                                    "shouldOverrideUrlLoading: ${requestUrl?.host == loadUrl.host}, ${requestUrl?.host}, ${loadUrl.host}"
-                                )
-                                if (requestUrl?.host == loadUrl.host) {
-                                    Log.i(TAG, "shouldOverrideUrlLoading: 系统处理")
+//                                Log.i(TAG, "shouldOverrideUrlLoading: ${requestUrl?.host == loadUrl.host}, ${requestUrl?.host}, ${loadUrl.host}")
+                                if (requestUrl.host == loadUrl.host) {
+                                    Log.i(TAG, "shouldOverrideUrlLoading: 系统处理(允许跳转)")
                                     return false
                                 } else {
-                                    Log.i(TAG, "shouldOverrideUrlLoading: 不处理")
+                                    Log.i(TAG, "shouldOverrideUrlLoading: 允许跳转: $enableJump")
                                     return !enableJump
                                 }
                             }
