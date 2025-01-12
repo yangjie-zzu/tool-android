@@ -131,7 +131,7 @@ fun WebBrowser(
                         Row(
                             modifier = Modifier
                                 .fillMaxSize()
-                                .padding(horizontal = 15.dp, vertical = 2.dp),
+                                .padding(start = 15.dp, end = 2.dp, top = 2.dp, bottom = 2.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Box(
