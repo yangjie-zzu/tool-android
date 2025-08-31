@@ -18,7 +18,7 @@ android {
         minSdk = 24
         targetSdk = 34
         versionCode = 1
-        versionName = "1.0"
+        versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -52,6 +52,20 @@ android {
             resValue("string", "app_name", "$baseAppName(debug)")
         }
     }
+
+    flavorDimensions += "env"
+    productFlavors {
+        create("pubApp") {
+            dimension = "env"
+            applicationIdSuffix = ".pub"
+        }
+        create("priApp") {
+            dimension = "env"
+            applicationIdSuffix = ".pri"
+            resValue("string", "app_name", "$baseAppName(pri)")
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_1_8
         targetCompatibility = JavaVersion.VERSION_1_8
@@ -101,4 +115,9 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.0-RC")
 
     implementation("androidx.swiperefreshlayout:swiperefreshlayout:1.1.0")
+
+    implementation("com.github.omicronapps:7-Zip-JBinding-4Android:Release-16.02-2.02")
+
+    implementation("io.ktor:ktor-client-core:2.3.12")
+    implementation("io.ktor:ktor-client-cio:2.3.12")
 }

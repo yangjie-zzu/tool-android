@@ -1,3 +1,5 @@
 <resources>
     <string name="app_name">tool</string>
+    <string name="compress_label">解压缩</string>
+    <string name="visit">访问</string>
 </resources>

@@ -3,6 +3,12 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.BLUETOOTH"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <application
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
@@ -24,12 +30,47 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-        <activity android:name=".web.WebActivity"
+        <activity android:name=".module.web.WebActivity"
             android:exported="true"
             android:theme="@style/Theme.Tool"
-            android:taskAffinity="${applicationId}.web">
-
+            android:taskAffinity="${applicationId}.web"
+            android:enableOnBackInvokedCallback="true"
+            >
         </activity>
+        <activity android:name=".module.compress.CompressActivity"
+            android:exported="true"
+            android:theme="@style/Theme.Tool"
+            android:taskAffinity="${applicationId}.compress"
+            android:label="@string/compress_label"
+            >
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <category android:name="android.intent.category.OPENABLE"/>
+                <data android:scheme="file"/>
+                <data android:scheme="content"/>
+                <data android:mimeType="*/*"/>
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:mimeType="*/*"/>
+            </intent-filter>
+        </activity>
+        <activity android:name=".module.bluetooth.BluetoothActivity"
+            android:exported="true"
+            android:theme="@style/Theme.Tool"
+            android:taskAffinity="${applicationId}.bluetooth">
+        </activity>
+        <provider
+            android:authorities="${applicationId}.fileProvider"
+            android:name="androidx.core.content.FileProvider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/provider_paths"/>
+        </provider>
     </application>
 
 </manifest>
