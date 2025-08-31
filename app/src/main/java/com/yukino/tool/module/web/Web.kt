@@ -65,7 +65,7 @@ import java.io.RandomAccessFile
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun Web(
-    url: String?,
+    initUrl: String?,
     openOffSite: Boolean = true,
     onProgressChange: (progress: Float) -> Unit = {},
     onUrlChange: (url: String) -> Unit = {},
@@ -90,12 +90,6 @@ fun Web(
 
     var innerWebView: WebView? by remember {
         mutableStateOf(null)
-    }
-
-    LaunchedEffect(url) {
-        if (url != null) {
-            innerWebView?.loadUrl(url)
-        }
     }
 
     val onBackPressedCallback = remember {
@@ -297,16 +291,16 @@ fun Web(
                         super.onPageStarted(view, urlParam, favicon)
                     }
 
-//                    override fun doUpdateVisitedHistory(
-//                        view: WebView?,
-//                        url: String?,
-//                        isReload: Boolean
-//                    ) {
-//                        Log.i(TAG, "doUpdateVisitedHistory: ${url}, ${isReload}")
-//                        onBackPressedCallback.isEnabled = webView.canGoBack()
-//                        onHistory?.invoke(webView, url, isReload)
-//                        super.doUpdateVisitedHistory(view, url, isReload)
-//                    }
+                    override fun doUpdateVisitedHistory(
+                        view: WebView?,
+                        url: String?,
+                        isReload: Boolean
+                    ) {
+                        Log.i(TAG, "doUpdateVisitedHistory: ${url}, ${isReload}")
+                        onBackPressedCallback.isEnabled = webView.canGoBack()
+                        onHistory?.invoke(webView, url, isReload)
+                        super.doUpdateVisitedHistory(view, url, isReload)
+                    }
 
                     //加载完成处理
                     override fun onPageFinished(view: WebView?, url: String?) {
@@ -449,8 +443,8 @@ fun Web(
                     }
 
                 })
-                if (url != null) {
-                    webView.loadUrl(url)
+                if (initUrl != null) {
+                    webView.loadUrl(initUrl)
                 }
                 webView.onCreateSelectorActionMode = { mode, menu, callback ->
                     val menuItem = menu?.add("访问")

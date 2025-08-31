@@ -142,7 +142,7 @@ val WebBox: WebBoxFunc = { initUrl, onNew, onShowList, webLength, webIndex, enab
                 .weight(1f)
         ) {
             Web(
-                url = url,
+                initUrl = url,
                 onUrlChange = {
                     urlState.edit {
                         this.replace(0, this.length, it)

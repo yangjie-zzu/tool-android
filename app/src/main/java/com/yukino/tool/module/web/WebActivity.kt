@@ -31,15 +31,7 @@ class WebActivity: ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-//                    WebBrowser()
-                    WebBox(
-                        "https://www.google.com/ncr",
-                        {},
-                        {},
-                        1,
-                        1,
-                        true
-                    )
+                    WebBrowser()
                 }
             }
         }
