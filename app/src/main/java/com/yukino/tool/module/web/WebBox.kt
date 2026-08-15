@@ -23,10 +23,14 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -37,6 +41,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
@@ -68,8 +73,9 @@ val WebBox: WebBoxFunc = { initUrl, onNew, onShowList, webLength, webIndex, enab
         mutableStateOf(initUrl)
     }
 
-    var enableJump by remember {
-        mutableStateOf(true)
+    // 只允许打开同站
+    var onlyOpenSameSite by remember {
+        mutableStateOf(false)
     }
 
     //加载进度
@@ -162,12 +168,12 @@ val WebBox: WebBoxFunc = { initUrl, onNew, onShowList, webLength, webIndex, enab
                     }
                     onNew?.invoke(openUrl)
                 },
-                webIndex = webIndex,
                 enableBack = enableBack,
                 onHistory = { webview, url, isReload ->
                     currentIndex = webview.copyBackForwardList().currentIndex
                     historyCount = webview.copyBackForwardList().size
-                }
+                },
+                onlyOpenSameSite = onlyOpenSameSite
             )
         }
 
@@ -282,24 +288,39 @@ val WebBox: WebBoxFunc = { initUrl, onNew, onShowList, webLength, webIndex, enab
                 color = Color.White,
                 fontSize = 14.sp
             )
-            Icon(
-                imageVector = Icons.Default.Settings,
-                contentDescription = "设置",
-                tint = Color.White
-            )
-//            Switch(
-//                checked = enableJump,
-//                onCheckedChange = {
-//                    enableJump = it
-//                },
-//                colors = SwitchDefaults.colors(
-//                    checkedTrackColor = MaterialTheme.colorScheme.background,
-//                    checkedThumbColor = MaterialTheme.colorScheme.primary,
-//                    uncheckedBorderColor = Color.Transparent,
-//                    uncheckedThumbColor = MaterialTheme.colorScheme.onTertiary,
-//                    uncheckedTrackColor = Color.LightGray
-//                )
-//            )
+            Box {
+                var settingExpended by remember {
+                    mutableStateOf(false)
+                }
+                Icon(
+                    modifier = Modifier.clickable {
+                        settingExpended = !settingExpended
+                    },
+                    imageVector = Icons.Default.Settings,
+                    contentDescription = "设置",
+                    tint = Color.White
+                )
+                DropdownMenu(
+                    expanded = settingExpended,
+                    onDismissRequest = { settingExpended = false }
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("只允许打开同站地址") },
+                        onClick = {
+                            settingExpended = false
+                        },
+                        trailingIcon = {
+                            Switch(
+                                checked = onlyOpenSameSite,
+                                onCheckedChange = {
+                                    onlyOpenSameSite = it
+                                },
+                                modifier = Modifier.scale(0.8f),
+                            )
+                        }
+                    )
+                }
+            }
         }
     }
 }

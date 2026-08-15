@@ -14,6 +14,7 @@ import android.graphics.Bitmap
 import android.net.Uri
 import android.net.http.SslError
 import android.os.Build
+import android.os.Bundle
 import android.os.Environment
 import android.provider.MediaStore
 import android.util.Log
@@ -39,6 +40,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
@@ -66,7 +68,7 @@ import java.io.RandomAccessFile
 @Composable
 fun Web(
     initUrl: String?,
-    openOffSite: Boolean = true,
+    onlyOpenSameSite: Boolean = true,
     onProgressChange: (progress: Float) -> Unit = {},
     onUrlChange: (url: String) -> Unit = {},
     onTitleChange: (title: String?) -> Unit = {},
@@ -79,7 +81,6 @@ fun Web(
             webview.loadUrl("https://www.google.com/search?q=${selectedText}")
         }
     },
-    webIndex: Int,
     enableBack: Boolean,
     onHistory: ((webview: CustomWebView, url: String?, isReload: Boolean) -> Unit)? = null
 ) {
@@ -96,14 +97,12 @@ fun Web(
         object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 Log.i(TAG, "web handleOnBackPressed: ${innerWebView?.canGoBack()}")
-                innerWebView?.goBack()
+                innerWebView?.evaluateJavascript("window.history.back();", null)
                 innerWebView?.let {
                     for (i in 0 until it.copyBackForwardList().size) {
                         Log.i(TAG, "copyBackForwardList${i}: ${it.copyBackForwardList().getItemAtIndex(i).url}")
                     }
                 }
-                this.isEnabled = innerWebView?.canGoBack() ?: false
-                Log.i(TAG, "web(${webIndex})回退: ${this.isEnabled}")
             }
         }
     }
@@ -115,6 +114,10 @@ fun Web(
         onDispose {
             onBackPressedCallback.remove()
         }
+    }
+
+    val scrollYMap = remember {
+        mutableMapOf<Int, Int>()
     }
 
     AndroidView(
@@ -129,6 +132,8 @@ fun Web(
                 webView.settings.javaScriptEnabled = true
                 webView.settings.useWideViewPort = true
                 webView.settings.domStorageEnabled = true
+                webView.settings.databaseEnabled = true
+                webView.settings.cacheMode = WebSettings.LOAD_DEFAULT
                 //运行http和https混用
                 webView.settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                 webView.settings.mediaPlaybackRequiresUserGesture = false
@@ -289,6 +294,7 @@ fun Web(
                     ) {
                         onUrlChange(urlParam ?: "")
                         super.onPageStarted(view, urlParam, favicon)
+                        Log.i(TAG, "onPageStarted: ${view?.url}")
                     }
 
                     override fun doUpdateVisitedHistory(
@@ -300,12 +306,29 @@ fun Web(
                         onBackPressedCallback.isEnabled = webView.canGoBack()
                         onHistory?.invoke(webView, url, isReload)
                         super.doUpdateVisitedHistory(view, url, isReload)
+                        val last = view?.copyBackForwardList()?.currentIndex
+                        if (last != null) {
+                            scrollYMap.keys.forEach {
+                                if (it > last) {
+                                    scrollYMap.remove(it)
+                                }
+                            }
+                        }
                     }
 
                     //加载完成处理
                     override fun onPageFinished(view: WebView?, url: String?) {
                         webView.visibility = View.VISIBLE
                         super.onPageFinished(view, url)
+                        Log.i(TAG, "onPageFinished: ${view?.url}")
+                        val current = view?.copyBackForwardList()?.currentIndex
+                        val savedScrollY = scrollYMap[current]
+                        if (savedScrollY != null) {
+                            view?.postDelayed({
+                                view.scrollTo(0, savedScrollY.toInt())
+                            }, 100)
+                        }
+                        Log.i(TAG, "onPageFinished scroll: ${current} ${savedScrollY}, ${scrollYMap}")
                     }
 
                     //拦截h5资源请求
@@ -347,8 +370,8 @@ fun Web(
                             Log.i(TAG, "shouldOverrideUrlLoading: 系统处理(允许跳转)")
                             return false
                         } else {
-                            Log.i(TAG, "shouldOverrideUrlLoading: 允许跳转: $openOffSite")
-                            return !openOffSite
+                            Log.i(TAG, "shouldOverrideUrlLoading: 只允许跳转同站: $onlyOpenSameSite")
+                            return onlyOpenSameSite
                         }
                     }
                 }
@@ -457,6 +480,11 @@ fun Web(
                         }
                         true
                     }
+                }
+                webView.setOnScrollChangeListener { _, _, scrollY, _, _ ->
+                    val index = webView.copyBackForwardList().currentIndex
+                    scrollYMap[index] = scrollY
+                    Log.i(TAG, "setOnScrollChangeListener: ${scrollY}, ${scrollYMap}")
                 }
                 innerWebView = webView
             }
