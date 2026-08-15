@@ -37,6 +37,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -56,6 +57,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.yukino.tool.components.text
 import com.yukino.tool.module.web.Web
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlin.coroutines.suspendCoroutine
 
 typealias WebBoxFunc = @Composable (
     initUrl: String,
@@ -68,6 +72,8 @@ typealias WebBoxFunc = @Composable (
 
 @SuppressLint("SetJavaScriptEnabled")
 val WebBox: WebBoxFunc = { initUrl, onNew, onShowList, webLength, webIndex, enableBack ->
+
+    val scope = rememberCoroutineScope()
 
     var url by rememberSaveable {
         mutableStateOf(initUrl)
@@ -314,6 +320,11 @@ val WebBox: WebBoxFunc = { initUrl, onNew, onShowList, webLength, webIndex, enab
                                 checked = onlyOpenSameSite,
                                 onCheckedChange = {
                                     onlyOpenSameSite = it
+                                    scope.launch {
+                                        delay(200)
+                                        settingExpended = false
+                                    }
+
                                 },
                                 modifier = Modifier.scale(0.8f),
                             )

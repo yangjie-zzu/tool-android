@@ -40,6 +40,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -63,12 +64,13 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.RandomAccessFile
+import java.util.concurrent.ConcurrentHashMap
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun Web(
     initUrl: String?,
-    onlyOpenSameSite: Boolean = true,
+    onlyOpenSameSite: Boolean = false,
     onProgressChange: (progress: Float) -> Unit = {},
     onUrlChange: (url: String) -> Unit = {},
     onTitleChange: (title: String?) -> Unit = {},
@@ -85,12 +87,18 @@ fun Web(
     onHistory: ((webview: CustomWebView, url: String?, isReload: Boolean) -> Unit)? = null
 ) {
 
+    val innerOnlyOpenSameSite by rememberUpdatedState(onlyOpenSameSite)
+
     val currentCoroutineScope = rememberCoroutineScope()
 
     val activity = rememberCurrentActivity() as ComponentActivity
 
     var innerWebView: WebView? by remember {
         mutableStateOf(null)
+    }
+
+    val scrollYMap = remember {
+        ConcurrentHashMap<Int, Int>()
     }
 
     val onBackPressedCallback = remember {
@@ -114,10 +122,6 @@ fun Web(
         onDispose {
             onBackPressedCallback.remove()
         }
-    }
-
-    val scrollYMap = remember {
-        mutableMapOf<Int, Int>()
     }
 
     AndroidView(
@@ -306,14 +310,6 @@ fun Web(
                         onBackPressedCallback.isEnabled = webView.canGoBack()
                         onHistory?.invoke(webView, url, isReload)
                         super.doUpdateVisitedHistory(view, url, isReload)
-                        val last = view?.copyBackForwardList()?.currentIndex
-                        if (last != null) {
-                            scrollYMap.keys.forEach {
-                                if (it > last) {
-//                                    scrollYMap.remove(it)
-                                }
-                            }
-                        }
                     }
 
                     //加载完成处理
@@ -356,6 +352,11 @@ fun Web(
                         val current = view?.copyBackForwardList()?.currentIndex
                         if (current != null) {
                             scrollYMap[current] = view.scrollY
+                            scrollYMap.keys.forEach {
+                                if (it > current) {
+                                    scrollYMap.remove(it)
+                                }
+                            }
                         }
                         val requestUrl = request?.url
                         val scheme = requestUrl?.scheme
@@ -369,13 +370,12 @@ fun Web(
                             }
                         }
                         val loadUrl = Uri.parse(url)
-//                                Log.i(TAG, "shouldOverrideUrlLoading: ${requestUrl?.host == loadUrl.host}, ${requestUrl?.host}, ${loadUrl.host}")
+                        Log.i(TAG, "shouldOverrideUrlLoading: innerOnlyOpenSameSite: $innerOnlyOpenSameSite")
                         if (requestUrl.host == loadUrl.host) {
                             Log.i(TAG, "shouldOverrideUrlLoading: 系统处理(允许跳转)")
                             return false
                         } else {
-                            Log.i(TAG, "shouldOverrideUrlLoading: 只允许跳转同站: $onlyOpenSameSite")
-                            return onlyOpenSameSite
+                            return innerOnlyOpenSameSite
                         }
                     }
                 }
