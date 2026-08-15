@@ -310,7 +310,7 @@ fun Web(
                         if (last != null) {
                             scrollYMap.keys.forEach {
                                 if (it > last) {
-                                    scrollYMap.remove(it)
+//                                    scrollYMap.remove(it)
                                 }
                             }
                         }
@@ -353,6 +353,10 @@ fun Web(
                         view: WebView?,
                         request: WebResourceRequest?
                     ): Boolean {
+                        val current = view?.copyBackForwardList()?.currentIndex
+                        if (current != null) {
+                            scrollYMap[current] = view.scrollY
+                        }
                         val requestUrl = request?.url
                         val scheme = requestUrl?.scheme
                         if (scheme != "http" && scheme != "https") {
@@ -480,11 +484,6 @@ fun Web(
                         }
                         true
                     }
-                }
-                webView.setOnScrollChangeListener { _, _, scrollY, _, _ ->
-                    val index = webView.copyBackForwardList().currentIndex
-                    scrollYMap[index] = scrollY
-                    Log.i(TAG, "setOnScrollChangeListener: ${scrollY}, ${scrollYMap}")
                 }
                 innerWebView = webView
             }
