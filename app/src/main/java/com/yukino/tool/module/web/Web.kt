@@ -7,8 +7,6 @@ import android.view.View
 import android.view.ViewGroup
 import android.webkit.WebSettings
 import android.webkit.WebView
-import androidx.activity.ComponentActivity
-import androidx.activity.OnBackPressedCallback
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -21,7 +19,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.viewinterop.AndroidView
 import com.yukino.tool.TAG
-import com.yukino.tool.util.rememberCurrentActivity
 import kotlinx.coroutines.launch
 
 @SuppressLint("SetJavaScriptEnabled")
@@ -30,6 +27,7 @@ fun Web(
     initUrl: String?,
     onlyOpenSameSite: Boolean = false,
     active: Boolean = false,
+    onNew: ((url: String) -> Unit)? = null,
     onProgressChange: (progress: Float) -> Unit = {},
     onUrlChange: (url: String?) -> Unit = {},
     onTitleChange: (title: String?) -> Unit = {},
@@ -42,41 +40,17 @@ fun Web(
             webview.loadUrl("https://www.google.com/search?q=${selectedText}")
         }
     },
-    enableBack: Boolean,
     onHistory: ((webview: CustomWebView, url: String?, isReload: Boolean) -> Unit)? = null
 ) {
 
     val innerOnlyOpenSameSite by rememberUpdatedState(onlyOpenSameSite)
 
-    val currentCoroutineScope = rememberCoroutineScope()
+    val innerOnNew by rememberUpdatedState(onNew)
 
-    val activity = rememberCurrentActivity() as ComponentActivity
+    val currentCoroutineScope = rememberCoroutineScope()
 
     var innerWebView: WebView? by remember {
         mutableStateOf(null)
-    }
-
-    val onBackPressedCallback = remember {
-        object : OnBackPressedCallback(true) {
-            override fun handleOnBackPressed() {
-                Log.i(TAG, "web handleOnBackPressed: ${innerWebView?.canGoBack()}")
-                innerWebView?.evaluateJavascript("window.history.back();", null)
-                innerWebView?.let {
-                    for (i in 0 until it.copyBackForwardList().size) {
-                        Log.i(TAG, "copyBackForwardList${i}: ${it.copyBackForwardList().getItemAtIndex(i).url}")
-                    }
-                }
-            }
-        }
-    }
-
-    DisposableEffect(innerWebView, enableBack) {
-        if (enableBack) {
-            activity.onBackPressedDispatcher.addCallback(onBackPressedCallback)
-        }
-        onDispose {
-            onBackPressedCallback.remove()
-        }
     }
 
     DisposableEffect(innerWebView, active) {
@@ -127,6 +101,22 @@ fun Web(
                     return innerOnlyOpenSameSite
                 }
 
+                override fun openUrl(url: String?): Boolean {
+                    if (url != null && visibility != View.VISIBLE) {
+                        //首个页面尚未加载完成(通常是重定向中转页)，在当前webview原地跳转，避免留下空白的无标题中转box
+                        Log.i(TAG, "openUrl: 首页加载中原地跳转 $url")
+                        loadUrl(url)
+                        return true
+                    }
+                    val openInNewWebView = innerOnNew
+                    if (openInNewWebView != null && url != null) {
+                        Log.i(TAG, "openUrl: 新webview打开 $url")
+                        openInNewWebView(url)
+                        return true
+                    }
+                    return super.openUrl(url)
+                }
+
                 override fun onSelected(selectedText: String) {
                     super.onSelected(selectedText)
                     onSelected.invoke(selectedText, webview)
@@ -135,7 +125,6 @@ fun Web(
                 override fun onHistory(webview: CustomWebView, url: String?, isReload: Boolean) {
                     super.onHistory(webview, url, isReload)
                     onHistory?.invoke(webview, url, isReload)
-                    onBackPressedCallback.isEnabled = webview.canGoBack()
                 }
 
             }

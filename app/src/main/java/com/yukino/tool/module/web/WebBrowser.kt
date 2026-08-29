@@ -77,6 +77,11 @@ fun WebBrowser() {
         mutableStateOf<WebWrapper?>(null)
     }
 
+    //只允许同站打开: 浏览器级共享状态，所有box(含新开的)统一生效
+    var onlyOpenSameSite by remember {
+        mutableStateOf(false)
+    }
+
     val currentActivity = rememberCurrentActivity() as ComponentActivity
 
     val onBackPressedCallback = remember {
@@ -178,7 +183,8 @@ fun WebBrowser() {
     ) {
         webBoxes.forEachIndexed { index, it ->
             key(it.key) {
-                val zIndex = if (!showList && it == showWebWrapper) webBoxes.size else index
+                val isCurrent = !showList && showWebWrapper == it
+                val zIndex = if (isCurrent) webBoxes.size else index
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -205,7 +211,9 @@ fun WebBrowser() {
                         },
                         webBoxes.size,
                         index,
-                        !showList && showWebWrapper == it
+                        isCurrent,
+                        onlyOpenSameSite,
+                        { onlyOpenSameSite = it }
                     )
                     if (showList) {
                         Box(

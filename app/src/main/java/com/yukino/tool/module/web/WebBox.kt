@@ -12,7 +12,11 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
@@ -22,6 +26,7 @@ import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -55,6 +60,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupProperties
 import com.yukino.tool.components.text
 import com.yukino.tool.module.web.Web
 import kotlinx.coroutines.delay
@@ -67,21 +74,18 @@ typealias WebBoxFunc = @Composable (
     onShowList: (() -> Unit)?,
     webLength: Int,
     webIndex: Int,
-    enableBack: Boolean
+    active: Boolean,
+    onlyOpenSameSite: Boolean,
+    onOnlyOpenSameSiteChange: (Boolean) -> Unit
 ) -> Unit
 
 @SuppressLint("SetJavaScriptEnabled")
-val WebBox: WebBoxFunc = { initUrl, onNew, onShowList, webLength, webIndex, enableBack ->
+val WebBox: WebBoxFunc = { initUrl, onNew, onShowList, webLength, webIndex, active, onlyOpenSameSite, onOnlyOpenSameSiteChange ->
 
     val scope = rememberCoroutineScope()
 
     var url by rememberSaveable {
         mutableStateOf(initUrl)
-    }
-
-    // 只允许打开同站
-    var onlyOpenSameSite by remember {
-        mutableStateOf(false)
     }
 
     //加载进度
@@ -99,17 +103,15 @@ val WebBox: WebBoxFunc = { initUrl, onNew, onShowList, webLength, webIndex, enab
         mutableStateOf<Bitmap?>(null)
     }
 
-    var currentIndex by remember {
-        mutableStateOf(0)
-    }
-
-    var historyCount by remember {
-        mutableStateOf(1)
+    //完整地址弹层开关：图标在底部栏，弹层锚定在内容区底部(即蓝条上沿)
+    var showFullUrl by remember {
+        mutableStateOf(false)
     }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
     ) {
         Row(
             modifier = Modifier
@@ -132,15 +134,11 @@ val WebBox: WebBoxFunc = { initUrl, onNew, onShowList, webLength, webIndex, enab
                     )
                 }
                 Text(
-                    text = title.text("无标题"),
+                    text = if (title == null && progress < 1f) "加载中..." else title.text("无标题"),
                     color = Color.White,
                     textAlign = TextAlign.Center,
                 )
             }
-            Text(
-                text = "${currentIndex + 1}/${historyCount}",
-                color = Color.White
-            )
         }
         LinearProgressIndicator(
             progress = { progress },
@@ -155,11 +153,14 @@ val WebBox: WebBoxFunc = { initUrl, onNew, onShowList, webLength, webIndex, enab
         ) {
             Web(
                 initUrl = url,
+                onNew = onNew,
+                active = active,
                 onUrlChange = {
+                    val newUrl = it ?: ""
                     urlState.edit {
-                        this.replace(0, this.length, it)
+                        this.replace(0, this.length, newUrl)
                     }
-                    url = it
+                    url = newUrl
                 },
                 onProgressChange = {
                     progress = it
@@ -174,13 +175,45 @@ val WebBox: WebBoxFunc = { initUrl, onNew, onShowList, webLength, webIndex, enab
                     }
                     onNew?.invoke(openUrl)
                 },
-                enableBack = enableBack,
-                onHistory = { webview, url, isReload ->
-                    currentIndex = webview.copyBackForwardList().currentIndex
-                    historyCount = webview.copyBackForwardList().size
-                },
                 onlyOpenSameSite = onlyOpenSameSite
             )
+            if (showFullUrl) {
+                //锚定内容区底部:弹层底边即蓝色底栏顶边，不遮挡底栏，无需offset
+                Popup(
+                    alignment = Alignment.BottomStart,
+                    onDismissRequest = { showFullUrl = false },
+                    properties = PopupProperties(focusable = true)
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(4.dp),
+                        shadowElevation = 3.dp,
+                        color = MaterialTheme.colorScheme.surface
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .widthIn(max = 300.dp)
+                                .padding(start = 10.dp, top = 6.dp, end = 10.dp, bottom = 10.dp)
+                        ) {
+                            Text(
+                                text = "地址",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            //点击弹层内容本身也可关闭
+                            Text(
+                                text = url,
+                                modifier = Modifier
+                                    .padding(top = 2.dp)
+                                    .heightIn(max = 380.dp)
+                                    .verticalScroll(rememberScrollState())
+                                    .clickable { showFullUrl = false },
+                                softWrap = true,
+                                fontSize = 14.sp
+                            )
+                        }
+                    }
+                }
+            }
         }
 
         Row(
@@ -193,6 +226,14 @@ val WebBox: WebBoxFunc = { initUrl, onNew, onShowList, webLength, webIndex, enab
             horizontalArrangement = Arrangement.spacedBy(15.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            Icon(
+                modifier = Modifier.clickable {
+                    showFullUrl = !showFullUrl
+                },
+                imageVector = Icons.Default.Info,
+                contentDescription = "地址",
+                tint = Color.White
+            )
             val focusRequest = remember {
                 FocusRequester()
             }
@@ -319,7 +360,7 @@ val WebBox: WebBoxFunc = { initUrl, onNew, onShowList, webLength, webIndex, enab
                             Switch(
                                 checked = onlyOpenSameSite,
                                 onCheckedChange = {
-                                    onlyOpenSameSite = it
+                                    onOnlyOpenSameSiteChange(it)
                                     scope.launch {
                                         delay(200)
                                         settingExpended = false

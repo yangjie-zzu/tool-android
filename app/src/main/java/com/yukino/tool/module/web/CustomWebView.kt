@@ -272,19 +272,16 @@ open class CustomWebView(context: Context) : WebView(context), WebInterface {
                         return true
                     }
                 }
-                val loadUrl = Uri.parse(url)
+                val targetHost = requestUrl.host
+                val currentHost = Uri.parse(url).host
+                val sameSite = isSameSite(targetHost, currentHost)
                 val onlyOpenSameSite = isOnlyOpenSameSite()
-                Log.i(TAG, "shouldOverrideUrlLoading: innerOnlyOpenSameSite: $${onlyOpenSameSite}")
-                if (requestUrl.host == loadUrl.host) {
-                    Log.i(TAG, "shouldOverrideUrlLoading: 系统处理(允许跳转)")
-                    return openUrl(url)
-                } else {
-                    return if (!onlyOpenSameSite) {
-                        openUrl(url)
-                    } else {
-                        true
-                    }
+                Log.i(TAG, "shouldOverrideUrlLoading: target=$targetHost current=$currentHost sameSite=$sameSite onlyOpenSameSite=$onlyOpenSameSite")
+                if (sameSite || !onlyOpenSameSite) {
+                    return openUrl(requestUrl.toString())
                 }
+                Log.i(TAG, "shouldOverrideUrlLoading: 跨站已拦截")
+                return true
             }
         }
     }
@@ -334,6 +331,26 @@ open class CustomWebView(context: Context) : WebView(context), WebInterface {
         isRefreshing = false
         downY = null
         isPull = null
+    }
+
+    //常见二级公共后缀(co.uk/com.cn等)，用于注册域判断
+    private val secondLevelSuffixes = setOf("co", "com", "net", "org", "gov", "edu", "ac")
+
+    //注册域: www.google.com -> google.com, www.google.co.uk -> google.co.uk
+    private fun registrableDomain(host: String): String {
+        val parts = host.split(".").filter { it.isNotEmpty() }
+        if (parts.size < 2) return host
+        if (parts.size >= 3 && secondLevelSuffixes.contains(parts[parts.size - 2])) {
+            return parts.takeLast(3).joinToString(".")
+        }
+        return parts.takeLast(2).joinToString(".")
+    }
+
+    //同站判断: 注册域相同即视为同站(子域名互通)
+    private fun isSameSite(hostA: String?, hostB: String?): Boolean {
+        if (hostA == hostB) return true
+        if (hostA == null || hostB == null) return false
+        return registrableDomain(hostA) == registrableDomain(hostB)
     }
 
     override fun startActionMode(callback: ActionMode.Callback?, type: Int): ActionMode {
