@@ -21,11 +21,13 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material3.Card
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -50,9 +52,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.yukino.tool.ui.theme.ToolTheme
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.net.NetworkInterface
+import java.text.SimpleDateFormat
 import java.util.Collections
+import java.util.Date
+import java.util.Locale
 
 class IpActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -83,6 +89,7 @@ data class IpEntry(
     val dns: List<String> = emptyList()
 )
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun IpViewer() {
 
@@ -92,14 +99,32 @@ fun IpViewer() {
         mutableStateOf<List<IpEntry>>(emptyList())
     }
 
+    var isRefreshing by remember {
+        mutableStateOf(false)
+    }
+
+    //最近一次查询时间
+    var queryTime by remember {
+        mutableStateOf<String?>(null)
+    }
+
     var refresh by remember {
         mutableIntStateOf(0)
     }
 
     LaunchedEffect(refresh) {
+        isRefreshing = true
+        val startTime = System.currentTimeMillis()
         entries = withContext(Dispatchers.IO) {
             queryIpEntries(context)
         }
+        queryTime = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+        //查询过快会让M3下拉指示器的隐藏动画被跳过(卡住需点击才消失)，保证最短刷新时长
+        val elapsed = System.currentTimeMillis() - startTime
+        if (elapsed < 500) {
+            delay(500 - elapsed)
+        }
+        isRefreshing = false
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -117,6 +142,13 @@ fun IpViewer() {
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.weight(1f)
             )
+            queryTime?.let {
+                Text(
+                    text = it,
+                    color = Color.White.copy(alpha = 0.8f),
+                    fontSize = 13.sp
+                )
+            }
             IconButton(onClick = { refresh++ }) {
                 Icon(
                     imageVector = Icons.Rounded.Refresh,
@@ -125,15 +157,21 @@ fun IpViewer() {
                 )
             }
         }
-        //全部文字可长按选择复制
-        SelectionContainer {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(10.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                items(entries) { entry ->
-                    EntryCard(entry)
+        //下拉刷新 + 全部文字可长按选择复制
+        PullToRefreshBox(
+            isRefreshing = isRefreshing,
+            onRefresh = { refresh++ },
+            modifier = Modifier.fillMaxSize()
+        ) {
+            SelectionContainer {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    items(entries) { entry ->
+                        EntryCard(entry)
+                    }
                 }
             }
         }
