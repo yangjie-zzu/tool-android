@@ -10,6 +10,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.List
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.DateRange
+import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -19,6 +20,7 @@ import androidx.compose.ui.Modifier
 import com.yukino.tool.components.MenuCard
 import com.yukino.tool.module.bluetooth.BluetoothActivity
 import com.yukino.tool.module.compress.CompressActivity
+import com.yukino.tool.module.ip.IpActivity
 import com.yukino.tool.util.rememberCurrentActivity
 import com.yukino.tool.module.web.WebActivity
 import kotlinx.coroutines.launch
@@ -91,6 +93,23 @@ fun Home() {
                     title = { Text(text = "蓝牙应用") }
                 ) {
                     Icon(imageVector = Icons.Rounded.DateRange, contentDescription = "蓝牙应用")
+                }
+            }
+            item {
+                MenuCard(
+                    onClick = {
+                        activity.startActivity(
+                            Intent(
+                                activity,
+                                IpActivity::class.java
+                            ).also {
+                                it.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                            }
+                        )
+                    },
+                    title = { Text(text = "IP信息") }
+                ) {
+                    Icon(imageVector = Icons.Rounded.Info, contentDescription = "IP信息")
                 }
             }
         })

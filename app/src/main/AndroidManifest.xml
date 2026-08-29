@@ -3,6 +3,7 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
     <uses-permission android:name="android.permission.BLUETOOTH"/>
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
@@ -62,6 +63,11 @@
             android:exported="true"
             android:theme="@style/Theme.Tool"
             android:taskAffinity="${applicationId}.bluetooth">
+        </activity>
+        <activity android:name=".module.ip.IpActivity"
+            android:exported="true"
+            android:theme="@style/Theme.Tool"
+            android:taskAffinity="${applicationId}.ip">
         </activity>
         <provider
             android:authorities="${applicationId}.fileProvider"
