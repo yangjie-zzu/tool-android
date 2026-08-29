@@ -3,6 +3,8 @@ package com.yukino.tool.module.web
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
@@ -11,6 +13,8 @@ import android.graphics.Bitmap
 import android.graphics.Rect
 import android.net.Uri
 import android.net.http.SslError
+import android.os.Build
+import android.os.Environment
 import android.provider.MediaStore
 import android.util.Log
 import android.view.ActionMode
@@ -29,15 +33,25 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.core.app.ActivityCompat
+import androidx.core.app.NotificationCompat
 import androidx.core.content.FileProvider
 import androidx.lifecycle.findViewTreeLifecycleOwner
 import androidx.lifecycle.lifecycleScope
 import com.yukino.tool.TAG
 import com.yukino.tool.util.findActivity
+import io.ktor.client.HttpClient
+import io.ktor.client.plugins.HttpTimeout
+import io.ktor.client.plugins.timeout
+import io.ktor.client.request.prepareGet
+import io.ktor.client.statement.bodyAsChannel
+import io.ktor.http.HttpHeaders
+import io.ktor.utils.io.core.isNotEmpty
+import io.ktor.utils.io.core.readBytes
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import java.io.File
+import java.io.RandomAccessFile
 import java.util.concurrent.CompletableFuture
 import kotlin.math.abs
 
@@ -282,6 +296,83 @@ open class CustomWebView(context: Context) : WebView(context), WebInterface {
                 }
                 Log.i(TAG, "shouldOverrideUrlLoading: 跨站已拦截")
                 return true
+            }
+        }
+
+        //下载处理
+        this.setDownloadListener { url, userAgent, contentDisposition, mimetype, contentLength ->
+            Log.i(TAG, "onDownloadStart: $url, $userAgent, $contentDisposition, $mimetype, $contentLength")
+            if (url.isNotEmpty()) {
+                downloadFile(url)
+            }
+        }
+    }
+
+    //下载文件到公共下载目录(Downloads/tool)，通知栏展示进度
+    private fun downloadFile(url: String) {
+        val name = url.split('?').first().split('/').last()
+        val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            notificationManager.createNotificationChannel(
+                NotificationChannel("download", "download", NotificationManager.IMPORTANCE_DEFAULT)
+            )
+        }
+        CoroutineScope(Dispatchers.IO).launch {
+            val builder = NotificationCompat.Builder(context, "download")
+                .setContentTitle("准备下载").setContentText(name).setSmallIcon(android.R.drawable.stat_sys_download)
+            try {
+                if (permissionRequester.request(Manifest.permission.POST_NOTIFICATIONS)) {
+                    notificationManager.notify(1, builder.build())
+                }
+                val httpClient = HttpClient {
+                    install(HttpTimeout) {
+                        requestTimeoutMillis = 10000
+                    }
+                }
+                httpClient.prepareGet(url) {
+                    timeout {
+                        connectTimeoutMillis = 300000
+                        requestTimeoutMillis = HttpTimeout.INFINITE_TIMEOUT_MS
+                    }
+                }.execute { res ->
+                    val len = res.headers[HttpHeaders.ContentLength]?.toLong() ?: 0L
+                    val startTime = System.currentTimeMillis()
+                    var finish = 0L
+                    val downloadPath = Environment.getExternalStoragePublicDirectory(
+                        Environment.DIRECTORY_DOWNLOADS).absolutePath
+                    val dir = File("$downloadPath/tool")
+                    if (!dir.exists()) {
+                        dir.mkdirs()
+                    }
+                    val file = File(dir, name)
+                    file.createNewFile()
+                    val randomAccessFile = RandomAccessFile(file, "rw")
+                    randomAccessFile.setLength(len)
+                    val channel = res.bodyAsChannel()
+                    while (!channel.isClosedForRead) {
+                        val packet = channel.readRemaining(limit = DEFAULT_BUFFER_SIZE.toLong())
+                        while (packet.isNotEmpty) {
+                            val bytes = packet.readBytes()
+                            randomAccessFile.write(bytes)
+                            finish += bytes.size
+                            val now = System.currentTimeMillis()
+                            if (now - startTime > 1000 || finish >= len) {
+                                builder.setContentTitle("下载中: $name").setProgress(len.toInt(), finish.toInt(), false)
+                                notificationManager.notify(1, builder.build())
+                            }
+                            if (finish >= len) {
+                                Log.i(TAG, "downloadFile: 下载完成 $name")
+                                builder.setContentTitle("下载完成: $name").setSmallIcon(android.R.drawable.stat_sys_download_done)
+                                    .setAutoCancel(true)
+                                notificationManager.notify(1, builder.build())
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                builder.setContentTitle("下载失败: $name").setContentText(e.message).setSmallIcon(android.R.drawable.stat_notify_error).setAutoCancel(true)
+                notificationManager.notify(1, builder.build())
+                Log.e(TAG, "downloadFile: ", e)
             }
         }
     }
