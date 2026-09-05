@@ -125,6 +125,8 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.0-RC")
 
     implementation("androidx.swiperefreshlayout:swiperefreshlayout:1.1.0")
+    // 备忘录导出: 带密码的加密ZIP(AES-256)
+    implementation("net.lingala.zip4j:zip4j:2.11.5")
 
     implementation("com.github.omicronapps:7-Zip-JBinding-4Android:Release-16.02-2.02")
 

@@ -471,7 +471,23 @@ fun NoteApp() {
 
     if (ui.showSettings) {
         SettingsPage(
+            entries = ui.entries,
+            onUnlock = { reason -> unlockSecrets(reason) },
             onSetupMaster = { scope.launch { setupMasterFlow() } },
+            onChangeMasterPassword = { oldPw, newPw ->
+                scope.launch {
+                    try {
+                        val (newDk, hadBio) = withContext(Dispatchers.Default) {
+                            NoteCrypto.changeMasterPassword(context, oldPw, newPw)
+                        }
+                        Toast.makeText(context, "主密码已修改", Toast.LENGTH_SHORT).show()
+                        // 指纹封存随旧密钥失效: 原启用过则自动引导重新认证封存新主密钥
+                        if (hadBio) enableBiometricWith(newDk)
+                    } catch (e: Exception) {
+                        Toast.makeText(context, e.message ?: "修改失败", Toast.LENGTH_LONG).show()
+                    }
+                }
+            },
             onEnableBiometric = {
                 if (NoteCrypto.masterReady(context)) {
                     enableBiometric()
@@ -503,8 +519,9 @@ fun NoteApp() {
             },
             onDelete = { entry ->
                 val list = ui.entries.filterNot { it.id == entry.id }
-                // 删除含加密字段的条目会改动加密段，需要验证主密码；纯明文条目直接删
-                persist(list, entry.id, emptyMap(), entry.fields.any { it.secret })
+                // 只有真的存了加密值的条目，删除才需要验证(要从加密段摘除数据)；
+                // 字段有但值为空 → 加密段里本来就没有它的数据，和纯明文一样直接删
+                persist(list, entry.id, emptyMap(), entry.fields.any { it.secret && it.value.isNotBlank() })
             },
             onCancel = { ui = ui.copy(editing = null, editingIsNew = false) }
         )

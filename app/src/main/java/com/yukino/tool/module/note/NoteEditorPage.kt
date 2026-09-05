@@ -92,16 +92,10 @@ internal fun EditorPage(
     // 加密值输入框的"待验证遮罩"是否被用户取消过(取消后允许直接盲输新值，不再弹认证)
     var lockDismissed by remember { mutableStateOf(false) }
 
+    // 删除整条记录的二次确认
+    var showDeleteRecord by remember { mutableStateOf(false) }
+
     val context = LocalContext.current
-
-    // 正在配置的字段索引(非空时弹字段配置对话框)
-    var configIndex by remember { mutableStateOf<Int?>(null) }
-
-    // 待删除的字段索引(非空时弹删除确认对话框)
-    var deleteIndex by remember { mutableStateOf<Int?>(null) }
-
-    // 正在扫码录入的2FA字段索引(非空时全屏显示扫码页)
-    var scanningIndex by remember { mutableStateOf<Int?>(null) }
 
     val scrollState = rememberScrollState()
     val scope = rememberCoroutineScope()
@@ -148,6 +142,10 @@ internal fun EditorPage(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
             fields.forEachIndexed { index, field ->
+                //每张卡片自有的弹窗开关(弹窗是模态的，打开期间列表不会重排，按位置记忆安全)
+                var showConfig by remember { mutableStateOf(false) }
+                var showDelete by remember { mutableStateOf(false) }
+                var scanning by remember { mutableStateOf(false) }
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.background),
@@ -176,7 +174,7 @@ internal fun EditorPage(
                                         list[index] = field.copy(value = it)
                                     }
                                 },
-                                onLabelClick = { configIndex = index },
+                                onLabelClick = { showConfig = true },
                                 modifier = Modifier.fillMaxWidth()
                             )
                             if (locked) {
@@ -209,7 +207,7 @@ internal fun EditorPage(
                                         .align(Alignment.CenterEnd)
                                         .padding(end = 10.dp)
                                         .clip(CircleShape)
-                                        .clickable { scanningIndex = index }
+                                        .clickable { scanning = true }
                                         .padding(4.dp)
                                         .size(20.dp)
                                 )
@@ -224,7 +222,7 @@ internal fun EditorPage(
                                 modifier = Modifier
                                     .weight(1f)
                                     .clip(MaterialTheme.shapes.small)
-                                    .clickable { configIndex = index }
+                                    .clickable { showConfig = true }
                                     .padding(vertical = 2.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(4.dp)
@@ -252,10 +250,68 @@ internal fun EditorPage(
                                 contentDescription = "删除字段",
                                 modifier = Modifier
                                     .clip(CircleShape)
-                                    .clickable { deleteIndex = index }
+                                    .clickable { showDelete = true }
                                     .padding(2.dp)
                                     .size(18.dp),
                                 tint = MaterialTheme.colorScheme.error
+                            )
+                        }
+                    }
+                    //字段配置弹窗(卡片自有状态，无需index标记)
+                    if (showConfig) {
+                        FieldConfigDialog(
+                            field = field,
+                            onChange = { new ->
+                                if (new.secret != field.secret) secretTouched = true
+                                fields = fields.toMutableList().also { it[index] = new }
+                            },
+                            onRename = { newName ->
+                                if (newName != field.key) {
+                                    if (field.secret) secretTouched = true
+                                    fields = fields.toMutableList().also { it[index] = field.copy(key = newName) }
+                                }
+                            },
+                            onDismiss = { showConfig = false }
+                        )
+                    }
+                    //删除字段确认弹窗
+                    if (showDelete) {
+                        AlertDialog(
+                            onDismissRequest = { showDelete = false },
+                            title = { Text(text = "删除字段") },
+                            text = { Text(text = "确定删除字段「${field.key.ifBlank { "未命名字段" }}」吗？") },
+                            confirmButton = {
+                                TextButton(onClick = {
+                                    if (field.secret) secretTouched = true
+                                    fields = fields.filterIndexed { i, _ -> i != index }
+                                    showDelete = false
+                                }) { Text("删除", color = MaterialTheme.colorScheme.error) }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { showDelete = false }) { Text("取消") }
+                            }
+                        )
+                    }
+                    //扫码页(全屏Dialog覆盖，含底部操作栏)
+                    if (scanning) {
+                        androidx.compose.ui.window.Dialog(
+                            onDismissRequest = { scanning = false },
+                            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)
+                        ) {
+                            QrScanPage(
+                                onResult = { raw ->
+                                    val normalized = Totp.normalizeSecret(raw)
+                                    if (normalized == null) {
+                                        Toast.makeText(context, "二维码内容无法识别为2FA密钥", Toast.LENGTH_LONG).show()
+                                    } else {
+                                        fields = fields.toMutableList().also { list ->
+                                            list[index] = field.copy(value = normalized)
+                                        }
+                                        secretTouched = true
+                                    }
+                                    scanning = false
+                                },
+                                onClose = { scanning = false }
                             )
                         }
                     }
@@ -285,45 +341,6 @@ internal fun EditorPage(
                 )
             }
         }
-        //字段配置弹窗: 改名/加密/标题/预览开关在这里
-        configIndex?.let { idx ->
-            fields.getOrNull(idx)?.let { cfgField ->
-                FieldConfigDialog(
-                    field = cfgField,
-                    onChange = { new ->
-                        if (new.secret != cfgField.secret) secretTouched = true
-                        fields = fields.toMutableList().also { it[idx] = new }
-                    },
-                    onRename = { newName ->
-                        if (newName != cfgField.key) {
-                            if (cfgField.secret) secretTouched = true
-                            fields = fields.toMutableList().also { it[idx] = cfgField.copy(key = newName) }
-                        }
-                    },
-                    onDismiss = { configIndex = null }
-                )
-            }
-        }
-        //删除字段确认弹窗
-        deleteIndex?.let { idx ->
-            fields.getOrNull(idx)?.let { delField ->
-                AlertDialog(
-                    onDismissRequest = { deleteIndex = null },
-                    title = { Text(text = "删除字段") },
-                    text = { Text(text = "确定删除字段「${delField.key.ifBlank { "未命名字段" }}」吗？") },
-                    confirmButton = {
-                        TextButton(onClick = {
-                            if (delField.secret) secretTouched = true
-                            fields = fields.filterIndexed { i, _ -> i != idx }
-                            deleteIndex = null
-                        }) { Text("删除", color = MaterialTheme.colorScheme.error) }
-                    },
-                    dismissButton = {
-                        TextButton(onClick = { deleteIndex = null }) { Text("取消") }
-                    }
-                )
-            }
-        }
         //底部操作区: 浅色底板，顶部一条分隔线与滚动区区分
         Column(
             modifier = Modifier
@@ -343,7 +360,7 @@ internal fun EditorPage(
                     .padding(start = 15.dp, end = 15.dp, bottom = 12.dp)
             ) {
                 if (!isNew && onDelete != null) {
-                    TextButton(onClick = { onDelete(entry) }) {
+                    TextButton(onClick = { showDeleteRecord = true }) {
                         Text(text = "删除此记录", color = MaterialTheme.colorScheme.error)
                     }
                 }
@@ -357,26 +374,25 @@ internal fun EditorPage(
                 }
             }
         }
-        }
-        //2FA扫码页: 全屏覆盖层，盖住编辑器和底部操作栏
-        scanningIndex?.let { idx ->
-            QrScanPage(
-                onResult = { raw ->
-                    val normalized = Totp.normalizeSecret(raw)
-                    if (normalized == null) {
-                        Toast.makeText(context, "二维码内容无法识别为2FA密钥", Toast.LENGTH_LONG).show()
-                    } else {
-                        fields = fields.toMutableList().also { list ->
-                            list[idx] = list[idx].copy(value = normalized)
-                        }
-                        secretTouched = true
-                    }
-                    scanningIndex = null
+        //删除整条记录的二次确认
+        if (showDeleteRecord) {
+            AlertDialog(
+                onDismissRequest = { showDeleteRecord = false },
+                title = { Text(text = "删除此记录") },
+                text = { Text(text = "确定删除整条记录吗？删除后不可恢复。") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        showDeleteRecord = false
+                        onDelete?.invoke(entry)
+                    }) { Text("删除", color = MaterialTheme.colorScheme.error) }
                 },
-                onClose = { scanningIndex = null }
+                dismissButton = {
+                    TextButton(onClick = { showDeleteRecord = false }) { Text("取消") }
+                }
             )
         }
     }
+}
 }
 
 /*

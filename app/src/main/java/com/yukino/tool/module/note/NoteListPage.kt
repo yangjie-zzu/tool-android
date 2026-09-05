@@ -93,8 +93,12 @@ internal fun ListPage(
                                     isRevealed -> secretValue
                                     else -> "••••••"
                                 }
-                                //空的明文字段不显示行
-                                if (!field.secret && display.isBlank()) return@forEach
+                                //没有内容的字段不显示行: 空的明文字段、未存加密值的加密字段
+                                if (field.secret) {
+                                    if (field.value.isBlank()) return@forEach
+                                } else if (display.isBlank()) {
+                                    return@forEach
+                                }
                                 Text(
                                     modifier = Modifier.padding(horizontal = 6.dp),
                                     text = buildAnnotatedString {

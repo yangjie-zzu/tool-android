@@ -207,6 +207,53 @@ object NoteCrypto {
         return dk.encoded
     }
 
+    /*
+     * 修改主密码: 验证旧密码 → 新盐派生新DK → 全部加密值解密后用新DK重加密 → 换校验值。
+     * 指纹封存的DK随之失效(封存的是旧DK)，需重新启用指纹(返回值供自动引导)。
+     * 失败抛IllegalStateException(含提示信息)；兼容v1/v2遗留格式(先校验后整体转换)。
+     */
+    fun changeMasterPassword(context: Context, oldPassword: String, newPassword: String): Pair<ByteArray, Boolean> {
+        if (newPassword.length < 4) error("新主密码至少4位")
+        val meta = readMeta(context) ?: error("记忆未初始化")
+        val salt = meta.salt ?: error("未设置主密码")
+        val oldDk: SecretKey
+        // 修改前是否启用指纹: v2/v3看bioKey，v1旧格式看vkByBio。改密后封存的是旧DK，必须引导重新认证
+        val hadBio = meta.bioKey != null || meta.vkByBio != null
+        if (meta.check != null && meta.checkIv != null) {
+            // v3: 校验值验证旧密码
+            oldDk = deriveKey(oldPassword, unb64(salt))
+            try {
+                if (!gcmDecrypt(oldDk, meta.checkIv, meta.check).contentEquals(CHECK_MAGIC)) error("x")
+            } catch (e: Exception) {
+                error("主密码错误")
+            }
+        } else if (meta.vkByPwd != null) {
+            // v1/v2遗留: 旧密码只能靠解开封存的旧VK验证
+            oldDk = deriveKey(oldPassword, unb64(salt))
+            try {
+                gcmDecrypt(oldDk, meta.pwdIv!!, meta.vkByPwd)
+            } catch (e: Exception) {
+                error("主密码错误")
+            }
+        } else {
+            error("未设置主密码")
+        }
+        val newSalt = ByteArray(16).also { random.nextBytes(it) }
+        val newDk = deriveKey(newPassword, newSalt)
+        val (newCheckIv, newCheck) = gcmEncrypt(newDk, CHECK_MAGIC)
+        // 全部加密值用旧DK解出、新DK重加密(兼容v2 enc段与v3字段密文)
+        val secrets = readSecrets(context, oldDk.encoded)
+        val newPlain = fillEncryptedValues(meta.plain, secrets, SecretKeySpec(newDk.encoded, "AES"))
+        write(
+            context, meta.copy(
+                version = 3, salt = b64(newSalt), checkIv = newCheckIv, check = newCheck,
+                plain = newPlain, encIv = null, enc = null,
+                bioIv = null, bioKey = null, pwdIv = null, vkByPwd = null, vkByBio = null
+            )
+        )
+        return newDk.encoded to hadBio
+    }
+
     // v1旧格式专用: 只派生不校验(旧格式没有校验值)。密码对错由迁移时旧VK能否解开判定
     fun deriveLegacy(context: Context, password: String): ByteArray {
         val meta = readMeta(context) ?: error("记忆未初始化")
