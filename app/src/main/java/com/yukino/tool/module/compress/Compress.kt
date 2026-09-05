@@ -4,7 +4,6 @@ import android.net.Uri
 import android.os.Environment
 import android.provider.OpenableColumns
 import android.util.Log
-import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -26,6 +25,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -43,12 +43,18 @@ import com.yukino.tool.util.rememberCurrentActivity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import android.os.ParcelFileDescriptor
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import net.sf.sevenzipjbinding.ExtractAskMode
 import net.sf.sevenzipjbinding.ExtractOperationResult
 import net.sf.sevenzipjbinding.IArchiveExtractCallback
+import net.sf.sevenzipjbinding.ICryptoGetTextPassword
+import net.sf.sevenzipjbinding.IInArchive
 import net.sf.sevenzipjbinding.IInStream
 import net.sf.sevenzipjbinding.ISequentialOutStream
 import net.sf.sevenzipjbinding.SevenZip
+import net.sf.sevenzipjbinding.SevenZipException
 import net.sf.sevenzipjbinding.simple.ISimpleInArchiveItem
 import java.io.File
 import java.io.FileOutputStream
@@ -78,6 +84,59 @@ fun displayName(name: String? = null, ext: String? = null): String {
     return "${name.text()}${if (ext == null) "" else "."}${ext.text()}"
 }
 
+fun openInArchive(
+    parcelFileDescriptor: ParcelFileDescriptor,
+    password: String? = null
+): IInArchive {
+    val fileDescriptor = parcelFileDescriptor.fileDescriptor
+    val inStream = object : IInStream {
+        override fun close() {
+            parcelFileDescriptor.close()
+        }
+
+        override fun read(data: ByteArray?): Int {
+            return android.system.Os.read(
+                fileDescriptor,
+                data,
+                0,
+                data?.size ?: 0
+            )
+        }
+
+        override fun seek(offset: Long, seekOrigin: Int): Long {
+            return android.system.Os.lseek(
+                fileDescriptor,
+                offset,
+                seekOrigin
+            )
+        }
+
+    }
+    val inArchive = if (password.isNullOrEmpty()) {
+        SevenZip.openInArchive(null, inStream)
+    } else {
+        SevenZip.openInArchive(null, inStream, password)
+    }
+    return inArchive
+}
+
+fun isPasswordError(message: String): Boolean {
+    val lowercase = message.lowercase()
+    return lowercase.contains("password") || lowercase.contains("encrypted") || lowercase.contains("加密")
+}
+
+// extract抛出的外层异常只有"Error extracting all items"，密码错误信息在cause链里
+fun isPasswordError(error: Throwable): Boolean {
+    var cause: Throwable? = error
+    while (cause != null) {
+        if (isPasswordError(cause.message ?: "")) {
+            return true
+        }
+        cause = cause.cause
+    }
+    return false
+}
+
 @Composable
 fun CompressDetail(
     url: String?
@@ -92,10 +151,18 @@ fun CompressDetail(
         mutableStateOf<String?>(null)
     }
 
+    var password by remember {
+        mutableStateOf("")
+    }
+
+    var needPassword by remember {
+        mutableStateOf(false)
+    }
+
     val activity = rememberCurrentActivity()
-    val localContext = LocalContext.current
-    LaunchedEffect(url) {
+    LaunchedEffect(url, password, needPassword) {
         if (url == null) return@LaunchedEffect
+        errMsg = null
         try {
             val cursor = activity.contentResolver.query(Uri.parse(url), null, null, null, null)
             cursor?.use {
@@ -113,32 +180,9 @@ fun CompressDetail(
                     )
                     withContext(Dispatchers.IO) {
                         activity.contentResolver.openFileDescriptor(Uri.parse(url), "r")?.use { parcelFileDescriptor ->
-                            val fileDescriptor = parcelFileDescriptor.fileDescriptor
-                            val inArchive = SevenZip.openInArchive(
-                                null,
-                                object : IInStream {
-                                    override fun close() {
-                                        parcelFileDescriptor.close()
-                                    }
-
-                                    override fun read(data: ByteArray?): Int {
-                                        return android.system.Os.read(
-                                            fileDescriptor,
-                                            data,
-                                            0,
-                                            data?.size ?: 0
-                                        )
-                                    }
-
-                                    override fun seek(offset: Long, seekOrigin: Int): Long {
-                                        return android.system.Os.lseek(
-                                            fileDescriptor,
-                                            offset,
-                                            seekOrigin
-                                        )
-                                    }
-
-                                }
+                            val inArchive = openInArchive(
+                                parcelFileDescriptor,
+                                password.takeIf { password.isNotEmpty() }
                             )
                             val count = inArchive.numberOfItems
                             val simpleInArchive = inArchive.simpleInterface
@@ -176,7 +220,18 @@ fun CompressDetail(
                 }
             }
         } catch (e: Exception) {
-            errMsg = e.toString()
+            if (e is kotlinx.coroutines.CancellationException) {
+                throw e
+            }
+            Log.e(TAG, "parse failed", e)
+            if (isPasswordError(e)) {
+                if (password.isNotEmpty()) {
+                    errMsg = "密码错误或无法解密"
+                }
+                needPassword = true
+            } else {
+                errMsg = e.toString()
+            }
         }
     }
 
@@ -209,6 +264,16 @@ fun CompressDetail(
             }
             errMsg?.let {
                 Text("解析错误：${errMsg.text()}")
+            }
+            if (needPassword) {
+                OutlinedTextField(
+                    modifier = Modifier.fillMaxWidth(),
+                    value = password,
+                    onValueChange = { password = it },
+                    label = { Text("压缩包密码") },
+                    singleLine = true,
+                    isError = password.isNotEmpty() && errMsg != null
+                )
             }
             LazyColumn(
                 modifier = Modifier
@@ -253,6 +318,12 @@ fun CompressDetail(
         var isError by remember {
             mutableStateOf(false)
         }
+        var extractResult by remember {
+            mutableStateOf<String?>(null)
+        }
+        var extractResultIsError by remember {
+            mutableStateOf(false)
+        }
         val totalRef = remember {
             ValueRef(0L)
         }
@@ -265,6 +336,18 @@ fun CompressDetail(
         if (!isRunning) {
             val downloadPath =
                 Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).absolutePath
+            extractResult?.let { result ->
+                Text(
+                    text = result,
+                    color = if (extractResultIsError) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        Color(0xFF2E7D32)
+                    },
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(bottom = 4.dp)
+                )
+            }
             Row {
                 val coroutineScope = rememberCoroutineScope()
                 Button(
@@ -272,35 +355,14 @@ fun CompressDetail(
                     onClick = {
                         coroutineScope.launch(Dispatchers.IO) {
                             try {
+                                Log.i(TAG, "extract start, hasPassword=${password.isNotEmpty()}")
                                 isRunning = true
                                 isError = false
+                                extractResult = null
                                 activity.contentResolver.openFileDescriptor(Uri.parse(url), "r")?.use { parcelFileDescriptor ->
-                                    val fileDescriptor = parcelFileDescriptor.fileDescriptor
-                                    val inArchive = SevenZip.openInArchive(
-                                        null,
-                                        object : IInStream {
-                                            override fun close() {
-                                                parcelFileDescriptor.close()
-                                            }
-
-                                            override fun read(data: ByteArray?): Int {
-                                                return android.system.Os.read(
-                                                    fileDescriptor,
-                                                    data,
-                                                    0,
-                                                    data?.size ?: 0
-                                                )
-                                            }
-
-                                            override fun seek(offset: Long, seekOrigin: Int): Long {
-                                                return android.system.Os.lseek(
-                                                    fileDescriptor,
-                                                    offset,
-                                                    seekOrigin
-                                                )
-                                            }
-
-                                        }
+                                    val inArchive = openInArchive(
+                                        parcelFileDescriptor,
+                                        password.takeIf { password.isNotEmpty() }
                                     )
                                     val simpleArchive = inArchive.simpleInterface
                                     var dirPath = "${downloadPath}/tool"
@@ -311,7 +373,14 @@ fun CompressDetail(
                                     if (!dir.exists()) {
                                         dir.mkdirs()
                                     }
-                                    inArchive.extract(null, false, object : IArchiveExtractCallback {
+                                    inArchive.extract(
+                                        null,
+                                        false,
+                                        // 该fork批量extract不使用openInArchive时绑定的密码，需实现ICryptoGetTextPassword提供
+                                        object : IArchiveExtractCallback, ICryptoGetTextPassword {
+                                        override fun cryptoGetTextPassword(): String {
+                                            return password
+                                        }
                                         override fun setTotal(total: Long) {
                                             totalRef.value = total
                                         }
@@ -350,18 +419,42 @@ fun CompressDetail(
                                         }
 
                                         override fun setOperationResult(extractOperationResult: ExtractOperationResult?) {
+                                            // 该绑定对密码问题可能返回UNSUPPORTEDMETHOD/DATAERROR而非WRONG_PASSWORD
+                                            val cryptoSuspect = extractOperationResult == ExtractOperationResult.WRONG_PASSWORD ||
+                                                    extractOperationResult == ExtractOperationResult.UNSUPPORTEDMETHOD ||
+                                                    extractOperationResult == ExtractOperationResult.DATAERROR
+                                            if (extractOperationResult != null && extractOperationResult != ExtractOperationResult.OK) {
+                                                if (cryptoSuspect && password.isNotEmpty()) {
+                                                    throw SevenZipException("Wrong password")
+                                                }
+                                                if (cryptoSuspect && password.isEmpty()) {
+                                                    throw SevenZipException("Encrypted or unsupported method")
+                                                }
+                                                throw SevenZipException(extractOperationResult.toString())
+                                            }
                                         }
-                                    })
+                                        },
+                                        // 密码在openInArchive时已绑定，此处无需再传
+                                    )
+                                    inArchive.close()
                                 }
+                                Log.i(TAG, "extract done")
                                 isFinish = true
-                                activity.runOnUiThread {
-                                    Toast.makeText(localContext, "解压完成", Toast.LENGTH_LONG).show()
-                                }
+                                extractResult = "解压完成"
+                                extractResultIsError = false
                             } catch (e: Exception) {
                                 isError = true
-                                activity.runOnUiThread {
-                                    Toast.makeText(localContext, "解压失败", Toast.LENGTH_LONG).show()
+                                Log.e(TAG, "extract failed", e)
+                                val isPassword = isPasswordError(e)
+                                if (isPassword) {
+                                    needPassword = true
                                 }
+                                extractResult = if (isPassword) {
+                                    if (password.isEmpty()) "解压失败：该压缩包已加密，请输入密码" else "解压失败：密码错误"
+                                } else {
+                                    "解压失败"
+                                }
+                                extractResultIsError = true
                             } finally {
                                 isRunning = false
                             }
