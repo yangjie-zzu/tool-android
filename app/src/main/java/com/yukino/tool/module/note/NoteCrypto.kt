@@ -56,12 +56,14 @@ import kotlinx.serialization.json.Json
  * ============================================================================================
  */
 
-// 单个字段。secret=加密存储(value里是密文"Base64(IV)|Base64(密文)")；title=作为条目标题；preview=在列表中预览
+// 单个字段。secret=加密存储(value里是密文"Base64(IV)|Base64(密文)")；totp=2FA密钥字段(必须secret)；
+// title=作为条目标题；preview=在列表中预览
 @Serializable
 data class NoteField(
     val key: String = "",
     val value: String = "",
     val secret: Boolean = false,
+    val totp: Boolean = false,
     val title: Boolean = false,
     val preview: Boolean = false
 )
