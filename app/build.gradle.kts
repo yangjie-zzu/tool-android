@@ -94,6 +94,9 @@ android {
 dependencies {
 
     implementation("androidx.core:core-ktx:1.9.0")
+    // 1.1.0在API 30+有认证成功后CryptoObject为null的bug；1.4.0要求compileSdk 36+AGP 8.9.1，暂用1.2.0
+    implementation("androidx.biometric:biometric:1.2.0-alpha05")
+    implementation("androidx.fragment:fragment-ktx:1.5.7")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.6")
     implementation("androidx.activity:activity-compose:1.9.2")
     implementation(platform("androidx.compose:compose-bom:2024.12.01"))
