@@ -1,3 +1,6 @@
+import java.text.SimpleDateFormat
+import java.util.Date
+
 import com.android.build.gradle.internal.api.BaseVariantOutputImpl
 
 plugins {
@@ -17,14 +20,27 @@ android {
         applicationId = "com.yukino.tool"
         minSdk = 24
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.1"
+        versionCode = 2
+        versionName = "1.0.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
             useSupportLibrary = true
         }
         resValue("string", "app_name", baseAppName)
+
+        // 每次构建记录构建时间,主页展示(配置阶段每次构建都会重新求值)
+        val buildTime = SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(Date())
+        buildConfigField("String", "BUILD_TIME", "\"$buildTime\"")
+    }
+
+    buildFeatures {
+        buildConfig = true
+    }
+
+    testOptions {
+        // 阅读器排版(JVM单测)需要 android.graphics.Paint 等桩返回默认值而非抛异常
+        unitTests.isReturnDefaultValues = true
     }
 
     signingConfigs {
@@ -127,6 +143,9 @@ dependencies {
     implementation("androidx.swiperefreshlayout:swiperefreshlayout:1.1.0")
     // 备忘录导出: 带密码的加密ZIP(AES-256)
     implementation("net.lingala.zip4j:zip4j:2.11.5")
+
+    // 阅读器: TXT编码自动检测(GBK/UTF-8/UTF-16等)
+    implementation("com.github.albfernandez:juniversalchardet:2.5.0")
 
     implementation("com.github.omicronapps:7-Zip-JBinding-4Android:Release-16.02-2.02")
 

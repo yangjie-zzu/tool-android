@@ -76,6 +76,29 @@
             android:theme="@style/Theme.Tool"
             android:taskAffinity="${applicationId}.note">
         </activity>
+        <activity android:name=".module.reader.ReaderActivity"
+            android:exported="true"
+            android:theme="@style/Theme.Tool"
+            android:label="阅读"
+            android:screenOrientation="portrait"
+            android:taskAffinity="${applicationId}.reader">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <category android:name="android.intent.category.OPENABLE"/>
+                <data android:scheme="content"/>
+                <data android:scheme="file"/>
+                <data android:mimeType="text/plain"/>
+                <data android:mimeType="application/octet-stream"/>
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:mimeType="text/plain"/>
+                <data android:mimeType="application/octet-stream"/>
+            </intent-filter>
+        </activity>
         <provider
             android:authorities="${applicationId}.fileProvider"
             android:name="androidx.core.content.FileProvider"

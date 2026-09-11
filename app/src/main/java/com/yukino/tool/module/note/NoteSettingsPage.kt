@@ -11,11 +11,13 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -83,9 +85,9 @@ internal fun SettingsPage(
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(text = "导出备份")
+                    Text(text = "导出")
                     Text(
-                        text = "加密ZIP压缩包，可分享到电脑留存",
+                        text = "备份或导出为Markdown，可分享到电脑留存",
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -94,31 +96,42 @@ internal fun SettingsPage(
             }
         }
     }
-    //导出对话框: 设置压缩包名称/密码/是否明文
+    //导出对话框: 名称/密码/模式(备份|加密导出|明文导出)
     if (showExport) {
         ExportDialog(
             entries = entries,
             onUnlock = onUnlock,
             onDismiss = { showExport = false },
-            onExport = { name, password, plaintext ->
+            onExport = { name, password, mode ->
                 scope.launch {
                     try {
-            val zip = if (plaintext) {
-                //明文导出包含全部密码和2FA密钥，必须先通过认证
-                val secrets = onUnlock("导出明文") ?: return@launch
-                val text = withContext(Dispatchers.IO) {
-                    NoteExport.buildPlaintextText(entries, secrets)
-                }
-                withContext(Dispatchers.IO) {
-                    NoteExport.exportPlaintextZip(context, name, password, text)
-                }
-            } else {
-                            withContext(Dispatchers.IO) {
+                        val file = when (mode) {
+                            NoteExport.MODE_ENCRYPTED_MD -> {
+                                //加密导出内含明文，必须先通过认证
+                                val secrets = onUnlock("导出加密明文") ?: return@launch
+                                val md = withContext(Dispatchers.IO) {
+                                    NoteExport.buildPlaintextMarkdown(entries, secrets)
+                                }
+                                withContext(Dispatchers.IO) {
+                                    NoteExport.exportEncryptedMdZip(context, name, password, md)
+                                }
+                            }
+                            NoteExport.MODE_PLAIN_MD -> {
+                                //明文导出包含全部密码和2FA密钥，必须先通过认证
+                                val secrets = onUnlock("导出明文") ?: return@launch
+                                val md = withContext(Dispatchers.IO) {
+                                    NoteExport.buildPlaintextMarkdown(entries, secrets)
+                                }
+                                withContext(Dispatchers.IO) {
+                                    NoteExport.exportPlaintextMd(context, name, md)
+                                }
+                            }
+                            else -> withContext(Dispatchers.IO) {
                                 NoteExport.exportEncryptedBackupZip(context, name, password)
                             }
                         }
                         showExport = false
-                        NoteExport.share(context, zip)
+                        NoteExport.share(context, file)
                     } catch (e: Exception) {
                         Toast.makeText(context, "导出失败: ${e.message}", Toast.LENGTH_LONG).show()
                     }
@@ -204,7 +217,7 @@ private fun ExportDialog(
     entries: List<NoteEntry>,
     onUnlock: suspend (String) -> Map<String, String>?,
     onDismiss: () -> Unit,
-    onExport: (name: String, password: String, plaintext: Boolean) -> Unit
+    onExport: (name: String, password: String, mode: Int) -> Unit
 ) {
     val context = LocalContext.current
     //名称自动生成: 备忘录备份_yyyyMMdd_HHmm(仍可手动修改)
@@ -214,71 +227,101 @@ private fun ExportDialog(
         )
     }
     var password by remember { mutableStateOf("") }
-    var plaintext by remember { mutableStateOf(false) }
+    var mode by remember { mutableIntStateOf(NoteExport.MODE_BACKUP) }
+    val needPassword = mode != NoteExport.MODE_PLAIN_MD
+
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(text = "导出备份") },
+        title = { Text(text = "导出") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 NoteTextField(
                     value = name,
                     onValueChange = { name = it },
-                    label = "压缩包名称",
+                    label = if (mode == NoteExport.MODE_PLAIN_MD) "文件名称" else "压缩包名称",
                     modifier = Modifier.fillMaxWidth()
                 )
-                NoteTextField(
-                    value = password,
-                    onValueChange = { password = it },
-                    label = "压缩包密码",
-                    modifier = Modifier.fillMaxWidth(),
-                    password = true
-                )
-                //明文导出开关: 着色容器常驻警示色，更醒目
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(MaterialTheme.shapes.medium)
-                        .background(MaterialTheme.colorScheme.errorContainer)
-                        .clickable { plaintext = !plaintext }
-                        .padding(start = 12.dp, end = 8.dp, top = 4.dp, bottom = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "明文导出",
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Medium,
-                            color = MaterialTheme.colorScheme.onErrorContainer
-                        )
-                        Text(
-                            text = if (plaintext) "所有密码和2FA密钥将以明文保存"
-                            else "开启后导出可读TXT(用于查看)",
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onErrorContainer
-                        )
-                    }
-                    Switch(checked = plaintext, onCheckedChange = { plaintext = it })
+                //明文.md直接分享无需密码;两种加密ZIP都需要密码
+                if (needPassword) {
+                    NoteTextField(
+                        value = password,
+                        onValueChange = { password = it },
+                        label = "压缩包密码",
+                        modifier = Modifier.fillMaxWidth(),
+                        password = true
+                    )
+                }
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    ExportModeOption(
+                        title = "备份",
+                        desc = "加密ZIP(原始数据文件)，恢复需导回本应用",
+                        selected = mode == NoteExport.MODE_BACKUP,
+                        onClick = { mode = NoteExport.MODE_BACKUP }
+                    )
+                    ExportModeOption(
+                        title = "加密导出",
+                        desc = "加密ZIP内含可读Markdown(.md)，解压即可查看",
+                        selected = mode == NoteExport.MODE_ENCRYPTED_MD,
+                        onClick = { mode = NoteExport.MODE_ENCRYPTED_MD }
+                    )
+                    ExportModeOption(
+                        title = "明文导出",
+                        desc = "Markdown(.md)直接分享，含全部密码和2FA密钥",
+                        selected = mode == NoteExport.MODE_PLAIN_MD,
+                        onClick = { mode = NoteExport.MODE_PLAIN_MD }
+                    )
                 }
                 Text(
-                    text = if (plaintext) {
-                        "注意: 明文文件包含全部密码和2FA密钥，请务必妥善保管。"
-                    } else {
-                        "导出的是加密备份文件，解压和恢复都需要这个密码，请牢记。"
+                    text = when (mode) {
+                        NoteExport.MODE_ENCRYPTED_MD ->
+                            "注意: Markdown内含全部密码和2FA密钥，解压密码请牢记。"
+                        NoteExport.MODE_PLAIN_MD ->
+                            "注意: 明文文件包含全部密码和2FA密钥，请务必妥善保管。"
+                        else ->
+                            "导出的是加密备份文件，解压和恢复都需要这个密码，请牢记。"
                     },
                     fontSize = 12.sp,
-                    color = if (plaintext) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
+                    color = if (mode == NoteExport.MODE_PLAIN_MD) MaterialTheme.colorScheme.error
+                            else MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         },
         confirmButton = {
             TextButton(onClick = {
-                if (password.isBlank()) {
+                if (needPassword && password.isBlank()) {
                     Toast.makeText(context, "请设置压缩包密码", Toast.LENGTH_SHORT).show()
                 } else {
-                    onExport(name.trim(), password, plaintext)
+                    onExport(name.trim(), password, mode)
                 }
             }) { Text("导出") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
     )
+}
+
+@Composable
+private fun ExportModeOption(
+    title: String,
+    desc: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(MaterialTheme.shapes.medium)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 4.dp, vertical = 2.dp)
+    ) {
+        RadioButton(selected = selected, onClick = onClick)
+        Column(modifier = Modifier.weight(1f)) {
+            Text(text = title, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+            Text(
+                text = desc,
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
 }

@@ -4,25 +4,32 @@ import android.content.Intent
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.List
+import androidx.compose.material.icons.automirrored.rounded.MenuBook
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.DateRange
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.yukino.tool.BuildConfig
 import com.yukino.tool.components.MenuCard
 import com.yukino.tool.module.bluetooth.BluetoothActivity
 import com.yukino.tool.module.compress.CompressActivity
 import com.yukino.tool.module.ip.IpActivity
 import com.yukino.tool.module.note.NoteActivity
+import com.yukino.tool.module.reader.ReaderActivity
 import com.yukino.tool.util.rememberCurrentActivity
 import com.yukino.tool.module.web.WebActivity
 import kotlinx.coroutines.launch
@@ -41,7 +48,17 @@ fun Home() {
                 .fillMaxWidth()
 
         ) {
-            Text(text = "个人工具集", modifier = Modifier.align(Alignment.Center))
+            Column(
+                horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
+                modifier = Modifier.align(Alignment.Center)
+            ) {
+                Text(text = "个人工具集")
+                Text(
+                    text = "v${BuildConfig.VERSION_NAME} · 构建于 ${BuildConfig.BUILD_TIME}",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
         LazyVerticalGrid(columns = GridCells.Fixed(3), content = {
             item {
@@ -129,6 +146,26 @@ fun Home() {
                     title = { Text(text = "备忘录") }
                 ) {
                     Icon(imageVector = Icons.Rounded.Person, contentDescription = "备忘录")
+                }
+            }
+            item {
+                MenuCard(
+                    onClick = {
+                        activity.startActivity(
+                            Intent(
+                                activity,
+                                ReaderActivity::class.java
+                            ).also {
+                                it.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                            }
+                        )
+                    },
+                    title = { Text(text = "阅读") }
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Rounded.MenuBook,
+                        contentDescription = "阅读"
+                    )
                 }
             }
         })
