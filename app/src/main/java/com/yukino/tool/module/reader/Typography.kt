@@ -25,6 +25,7 @@ object Typography {
     // 页眉/页脚文字区高度(dp),悬浮于内容区上下留白内,不占版心
     const val TOP_GAP_DP: Int = 8
     const val PAGE_PADDING_DP: Int = 16
+    const val FOOTER_GAP_DP: Int = 24   // 页脚保留区: 正文底与页脚文字的间距
 
     const val FONT_MIN = 12f
     const val FONT_MAX = 32f
@@ -38,7 +39,7 @@ object Typography {
         val indentPx = if (s.indent) 2f * fontPx else 0f
         // 版心精确等于可见内容区: 顶 pad(16dp) + 页眉间距(8dp),底部无预留——
         // 每页剩余的零头空白由 BookPager.materialize 二次构建分配到页首/段距
-        val verticalChrome = ((PAGE_PADDING_DP + TOP_GAP_DP) * density).toInt()
+        val verticalChrome = ((PAGE_PADDING_DP + TOP_GAP_DP + FOOTER_GAP_DP) * density).toInt()
         return ResolvedTypography(
             fontPx = fontPx,
             lineExtraPx = fontPx * (s.lineSpacingPercent / 100f - 1f),

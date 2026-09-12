@@ -10,6 +10,7 @@ import android.text.style.LeadingMarginSpan
 import android.text.style.LineHeightSpan
 import android.text.style.RelativeSizeSpan
 import android.text.style.StyleSpan
+import kotlin.math.floor
 import kotlin.math.roundToInt
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -91,8 +92,7 @@ object ChapterComposer {
     internal fun applyParagraphSpacing(
         sb: SpannableStringBuilder, from: Int, to: Int,
         typo: ResolvedTypography, isParaStart: (Int) -> Boolean,
-        chapterHasBlank: Boolean? = null,
-        paraExtraDeltaPx: Float = 0f
+        chapterHasBlank: Boolean? = null
     ): Int {
         if (typo.paraExtraPx <= 0f && from >= to) return 0
         val fmf = Paint.FontMetrics()
@@ -112,9 +112,8 @@ object ChapterComposer {
         }
         if (chapterHasBlank != null) hasBlank = chapterHasBlank
 
-        // 段前距: 空行书扣除空行压缩后的残留高度,两种分格式观感一致;
-        // paraExtraDeltaPx: 垂直匀齐时本页均摊到底部剩余空白的部分
-        val extra = (resolveParaExtra(typo, hasBlank) + paraExtraDeltaPx.roundToInt()).coerceAtLeast(0)
+        // 段前距: 空行书扣除空行压缩后的残留高度,两种分格式观感一致
+        val extra = resolveParaExtra(typo, hasBlank)
         if (extra <= 0) return 0
         var paraCount = 0
         ls = from
@@ -292,20 +291,15 @@ object BookPager {
             ?: composed.length
         // 垂直匀齐两遍构建: 第一遍按基础段距测出内容高度,页底剩余空白一半下移页首、
         // 一半均摊到本页各段距(单处增量封顶 1 行高,章末页大空白不硬拉,仍留在页底)
+        // 垂直匀齐: 内容不足整页时,剩余空白由上下边距各分一半(内容整体下移一半)。
+        // 章节最后一页不分配,剩余空白自然留在页底
         val hasBlank = ChapterComposer.hasBlankLine(composed, bodyStart, composed.length)
-        val (text1, paras) = pageText(composed, s, e, spec.chapterTitle.length, typo, hasBlank)
-        var layout = Typography.buildLayout(text1, typo)
+        val text = pageText(composed, s, e, spec.chapterTitle.length, typo, hasBlank)
+        val layout = Typography.buildLayout(text, typo)
         var topAdd = 0f
         val leftover = typo.textHeight - layout.height
-        if (leftover > 0) {
-            topAdd = (leftover / 2f).coerceAtMost(typo.fontPx)
-            if (paras > 0) {
-                val gapAdd = ((leftover - topAdd) / paras).coerceAtMost(typo.fontPx)
-                if (gapAdd > 0f) {
-                    val (text2, _) = pageText(composed, s, e, spec.chapterTitle.length, typo, hasBlank, gapAdd)
-                    layout = Typography.buildLayout(text2, typo)
-                }
-            }
+        if (leftover > 0 && spec.chapterPageIndex < spec.chapterPageCount - 1) {
+            topAdd = leftover / 2f
         }
         val percent = percentOf(book, spec)
         val label = "第 ${spec.chapterPageIndex + 1}/${spec.chapterPageCount} 页 · ${(percent * 100).roundToInt()}%"
@@ -333,17 +327,14 @@ object BookPager {
     // 页文本 = 合成文本 [s, e) 的纯字符(丢弃测量 span,避免跨页裁剪污染)+ 本页样式重建:
     //  1) 标题样式延续到标题跨页的续页; 2) 段首缩进只给真正的段首(页首接段中不缩进);
     //  3) 两端对齐且页末行是段中行时补哨兵行,使页末行保持拉伸(渲染时按内容区裁掉);
-    //  4) paraExtraDeltaPx: 垂直匀齐时给本页每个段距追加的增量
-    // 返回 (页文本, 本页段落数)
     private fun pageText(
         composed: CharSequence,
         start: Int,
         end: Int,
         titleLength: Int,
         typo: ResolvedTypography,
-        chapterHasBlank: Boolean,
-        paraExtraDeltaPx: Float = 0f
-    ): Pair<CharSequence, Int> {
+        chapterHasBlank: Boolean
+    ): CharSequence {
         var e = end
         while (e > start && composed[e - 1] == '\n') e--   // 去章末残留空行
         var lead = start
@@ -378,13 +369,12 @@ object BookPager {
         }
         // 段距/空行压缩: 正文区(章首页需跳过标题块)内生效
         val spacingFrom = (bodyStart - base).coerceAtLeast(0)
-        var paras = 0
         if (spacingFrom < sb.length) {
-            paras = ChapterComposer.applyParagraphSpacing(sb, spacingFrom, sb.length, typo, { q ->
+            ChapterComposer.applyParagraphSpacing(sb, spacingFrom, sb.length, typo, { q ->
                 (q == spacingFrom && (base == 0 || composed[base - 1] == '\n')) || (q > 0 && sb[q - 1] == '\n')
-            }, chapterHasBlank, paraExtraDeltaPx)
+            }, chapterHasBlank)
         }
-        return sb to paras
+        return sb
     }
 }
 

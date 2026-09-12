@@ -46,6 +46,7 @@ class ReaderPageView(context: Context) : View(context) {
     private val shadowWidthPx = (SHADOW_WIDTH_DP * context.resources.displayMetrics.density).toInt()
     private val pagePadPx = (Typography.PAGE_PADDING_DP * context.resources.displayMetrics.density).toInt()
     private val topGapPx = (TOP_GAP_DP * context.resources.displayMetrics.density).toInt()
+    private val footerGapPx = (FOOTER_GAP_DP * context.resources.displayMetrics.density).toInt()
 
     init {
         shadowPaint.shader = LinearGradient(
@@ -193,7 +194,7 @@ class ReaderPageView(context: Context) : View(context) {
         val save2 = canvas.save()
         // 顶部加 8dp: 页眉与正文首行拉开间距
         val contentTop = topInsetPx + pagePadPx.toFloat() + topGapPx
-        val contentBottom = (height - bottomInsetPx).toFloat()
+        val contentBottom = (height - bottomInsetPx - footerGapPx).toFloat()
         canvas.clipRect(offsetX, contentTop, offsetX + width, contentBottom)
         val y = if (page.spec.kind == PageKind.CONTENT) contentTop + page.topOffsetPx
         else contentTop + (height - topInsetPx - bottomInsetPx - 2 * pagePadPx - page.layout.height) / 2f
@@ -219,5 +220,6 @@ class ReaderPageView(context: Context) : View(context) {
         private const val SHADOW_COLOR = 0x33000000
         private const val CHROME_TEXT_SP = 12f
         private const val TOP_GAP_DP = 8f   // 页眉与正文首行的额外间距
+        private const val FOOTER_GAP_DP = 24f // 正文底与页脚文字的间距(与 Typography.FOOTER_GAP_DP 一致)
     }
 }
