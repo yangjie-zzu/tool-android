@@ -7,6 +7,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.webkit.WebSettings
 import android.webkit.WebView
+import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -17,6 +18,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.viewinterop.AndroidView
 import com.yukino.tool.TAG
@@ -57,6 +59,19 @@ fun Web(
     LaunchedEffect(navigateKey) {
         if (navigateKey > 0) {
             navigateUrl?.let { innerWebView?.loadUrl(it) }
+        }
+    }
+
+    // 返回优化: 当前网页有历史记录时,返回键先回退网页历史;
+    // 没有历史(首页)才交还给系统返回(关闭页面)
+    val context = LocalContext.current
+    val backEnabled = innerWebView != null && active
+    BackHandler(enabled = backEnabled) {
+        val wv = innerWebView
+        if (wv != null && wv.canGoBack()) {
+            wv.goBack()
+        } else {
+            (context as? android.app.Activity)?.finish()
         }
     }
 
