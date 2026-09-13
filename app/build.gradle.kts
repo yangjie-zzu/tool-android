@@ -38,6 +38,14 @@ android {
         buildConfig = true
     }
 
+    // BuildConfig 里的 BUILD_TIME 每次构建都要刷新:
+    // AGP 不感知 buildConfigField 值的变化,不强制重跑会复用旧时间戳
+    tasks.configureEach {
+        if (name.startsWith("generate") && name.contains("BuildConfig")) {
+            outputs.upToDateWhen { false }
+        }
+    }
+
     testOptions {
         // 阅读器排版(JVM单测)需要 android.graphics.Paint 等桩返回默认值而非抛异常
         unitTests.isReturnDefaultValues = true
