@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -272,19 +273,24 @@ val WebBox: WebBoxFunc = { initUrl, onNew, onShowList, webLength, webIndex, acti
                 properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 24.dp),
+                    .fillMaxHeight(0.8f)
+                    .padding(horizontal = 12.dp, vertical = 12.dp),
                 title = { Text(text = "访问网址") },
                 text = {
+                    Column(modifier = Modifier.fillMaxSize()) {
                     OutlinedTextField(
                         value = urlInput,
                         onValueChange = { urlInput = it },
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f),
                         //多行软换行,长地址尽量完整显示
-                        maxLines = 5,
+                        maxLines = 20,
                         placeholder = { Text(text = "输入网址或搜索内容") },
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
                         keyboardActions = KeyboardActions(onGo = { navigate(urlInput) })
                     )
+                    }
                 },
                 confirmButton = {
                     TextButton(onClick = { navigate(urlInput) }) { Text(text = "访问") }
