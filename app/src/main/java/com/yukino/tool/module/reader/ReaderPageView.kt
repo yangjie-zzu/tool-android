@@ -189,7 +189,11 @@ class ReaderPageView(context: Context) : View(context) {
         if (page.footerLabel.isNotEmpty()) {
             chromePaint.textSize = textSize
             chromePaint.color = chromeColor
-            canvas.drawText(page.footerLabel, offsetX + t.marginPx, height - bottomInsetPx + textSize * 0.9f, chromePaint)
+            //页脚文字画在保留区内,距屏幕底部再留出边距,不贴底
+            canvas.drawText(
+                page.footerLabel, offsetX + t.marginPx,
+                height - bottomInsetPx - footerGapPx * 0.4f, chromePaint
+            )
         }
         val save2 = canvas.save()
         // 顶部加 8dp: 页眉与正文首行拉开间距
