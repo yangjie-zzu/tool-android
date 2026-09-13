@@ -268,6 +268,11 @@ val WebBox: WebBoxFunc = { initUrl, onNew, onShowList, webLength, webIndex, acti
         if (showUrlEdit) {
             AlertDialog(
                 onDismissRequest = { showUrlEdit = false },
+                //不受平台默认宽度限制,弹框近乎全屏宽,输入框尽量显示全地址
+                properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 24.dp),
                 title = { Text(text = "访问网址") },
                 text = {
                     OutlinedTextField(
