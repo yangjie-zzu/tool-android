@@ -1,6 +1,7 @@
 package com.yukino.tool.module.note
 
 import android.widget.Toast
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -59,26 +60,19 @@ internal fun PasswordDialog(
                     password = true
                 )
                 if (biometricOffer) {
-                    // 启用指纹提示: 验证主密码成功后,弹指纹认证把主密钥封存进Keystore,
-                    // 之后解锁/导出等验证均可直接使用指纹
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "启用指纹解锁",
-                                fontSize = 14.sp,
-                                fontWeight = androidx.compose.ui.text.font.FontWeight.Medium
-                            )
-                            Text(
-                                text = "本次验证成功后开启，下次免输主密码",
-                                fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        Switch(checked = enableBio, onCheckedChange = { enableBio = it })
-                    }
+                    // 启用指纹提示(可点击文字): 验证主密码成功后,弹指纹认证把主密钥
+                    // 封存进Keystore,之后解锁/导出等验证均可直接使用指纹
+                    Text(
+                        text = if (enableBio) "✓ 将在验证成功后启用指纹解锁(再点取消)"
+                        else "启用指纹解锁，下次免输主密码 »",
+                        fontSize = 12.sp,
+                        color = if (enableBio) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { enableBio = !enableBio }
+                            .padding(vertical = 4.dp)
+                    )
                 }
             }
         },
