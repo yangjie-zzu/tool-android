@@ -183,9 +183,11 @@ fun NoteApp() {
         Toast.makeText(context, "已复制 $label", Toast.LENGTH_SHORT).show()
     }
 
-    // 弹"输入主密码"对话框(挂起): 返回输入内容；用户取消返回null
-    suspend fun askPassword(title: String): String? = suspendCancellableCoroutine { cont ->
-        val request = PasswordRequest(title) { result ->
+    // 弹"输入主密码"对话框(挂起): 返回(密码, 是否同时启用指纹)；用户取消返回null。
+    // offerEnableBio=true 时对话框提供"启用指纹"开关(设备支持且应用未启用指纹才有意义)
+    suspend fun askPassword(title: String, offerEnableBio: Boolean = false): Pair<String, Boolean>? =
+        suspendCancellableCoroutine { cont ->
+        val request = PasswordRequest(title, offerEnableBio) { result ->
             if (cont.isActive) cont.resume(result)
         }
         pwdRequest = request
@@ -199,18 +201,6 @@ fun NoteApp() {
         }
         setupRequest = request
         cont.invokeOnCancellation { if (setupRequest == request) setupRequest = null }
-    }
-
-    // 主密码验证(挂起): 现场派生主密钥DK，密码错误提示后可重试；取消返回null
-    suspend fun requestKeyByPassword(title: String): ByteArray? {
-        while (true) {
-            val password = askPassword(title) ?: return null
-            try {
-                return withContext(Dispatchers.Default) { NoteCrypto.deriveWithPassword(context, password) }
-            } catch (e: Exception) {
-                Toast.makeText(context, "主密码错误", Toast.LENGTH_SHORT).show()
-            }
-        }
     }
 
     // 用已拿到的主密钥启用指纹: 弹指纹认证，成功后把它封存进Keystore密钥
@@ -240,6 +230,23 @@ fun NoteApp() {
             authenticating = false
         }
     }
+
+    // 主密码验证(挂起): 现场派生主密钥DK，密码错误提示后可重试；取消返回null。
+    // 设备支持指纹且应用未启用指纹时,对话框提供开关,验证成功后顺手启用指纹
+    suspend fun requestKeyByPassword(title: String): ByteArray? {
+        val offerBio = biometricUsable && !NoteCrypto.biometricEnabled(context)
+        while (true) {
+            val input = askPassword(title, offerBio) ?: return null
+            try {
+                val key = withContext(Dispatchers.Default) { NoteCrypto.deriveWithPassword(context, input.first) }
+                if (input.second) enableBiometricWith(key)
+                return key
+            } catch (e: Exception) {
+                Toast.makeText(context, "主密码错误", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
 
     // 常规取钥(不含迁移): 指纹优先，负按钮/未启用指纹退回主密码
     suspend fun obtainKeyNormal(reason: String): ByteArray? {
@@ -294,7 +301,7 @@ fun NoteApp() {
             // v1迁移: 旧格式没有校验值，只能"派生→解封旧VK"来验证密码，错误可重试
             Log.i(TAG, "obtainKey[$reason]: v1旧格式，进入迁移流程")
             while (true) {
-                val password = askPassword("迁移加密格式，验证主密码") ?: return null
+                val password = askPassword("迁移加密格式，验证主密码")?.first ?: return null
                 try {
                     var hadBio = false
                     val dk = withContext(Dispatchers.Default) {
@@ -433,10 +440,11 @@ fun NoteApp() {
     pwdRequest?.let { req ->
         PasswordDialog(
             title = req.title,
-            onConfirm = { password ->
+            biometricOffer = req.offerBio,
+            onConfirm = { password, enableBio ->
                 if (pwdRequest == req) {
                     pwdRequest = null
-                    req.onResult(password)
+                    req.onResult(password to enableBio)
                 }
             },
             onDismiss = {

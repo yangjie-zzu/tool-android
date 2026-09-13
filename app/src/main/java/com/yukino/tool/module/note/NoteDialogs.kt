@@ -28,7 +28,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 // 密码对话框请求: 非空时弹对话框；用户确定/取消后清空并回调结果(取消为null)，挂起方借此继续
-internal class PasswordRequest(val title: String, val onResult: (String?) -> Unit)
+internal class PasswordRequest(
+    val title: String,
+    val offerBio: Boolean,   // 设备支持且应用未启用指纹时,在对话框里提供"启用指纹"选项
+    val onResult: (Pair<String, Boolean>?) -> Unit
+)
 
 // 设置主密码对话框请求: 回调(密码, 是否同时启用指纹)，取消为null
 internal class SetupRequest(val onResult: (Pair<String, Boolean>?) -> Unit)
@@ -36,23 +40,49 @@ internal class SetupRequest(val onResult: (Pair<String, Boolean>?) -> Unit)
 @Composable
 internal fun PasswordDialog(
     title: String,
-    onConfirm: (String) -> Unit,
+    biometricOffer: Boolean,
+    onConfirm: (String, Boolean) -> Unit,
     onDismiss: () -> Unit
 ) {
     var password by remember { mutableStateOf("") }
+    var enableBio by remember { mutableStateOf(false) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(text = title) },
         text = {
-            NoteTextField(
-                value = password,
-                onValueChange = { password = it },
-                label = "主密码",
-                modifier = Modifier.fillMaxWidth(),
-                password = true
-            )
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                NoteTextField(
+                    value = password,
+                    onValueChange = { password = it },
+                    label = "主密码",
+                    modifier = Modifier.fillMaxWidth(),
+                    password = true
+                )
+                if (biometricOffer) {
+                    // 启用指纹提示: 验证主密码成功后,弹指纹认证把主密钥封存进Keystore,
+                    // 之后解锁/导出等验证均可直接使用指纹
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "启用指纹解锁",
+                                fontSize = 14.sp,
+                                fontWeight = androidx.compose.ui.text.font.FontWeight.Medium
+                            )
+                            Text(
+                                text = "本次验证成功后开启，下次免输主密码",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(checked = enableBio, onCheckedChange = { enableBio = it })
+                    }
+                }
+            }
         },
-        confirmButton = { TextButton(onClick = { onConfirm(password) }) { Text("确定") } },
+        confirmButton = { TextButton(onClick = { onConfirm(password, enableBio) }) { Text("确定") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
     )
 }
