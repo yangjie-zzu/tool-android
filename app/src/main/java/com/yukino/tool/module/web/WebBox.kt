@@ -274,7 +274,8 @@ val WebBox: WebBoxFunc = { initUrl, onNew, onShowList, webLength, webIndex, acti
                         value = urlInput,
                         onValueChange = { urlInput = it },
                         modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
+                        //多行软换行,长地址尽量完整显示
+                        maxLines = 5,
                         placeholder = { Text(text = "输入网址或搜索内容") },
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
                         keyboardActions = KeyboardActions(onGo = { navigate(urlInput) })
