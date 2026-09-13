@@ -9,6 +9,7 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -40,7 +41,10 @@ fun Web(
             webview.loadUrl("https://www.google.com/search?q=${selectedText}")
         }
     },
-    onHistory: ((webview: CustomWebView, url: String?, isReload: Boolean) -> Unit)? = null
+    onHistory: ((webview: CustomWebView, url: String?, isReload: Boolean) -> Unit)? = null,
+    //外部导航命令: navigateKey 每自增一次,就加载一次 navigateUrl(用于地址栏输入访问)
+    navigateUrl: String? = null,
+    navigateKey: Int = 0
 ) {
 
     val innerOnlyOpenSameSite by rememberUpdatedState(onlyOpenSameSite)
@@ -51,6 +55,12 @@ fun Web(
 
     var innerWebView: WebView? by remember {
         mutableStateOf(null)
+    }
+
+    LaunchedEffect(navigateKey) {
+        if (navigateKey > 0) {
+            navigateUrl?.let { innerWebView?.loadUrl(it) }
+        }
     }
 
     DisposableEffect(innerWebView, active) {

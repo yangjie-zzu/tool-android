@@ -12,31 +12,25 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.text.input.TextFieldLineLimits
-import androidx.compose.foundation.text.input.delete
-import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Clear
-import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -48,20 +42,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.platform.LocalFocusManager
-import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Popup
-import androidx.compose.ui.window.PopupProperties
 import com.yukino.tool.components.text
 import com.yukino.tool.module.web.Web
 import kotlinx.coroutines.delay
@@ -93,8 +80,6 @@ val WebBox: WebBoxFunc = { initUrl, onNew, onShowList, webLength, webIndex, acti
         mutableFloatStateOf(0f)
     }
 
-    val urlState = rememberTextFieldState(initialText = url)
-
     var title by remember {
         mutableStateOf<String?>(null)
     }
@@ -103,9 +88,30 @@ val WebBox: WebBoxFunc = { initUrl, onNew, onShowList, webLength, webIndex, acti
         mutableStateOf<Bitmap?>(null)
     }
 
-    //完整地址弹层开关：图标在底部栏，弹层锚定在内容区底部(即蓝条上沿)
-    var showFullUrl by remember {
+    //长输入框: 点击底栏地址文字弹出,确认后直接访问
+    var showUrlEdit by remember {
         mutableStateOf(false)
+    }
+    var urlInput by remember {
+        mutableStateOf("")
+    }
+
+    var navUrl by remember {
+        mutableStateOf<String?>(null)
+    }
+    var navKey by remember {
+        mutableStateOf(0)
+    }
+
+    fun navigate(target: String) {
+        url = if (target.startsWith("http://") || target.startsWith("https://")) {
+            target
+        } else {
+            "https://www.google.com/search?q=$target"
+        }
+        navUrl = url
+        navKey++   // 触发 Web 组件加载
+        showUrlEdit = false
     }
 
     Column(
@@ -155,13 +161,7 @@ val WebBox: WebBoxFunc = { initUrl, onNew, onShowList, webLength, webIndex, acti
                 initUrl = url,
                 onNew = onNew,
                 active = active,
-                onUrlChange = {
-                    val newUrl = it ?: ""
-                    urlState.edit {
-                        this.replace(0, this.length, newUrl)
-                    }
-                    url = newUrl
-                },
+                onUrlChange = { url = it ?: "" },
                 onProgressChange = {
                     progress = it
                 },
@@ -175,45 +175,10 @@ val WebBox: WebBoxFunc = { initUrl, onNew, onShowList, webLength, webIndex, acti
                     }
                     onNew?.invoke(openUrl)
                 },
-                onlyOpenSameSite = onlyOpenSameSite
+                onlyOpenSameSite = onlyOpenSameSite,
+                navigateUrl = navUrl,
+                navigateKey = navKey
             )
-            if (showFullUrl) {
-                //锚定内容区底部:弹层底边即蓝色底栏顶边，不遮挡底栏，无需offset
-                Popup(
-                    alignment = Alignment.BottomStart,
-                    onDismissRequest = { showFullUrl = false },
-                    properties = PopupProperties(focusable = true)
-                ) {
-                    Surface(
-                        shape = RoundedCornerShape(4.dp),
-                        shadowElevation = 3.dp,
-                        color = MaterialTheme.colorScheme.surface
-                    ) {
-                        Column(
-                            modifier = Modifier
-                                .widthIn(max = 300.dp)
-                                .padding(start = 10.dp, top = 6.dp, end = 10.dp, bottom = 10.dp)
-                        ) {
-                            Text(
-                                text = "地址",
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            //点击弹层内容本身也可关闭
-                            Text(
-                                text = url,
-                                modifier = Modifier
-                                    .padding(top = 2.dp)
-                                    .heightIn(max = 380.dp)
-                                    .verticalScroll(rememberScrollState())
-                                    .clickable { showFullUrl = false },
-                                softWrap = true,
-                                fontSize = 14.sp
-                            )
-                        }
-                    }
-                }
-            }
         }
 
         Row(
@@ -226,93 +191,18 @@ val WebBox: WebBoxFunc = { initUrl, onNew, onShowList, webLength, webIndex, acti
             horizontalArrangement = Arrangement.spacedBy(15.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(
-                modifier = Modifier.clickable {
-                    showFullUrl = !showFullUrl
-                },
-                imageVector = Icons.Default.Info,
-                contentDescription = "地址",
-                tint = Color.White
-            )
-            val focusRequest = remember {
-                FocusRequester()
-            }
-            val focusManager = LocalFocusManager.current
-            val keyboardController = LocalSoftwareKeyboardController.current
-            var showInput by remember {
-                mutableStateOf(false)
-            }
-            BasicTextField(
+            //点击地址文字弹出长输入框，确认后直接访问
+            Text(
+                text = url,
+                color = Color.White,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
                 modifier = Modifier
                     .weight(1f)
-                    .height(32.dp)
-                    .focusRequester(focusRequest)
-                    .onFocusChanged {
-                        showInput = it.isFocused
-                    },
-                state = urlState,
-                lineLimits = TextFieldLineLimits.SingleLine,
-                decorator = { innerTextField ->
-                    if (showInput) {
-                        Surface(
-                            modifier = Modifier.fillMaxSize(),
-                            shape = RoundedCornerShape(40.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .padding(start = 15.dp, end = 2.dp, top = 2.dp, bottom = 2.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Box(
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    innerTextField()
-                                }
-                                if (urlState.text.isNotEmpty()) {
-                                    Icon(
-                                        modifier = Modifier
-                                            .padding(4.dp)
-                                            .clickable {
-                                                urlState.edit {
-                                                    this.delete(0, this.length)
-                                                }
-                                                focusRequest.requestFocus()
-                                            },
-                                        imageVector = Icons.Default.Clear,
-                                        contentDescription = "清空"
-                                    )
-                                }
-                            }
-
-                        }
-                    } else {
-                        Box(
-                            modifier = Modifier.fillMaxSize(),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = url,
-                                color = Color.White,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
+                    .clickable {
+                        urlInput = url
+                        showUrlEdit = true
                     }
-                },
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                onKeyboardAction = {
-                    val text = urlState.text.toString()
-                    url = if (
-                        text.startsWith("http://")
-                        || text.startsWith("https://")) {
-                        text
-                    } else {
-                        "https://www.google.com/search?q=${text}"
-                    }
-                    focusManager.clearFocus()
-                    keyboardController?.hide()
-//                    showInput = false
-                }
             )
             Icon(
                 modifier = Modifier.clickable {
@@ -373,6 +263,30 @@ val WebBox: WebBoxFunc = { initUrl, onNew, onShowList, webLength, webIndex, acti
                     )
                 }
             }
+        }
+
+        if (showUrlEdit) {
+            AlertDialog(
+                onDismissRequest = { showUrlEdit = false },
+                title = { Text(text = "访问网址") },
+                text = {
+                    OutlinedTextField(
+                        value = urlInput,
+                        onValueChange = { urlInput = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        placeholder = { Text(text = "输入网址或搜索内容") },
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
+                        keyboardActions = KeyboardActions(onGo = { navigate(urlInput) })
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = { navigate(urlInput) }) { Text(text = "访问") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showUrlEdit = false }) { Text(text = "取消") }
+                }
+            )
         }
     }
 }
