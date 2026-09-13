@@ -21,9 +21,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.yukino.tool.BuildConfig
+import com.yukino.tool.R
 import com.yukino.tool.components.MenuCard
 import com.yukino.tool.module.bluetooth.BluetoothActivity
 import com.yukino.tool.module.compress.CompressActivity
@@ -54,7 +56,7 @@ fun Home() {
             ) {
                 Text(text = "个人工具集")
                 Text(
-                    text = "v${BuildConfig.VERSION_NAME} · 构建于 ${BuildConfig.BUILD_TIME}",
+                    text = stringResource(R.string.build_time).let { "v${BuildConfig.VERSION_NAME} · 构建于 $it" },
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

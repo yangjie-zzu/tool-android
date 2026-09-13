@@ -29,9 +29,11 @@ android {
         }
         resValue("string", "app_name", baseAppName)
 
-        // 每次构建记录构建时间,主页展示(配置阶段每次构建都会重新求值)
+        // 每次构建记录构建时间,主页展示(配置阶段每次构建都会重新求值)。
+        // 用 resValue 而非 buildConfigField: 字符串资源运行时读取,
+        // 不会被 Kotlin 内联进调用处,避免增量编译残留旧时间
         val buildTime = SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(Date())
-        buildConfigField("String", "BUILD_TIME", "\"$buildTime\"")
+        resValue("string", "build_time", "\"$buildTime\"")
     }
 
     buildFeatures {
@@ -41,7 +43,7 @@ android {
     // BuildConfig 里的 BUILD_TIME 每次构建都要刷新:
     // AGP 不感知 buildConfigField 值的变化,不强制重跑会复用旧时间戳
     tasks.configureEach {
-        if (name.startsWith("generate") && name.contains("BuildConfig")) {
+        if (name.startsWith("generate") && (name.contains("BuildConfig") || name.contains("ResValues"))) {
             outputs.upToDateWhen { false }
         }
     }
