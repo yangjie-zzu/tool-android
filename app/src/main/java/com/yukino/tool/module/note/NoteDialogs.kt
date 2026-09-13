@@ -45,6 +45,7 @@ internal fun PasswordDialog(
     onConfirm: (String, Boolean) -> Unit,
     onDismiss: () -> Unit
 ) {
+    val context = LocalContext.current
     var password by remember { mutableStateOf("") }
     var enableBio by remember { mutableStateOf(false) }
     AlertDialog(
@@ -60,17 +61,21 @@ internal fun PasswordDialog(
                     password = true
                 )
                 if (biometricOffer) {
-                    // 启用指纹提示(可点击文字): 验证主密码成功后,弹指纹认证把主密钥
-                    // 封存进Keystore,之后解锁/导出等验证均可直接使用指纹
+                    // 启用指纹提示(可点击文字): 点击即以当前主密码提交并弹出指纹认证,
+                    // 认证成功后主密钥封存进Keystore,之后解锁/导出等验证均可直接使用指纹
                     Text(
-                        text = if (enableBio) "✓ 将在验证成功后启用指纹解锁(再点取消)"
-                        else "启用指纹解锁，下次免输主密码 »",
+                        text = "启用指纹解锁，点击立即认证 »",
                         fontSize = 12.sp,
-                        color = if (enableBio) MaterialTheme.colorScheme.primary
-                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = MaterialTheme.colorScheme.primary,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { enableBio = !enableBio }
+                            .clickable {
+                                if (password.isBlank()) {
+                                    Toast.makeText(context, "请先输入主密码，再点击启用指纹", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    onConfirm(password, true)
+                                }
+                            }
                             .padding(vertical = 4.dp)
                     )
                 }
