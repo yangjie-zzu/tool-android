@@ -28,7 +28,6 @@ fun Web(
     initUrl: String?,
     onlyOpenSameSite: Boolean = false,
     active: Boolean = false,
-    onNew: ((url: String) -> Unit)? = null,
     onProgressChange: (progress: Float) -> Unit = {},
     onUrlChange: (url: String?) -> Unit = {},
     onTitleChange: (title: String?) -> Unit = {},
@@ -48,8 +47,6 @@ fun Web(
 ) {
 
     val innerOnlyOpenSameSite by rememberUpdatedState(onlyOpenSameSite)
-
-    val innerOnNew by rememberUpdatedState(onNew)
 
     val currentCoroutineScope = rememberCoroutineScope()
 
@@ -118,12 +115,7 @@ fun Web(
                         loadUrl(url)
                         return true
                     }
-                    val openInNewWebView = innerOnNew
-                    if (openInNewWebView != null && url != null) {
-                        Log.i(TAG, "openUrl: 新webview打开 $url")
-                        openInNewWebView(url)
-                        return true
-                    }
+                    //跳转一律在当前webview加载，不再新开
                     return super.openUrl(url)
                 }
 

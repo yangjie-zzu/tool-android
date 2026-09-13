@@ -160,7 +160,6 @@ val WebBox: WebBoxFunc = { initUrl, onNew, onShowList, webLength, webIndex, acti
         ) {
             Web(
                 initUrl = url,
-                onNew = onNew,
                 active = active,
                 onUrlChange = { url = it ?: "" },
                 onProgressChange = {
