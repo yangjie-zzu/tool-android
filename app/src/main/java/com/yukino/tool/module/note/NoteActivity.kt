@@ -36,6 +36,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
+import kotlinx.serialization.Serializable
 
 private const val TAG = "Note"
 
@@ -55,6 +59,16 @@ class NoteActivity : FragmentActivity() {
         }
     }
 }
+
+// 内部导航路由(与解压缩模块统一): 列表/设置/编辑
+@Serializable
+object NoteListRoute
+
+@Serializable
+object NoteSettingsRoute
+
+@Serializable
+object NoteEditorRoute
 
 // 指纹认证结果: 成功(带加密对象)或出错(code为BiometricPrompt错误码)
 private sealed interface BioAuth {
@@ -174,13 +188,7 @@ fun NoteApp() {
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    //系统返回键: 编辑→列表，设置→列表
-    BackHandler(enabled = ui.editing != null || ui.showSettings) {
-        ui = when {
-            ui.editing != null -> ui.copy(editing = null, editingIsNew = false)
-            else -> ui.copy(showSettings = false)
-        }
-    }
+    val navController = rememberNavController()
 
     fun copyText(label: String, value: String) {
         clipboard.setText(AnnotatedString(value))
@@ -481,71 +489,12 @@ fun NoteApp() {
         )
     }
 
-    // ---------- 页面路由 ----------
+    // ---------- 页面路由(navigation统一模式) ----------
 
-    if (ui.showSettings) {
-        SettingsPage(
+    NavHost(navController = navController, startDestination = NoteListRoute) {
+        composable<NoteListRoute> {
+            ListPage(
             entries = ui.entries,
-            bioVersion = bioVersion,
-            onUnlock = { reason -> unlockSecrets(reason) },
-            onSetupMaster = { scope.launch { setupMasterFlow() } },
-            onChangeMasterPassword = { oldPw, newPw ->
-                scope.launch {
-                    try {
-                        val (newDk, hadBio) = withContext(Dispatchers.Default) {
-                            NoteCrypto.changeMasterPassword(context, oldPw, newPw)
-                        }
-                        Toast.makeText(context, "主密码已修改", Toast.LENGTH_SHORT).show()
-                        // 指纹封存随旧密钥失效: 原启用过则自动引导重新认证封存新主密钥
-                        if (hadBio) enableBiometricWith(newDk)
-                    } catch (e: Exception) {
-                        Toast.makeText(context, e.message ?: "修改失败", Toast.LENGTH_LONG).show()
-                    }
-                }
-            },
-            onEnableBiometric = {
-                if (NoteCrypto.masterReady(context)) {
-                    enableBiometric()
-                } else {
-                    Toast.makeText(context, "请先设置主密码", Toast.LENGTH_SHORT).show()
-                }
-            },
-            onDisableBiometric = {
-                NoteCrypto.disableBiometric(context)
-                bioVersion++
-                Toast.makeText(context, "指纹已停用", Toast.LENGTH_SHORT).show()
-            }
-        )
-        return
-    }
-
-    ui.editing?.let { editing ->
-        EditorPage(
-            entry = editing,
-            isNew = ui.editingIsNew,
-            secrets = ui.secrets,
-            onUnlock = { reason ->
-                unlockSecrets(reason).also { s -> if (s != null) ui = ui.copy(secrets = s) }
-            },
-            onSave = { entry, secrets, secretTouched ->
-                val list = ui.entries.toMutableList()
-                val index = list.indexOfFirst { it.id == entry.id }
-                if (index >= 0) list[index] = entry else list.add(entry)
-                persist(list, entry.id, secrets, secretTouched)
-            },
-            onDelete = { entry ->
-                val list = ui.entries.filterNot { it.id == entry.id }
-                // 只有真的存了加密值的条目，删除才需要验证(要从加密段摘除数据)；
-                // 字段有但值为空 → 加密段里本来就没有它的数据，和纯明文一样直接删
-                persist(list, entry.id, emptyMap(), entry.fields.any { it.secret && it.value.isNotBlank() })
-            },
-            onCancel = { ui = ui.copy(editing = null, editingIsNew = false) }
-        )
-        return
-    }
-
-    ListPage(
-        entries = ui.entries,
         secrets = ui.secrets,
         revealed = ui.revealed,
         nowSeconds = nowSeconds,
@@ -591,8 +540,77 @@ fun NoteApp() {
                 }
             }
         },
-        onEdit = { entry -> ui = ui.copy(editing = entry, editingIsNew = false) },
-        onAdd = { ui = ui.copy(editing = newTemplateEntry(), editingIsNew = true) },
-        onSettings = { ui = ui.copy(showSettings = true) }
-    )
+        onEdit = { entry ->
+                    ui = ui.copy(editing = entry, editingIsNew = false)
+                    navController.navigate(NoteEditorRoute)
+                },
+        onAdd = {
+                    ui = ui.copy(editing = newTemplateEntry(), editingIsNew = true)
+                    navController.navigate(NoteEditorRoute)
+                },
+        onSettings = { navController.navigate(NoteSettingsRoute) }
+            )
+        }
+        composable<NoteSettingsRoute> {
+        SettingsPage(
+            entries = ui.entries,
+            bioVersion = bioVersion,
+            onUnlock = { reason -> unlockSecrets(reason) },
+            onSetupMaster = { scope.launch { setupMasterFlow() } },
+            onChangeMasterPassword = { oldPw, newPw ->
+                scope.launch {
+                    try {
+                        val (newDk, hadBio) = withContext(Dispatchers.Default) {
+                            NoteCrypto.changeMasterPassword(context, oldPw, newPw)
+                        }
+                        Toast.makeText(context, "主密码已修改", Toast.LENGTH_SHORT).show()
+                        // 指纹封存随旧密钥失效: 原启用过则自动引导重新认证封存新主密钥
+                        if (hadBio) enableBiometricWith(newDk)
+                    } catch (e: Exception) {
+                        Toast.makeText(context, e.message ?: "修改失败", Toast.LENGTH_LONG).show()
+                    }
+                }
+            },
+            onEnableBiometric = {
+                if (NoteCrypto.masterReady(context)) {
+                    enableBiometric()
+                } else {
+                    Toast.makeText(context, "请先设置主密码", Toast.LENGTH_SHORT).show()
+                }
+            },
+            onDisableBiometric = {
+                NoteCrypto.disableBiometric(context)
+                bioVersion++
+                Toast.makeText(context, "指纹已停用", Toast.LENGTH_SHORT).show()
+            }
+        )
+        }
+        composable<NoteEditorRoute> {
+            //离开编辑页(返回/保存/取消)时清理编辑态, 防止残留影响下次进入
+            DisposableEffect(Unit) {
+                onDispose { ui = ui.copy(editing = null, editingIsNew = false) }
+            }
+        EditorPage(
+            entry = ui.editing ?: return@composable,
+            isNew = ui.editingIsNew,
+            secrets = ui.secrets,
+            onUnlock = { reason ->
+                unlockSecrets(reason).also { s -> if (s != null) ui = ui.copy(secrets = s) }
+            },
+            onSave = { entry, secrets, secretTouched ->
+                val list = ui.entries.toMutableList()
+                val index = list.indexOfFirst { it.id == entry.id }
+                if (index >= 0) list[index] = entry else list.add(entry)
+                persist(list, entry.id, secrets, secretTouched)
+            },
+            onDelete = { entry ->
+                val list = ui.entries.filterNot { it.id == entry.id }
+                // 只有真的存了加密值的条目，删除才需要验证(要从加密段摘除数据)；
+                // 字段有但值为空 → 加密段里本来就没有它的数据，和纯明文一样直接删
+                persist(list, entry.id, emptyMap(), entry.fields.any { it.secret && it.value.isNotBlank() })
+            },
+            onCancel = { navController.popBackStack() }
+        )
+        }
+    }
 }

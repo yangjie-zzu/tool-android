@@ -14,6 +14,7 @@ import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.DateRange
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Person
+import androidx.compose.material.icons.rounded.QrCodeScanner
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -32,6 +33,7 @@ import com.yukino.tool.module.compress.CompressActivity
 import com.yukino.tool.module.ip.IpActivity
 import com.yukino.tool.module.note.NoteActivity
 import com.yukino.tool.module.reader.ReaderActivity
+import com.yukino.tool.module.scan.ScanActivity
 import com.yukino.tool.util.rememberCurrentActivity
 import com.yukino.tool.module.web.WebActivity
 import kotlinx.coroutines.launch
@@ -168,6 +170,23 @@ fun Home() {
                         imageVector = Icons.AutoMirrored.Rounded.MenuBook,
                         contentDescription = "阅读"
                     )
+                }
+            }
+            item {
+                MenuCard(
+                    onClick = {
+                        activity.startActivity(
+                            Intent(
+                                activity,
+                                ScanActivity::class.java
+                            ).also {
+                                it.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                            }
+                        )
+                    },
+                    title = { Text(text = "扫一扫") }
+                ) {
+                    Icon(imageVector = Icons.Rounded.QrCodeScanner, contentDescription = "扫码")
                 }
             }
         })

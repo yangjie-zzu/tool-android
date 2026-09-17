@@ -49,6 +49,12 @@
                 <data android:scheme="https" />
             </intent-filter>
         </activity>
+        <activity android:name=".module.scan.ScanActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Tool"
+            android:taskAffinity="${applicationId}.scan"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            />
         <activity android:name=".module.compress.CompressActivity"
             android:exported="true"
             android:theme="@style/Theme.Tool"
