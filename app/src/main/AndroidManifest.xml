@@ -38,7 +38,16 @@
             android:theme="@style/Theme.Tool"
             android:taskAffinity="${applicationId}.web"
             android:enableOnBackInvokedCallback="true"
+            android:configChanges="orientation|screenSize|keyboardHidden"
             >
+            <!-- 注册为浏览器: 其他应用"用浏览器打开"时可选到本应用 -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="http" />
+                <data android:scheme="https" />
+            </intent-filter>
         </activity>
         <activity android:name=".module.compress.CompressActivity"
             android:exported="true"

@@ -61,23 +61,15 @@ internal fun PasswordDialog(
                     password = true
                 )
                 if (biometricOffer) {
-                    // 启用指纹提示(可点击文字): 点击即以当前主密码提交并弹出指纹认证,
-                    // 认证成功后主密钥封存进Keystore,之后解锁/导出等验证均可直接使用指纹
-                    Text(
-                        text = "启用指纹解锁，点击立即认证 »",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                if (password.isBlank()) {
-                                    Toast.makeText(context, "请先输入主密码，再点击启用指纹", Toast.LENGTH_SHORT).show()
-                                } else {
-                                    onConfirm(password, true)
-                                }
-                            }
-                            .padding(vertical = 4.dp)
-                    )
+                    // 指纹开关: 勾选后点"确定"，主密码验证成功即弹出指纹认证完成启用
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "同时启用指纹(用于查看/复制)",
+                            fontSize = 13.sp,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Switch(checked = enableBio, onCheckedChange = { enableBio = it })
+                    }
                 }
             }
         },

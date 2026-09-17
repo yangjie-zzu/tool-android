@@ -14,6 +14,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -142,6 +143,9 @@ fun NoteApp() {
     // 指纹弹窗展示期间不清缓存(弹窗会让Activity暂停)
     var authenticating by remember { mutableStateOf(false) }
 
+    // 指纹状态版本号: 启用/停用等落盘操作后自增,设置页据此重读指纹状态(文件写入本身不触发重组)
+    var bioVersion by remember { mutableIntStateOf(0) }
+
     // 2FA验证码的秒级时钟(列表里展开的动态码每秒刷新)
     var nowSeconds by remember { mutableStateOf(System.currentTimeMillis() / 1000) }
     LaunchedEffect(Unit) {
@@ -228,15 +232,16 @@ fun NoteApp() {
             }
         } finally {
             authenticating = false
+            bioVersion++
         }
     }
 
     // 主密码验证(挂起): 现场派生主密钥DK，密码错误提示后可重试；取消返回null。
-    // 设备支持指纹且应用未启用指纹时,对话框提供开关,验证成功后顺手启用指纹
-    suspend fun requestKeyByPassword(title: String): ByteArray? {
-        val offerBio = biometricUsable && !NoteCrypto.biometricEnabled(context)
+    // 设备支持指纹且应用未启用指纹时,对话框提供开关,验证成功后顺手启用指纹；
+    // offerEnableBio=false 可强制不提供开关(如设置页"启用指纹"入口，意图已明确无需开关)
+    suspend fun requestKeyByPassword(title: String, offerEnableBio: Boolean = biometricUsable && !NoteCrypto.biometricEnabled(context)): ByteArray? {
         while (true) {
-            val input = askPassword(title, offerBio) ?: return null
+            val input = askPassword(title, offerEnableBio) ?: return null
             try {
                 val key = withContext(Dispatchers.Default) { NoteCrypto.deriveWithPassword(context, input.first) }
                 if (input.second) enableBiometricWith(key)
@@ -249,7 +254,7 @@ fun NoteApp() {
 
 
     // 常规取钥(不含迁移): 指纹优先，负按钮/未启用指纹退回主密码
-    suspend fun obtainKeyNormal(reason: String): ByteArray? {
+    suspend fun obtainKeyNormal(reason: String, offerEnableBio: Boolean): ByteArray? {
         val cipher = NoteCrypto.bioDecryptCipher(context)
         if (NoteCrypto.biometricEnabled(context) && canBiometric(activity) && cipher != null) {
             Log.i(TAG, "obtainKey[$reason]: 走指纹路径")
@@ -286,7 +291,7 @@ fun NoteApp() {
         } else {
             Log.i(TAG, "obtainKey[$reason]: 走主密码路径(biometricEnabled=${NoteCrypto.biometricEnabled(context)}, canBio=${canBiometric(activity)}, cipher!=null=${cipher != null})")
         }
-        return requestKeyByPassword(reason)
+        return requestKeyByPassword(reason, offerEnableBio)
     }
 
     /*
@@ -296,7 +301,7 @@ fun NoteApp() {
      * v3 → 直接走常规取钥(指纹优先，主密码兜底)。
      * 返回null = 用户取消或验证失败(提示已在内部给出)。
      */
-    suspend fun obtainKey(reason: String): ByteArray? {
+    suspend fun obtainKey(reason: String, offerEnableBio: Boolean = biometricUsable && !NoteCrypto.biometricEnabled(context)): ByteArray? {
         if (NoteCrypto.isLegacy(context)) {
             // v1迁移: 旧格式没有校验值，只能"派生→解封旧VK"来验证密码，错误可重试
             Log.i(TAG, "obtainKey[$reason]: v1旧格式，进入迁移流程")
@@ -323,7 +328,7 @@ fun NoteApp() {
                 }
             }
         }
-        val key = obtainKeyNormal(reason) ?: return null
+        val key = obtainKeyNormal(reason, offerEnableBio) ?: return null
         if (NoteCrypto.isV2(context)) {
             try {
                 withContext(Dispatchers.IO) { NoteCrypto.migrateV2(context, key) }
@@ -426,10 +431,11 @@ fun NoteApp() {
         }
     }
 
-    // 启用指纹: 需要主密钥(按需验证获取)，再弹指纹认证把它封存进Keystore密钥
+    // 启用指纹: 需要主密钥(按需验证获取)，再弹指纹认证把它封存进Keystore密钥。
+    // 启用意图已明确，验证对话框不提供"同时启用指纹"开关(offerEnableBio=false)
     fun enableBiometric() {
         scope.launch {
-            val key = obtainKey("启用指纹") ?: return@launch
+            val key = obtainKey("启用指纹", offerEnableBio = false) ?: return@launch
             enableBiometricWith(key)
         }
     }
@@ -480,6 +486,7 @@ fun NoteApp() {
     if (ui.showSettings) {
         SettingsPage(
             entries = ui.entries,
+            bioVersion = bioVersion,
             onUnlock = { reason -> unlockSecrets(reason) },
             onSetupMaster = { scope.launch { setupMasterFlow() } },
             onChangeMasterPassword = { oldPw, newPw ->
@@ -505,6 +512,7 @@ fun NoteApp() {
             },
             onDisableBiometric = {
                 NoteCrypto.disableBiometric(context)
+                bioVersion++
                 Toast.makeText(context, "指纹已停用", Toast.LENGTH_SHORT).show()
             }
         )

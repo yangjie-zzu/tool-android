@@ -27,6 +27,8 @@ import androidx.compose.material.icons.rounded.Clear
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.QrCodeScanner
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Visibility
+import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -57,6 +59,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
@@ -146,6 +149,8 @@ internal fun EditorPage(
                 var showConfig by remember { mutableStateOf(false) }
                 var showDelete by remember { mutableStateOf(false) }
                 var scanning by remember { mutableStateOf(false) }
+                //加密字段输入掩码开关: 默认掩码，点眼睛临时切明文(仅编辑显示层，值始终明文)
+                var showPlain by remember { mutableStateOf(false) }
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.background),
@@ -175,6 +180,11 @@ internal fun EditorPage(
                                     }
                                 },
                                 onLabelClick = { showConfig = true },
+                                secret = field.secret && !locked,
+                                showPlain = showPlain,
+                                onTogglePlain = if (field.secret && !locked) {
+                                    { showPlain = !showPlain }
+                                } else null,
                                 modifier = Modifier.fillMaxWidth()
                             )
                             if (locked) {
@@ -205,7 +215,8 @@ internal fun EditorPage(
                                     tint = if (locked) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.primary,
                                     modifier = Modifier
                                         .align(Alignment.CenterEnd)
-                                        .padding(end = 10.dp)
+                                        //加密字段有掩码切换眼睛图标时,扫码图标左移让位
+                                        .padding(end = if (field.secret && !locked) 44.dp else 10.dp)
                                         .clip(CircleShape)
                                         .clickable { scanning = true }
                                         .padding(4.dp)
@@ -529,25 +540,41 @@ internal fun FieldValueInput(
     value: String,
     onValueChange: (String) -> Unit,
     onLabelClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    secret: Boolean = false,
+    showPlain: Boolean = false,
+    onTogglePlain: (() -> Unit)? = null
 ) {
     var focused by remember { mutableStateOf(false) }
     //配色对齐M3规范: 未聚焦边框=outline、聚焦=primary；label未聚焦=onSurfaceVariant、聚焦=primary
     val borderColor = if (focused) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
     val labelColor = if (focused) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+    val hasTrailing = onTogglePlain != null
     Box(modifier) {
         BasicTextField(
             value = value,
             onValueChange = onValueChange,
             textStyle = LocalTextStyle.current.copy(color = MaterialTheme.colorScheme.onSurface),
             cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+            visualTransformation = if (secret && !showPlain) {
+                PasswordVisualTransformation()
+            } else {
+                VisualTransformation.None
+            },
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(min = 48.dp)
                 .border(1.dp, borderColor, MaterialTheme.shapes.small)
                 .padding(top = 10.dp),
             decorationBox = { inner ->
-                Box(modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 8.dp)) { inner() }
+                //右侧留出掩码切换图标的位置，避免文字压到图标下
+                Box(
+                    modifier = Modifier.padding(
+                        start = 12.dp,
+                        end = if (hasTrailing) 44.dp else 12.dp,
+                        bottom = 8.dp
+                    )
+                ) { inner() }
             }
         )
         //label: 悬浮在边框上遮住边框线(固定18dp高度并上移半高，与边框线垂直居中)，整体可点击
@@ -573,6 +600,21 @@ internal fun FieldValueInput(
                     .padding(start = 2.dp)
                     .size(14.dp),
                 tint = labelColor
+            )
+        }
+        //掩码切换(眼睛): 悬浮输入框右侧，编辑器外层的扫码图标会再往左让位
+        if (onTogglePlain != null) {
+            Icon(
+                imageVector = if (showPlain) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
+                contentDescription = if (showPlain) "切换为掩码" else "切换为明文",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .padding(end = 10.dp)
+                    .clip(CircleShape)
+                    .clickable { onTogglePlain() }
+                    .padding(4.dp)
+                    .size(20.dp)
             )
         }
     }

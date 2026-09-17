@@ -40,6 +40,7 @@ import java.util.Locale
 @Composable
 internal fun SettingsPage(
     entries: List<NoteEntry>,
+    bioVersion: Int = 0,
     onUnlock: suspend (String) -> Map<String, String>?,
     onSetupMaster: () -> Unit,
     onChangeMasterPassword: suspend (String, String) -> Unit,
@@ -47,11 +48,13 @@ internal fun SettingsPage(
     onDisableBiometric: () -> Unit
 ) {
     val context = LocalContext.current
-    val masterReady = NoteCrypto.masterReady(context)
-    val bioEnabled = NoteCrypto.biometricEnabled(context)
     val scope = rememberCoroutineScope()
     var showExport by remember { mutableStateOf(false) }
     var showChangePassword by remember { mutableStateOf(false) }
+    // 指纹/主密码状态是文件读取的普通值，停用等落盘操作本身不触发重组；
+    // 以bioVersion为key缓存，NoteActivity在启用/停用落盘后自增版本，这里随之重读刷新
+    val masterReady = remember(bioVersion) { NoteCrypto.masterReady(context) }
+    val bioEnabled = remember(bioVersion) { NoteCrypto.biometricEnabled(context) }
     Column(modifier = Modifier.fillMaxSize()) {
         VaultTopBar("设置")
         Column(

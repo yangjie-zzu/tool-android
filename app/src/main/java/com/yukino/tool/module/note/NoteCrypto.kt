@@ -4,6 +4,8 @@ import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
+import android.util.Log
+import com.yukino.tool.TAG
 import java.io.File
 import java.security.KeyStore
 import java.security.SecureRandom
@@ -339,35 +341,49 @@ object NoteCrypto {
             Cipher.getInstance("AES/GCM/NoPadding").apply {
                 init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(GCM_TAG_BITS, unb64(meta.bioIv)))
             }
-        }.getOrNull()
+        }.onFailure { Log.e(TAG, "bioDecryptCipher failed", it) }.getOrNull()
     }
 
-    // "封存用" cipher: 启用指纹时把 DK 加密一份。同样 doFinal 要等指纹认证成功
+    // 生成指纹路Keystore密钥(每次必须现场过指纹才能用于加解密)
+    private fun generateBioKey(): SecretKey {
+        @Suppress("DEPRECATION")
+        val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
+        generator.init(
+            KeyGenParameterSpec.Builder(
+                KS_ALIAS,
+                KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
+            )
+                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                .setUserAuthenticationRequired(true)
+                .setUserAuthenticationValidityDurationSeconds(-1)
+                .build()
+        )
+        return generator.generateKey()
+    }
+
+    // "封存用" cipher: 启用指纹时把 DK 加密一份。同样 doFinal 要等指纹认证成功。
+    // 旧密钥可能因指纹重录/生物信息变更被永久作废(init抛KeyPermanentlyInvalidatedException)，
+    // 此时删掉重建——密钥只是封存容器，重建无数据损失，否则将永远无法启用指纹
     fun bioWrapCipher(): Cipher? {
         return runCatching {
             val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-            if (!ks.containsAlias(KS_ALIAS)) {
-                // 首次使用: 在硬件密钥库里生成密钥。
-                // setUserAuthenticationRequired(true) + validity=-1 ⇒ 每次加密/解密都要现场过指纹
-                @Suppress("DEPRECATION")
-                val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
-                generator.init(
-                    KeyGenParameterSpec.Builder(
-                        KS_ALIAS,
-                        KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
-                    )
-                        .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-                        .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-                        .setUserAuthenticationRequired(true)
-                        .setUserAuthenticationValidityDurationSeconds(-1)
-                        .build()
-                )
-                generator.generateKey()
+            var key = ks.getKey(KS_ALIAS, null) as? SecretKey
+            if (key == null) {
+                key = generateBioKey()
             }
-            Cipher.getInstance("AES/GCM/NoPadding").apply {
-                init(Cipher.ENCRYPT_MODE, ks.getKey(KS_ALIAS, null) as SecretKey)
+            try {
+                Cipher.getInstance("AES/GCM/NoPadding").apply {
+                    init(Cipher.ENCRYPT_MODE, key)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "bioWrapCipher: 现有密钥不可用(${e.javaClass.simpleName})，删除重建")
+                ks.deleteEntry(KS_ALIAS)
+                Cipher.getInstance("AES/GCM/NoPadding").apply {
+                    init(Cipher.ENCRYPT_MODE, generateBioKey())
+                }
             }
-        }.getOrNull()
+        }.onFailure { Log.e(TAG, "bioWrapCipher failed", it) }.getOrNull()
     }
 
     // 指纹认证成功后(认证过的cipher)调用: 封存主密钥并落盘

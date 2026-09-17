@@ -74,10 +74,13 @@ interface WebInterface {
 
 open class CustomWebView(context: Context) : WebView(context), WebInterface {
 
+    // 首个页面(含重定向链)是否已完成加载: 完成前的跳转在当前webview原地加载，避免新开空白box
+    var firstLoadDone = false
+
     private var isTop = true
 
     private var isRefreshing = false
-    
+
     private var downY: Float? = null
 
     private var isPull: Boolean? = null
@@ -248,7 +251,7 @@ open class CustomWebView(context: Context) : WebView(context), WebInterface {
 
             //加载完成处理
             override fun onPageFinished(view: WebView?, url: String?) {
-                this@CustomWebView.visibility = View.VISIBLE
+                firstLoadDone = true
                 super.onPageFinished(view, url)
                 Log.i(TAG, "onPageFinished: ${view?.url}")
             }

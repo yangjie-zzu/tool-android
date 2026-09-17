@@ -20,8 +20,8 @@ android {
         applicationId = "com.yukino.tool"
         minSdk = 24
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.0.2"
+        versionCode = 3
+        versionName = "1.0.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -84,11 +84,6 @@ android {
         create("pubApp") {
             dimension = "env"
             applicationIdSuffix = ".pub"
-        }
-        create("priApp") {
-            dimension = "env"
-            applicationIdSuffix = ".pri"
-            resValue("string", "app_name", "$baseAppName(pri)")
         }
     }
 

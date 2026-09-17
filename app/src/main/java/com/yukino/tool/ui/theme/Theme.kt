@@ -4,6 +4,7 @@ import android.app.Activity
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.ui.graphics.Color
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
@@ -42,6 +43,9 @@ fun ToolTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     // Dynamic color is available on Android 12+
     dynamicColor: Boolean = true,
+    //可自定义状态栏颜色与图标明暗; 默认跟随主题primary
+    statusBarColor: Color? = null,
+    lightStatusBars: Boolean? = null,
     content: @Composable () -> Unit
 ) {
     val colorScheme = when {
@@ -57,8 +61,8 @@ fun ToolTheme(
     if (!view.isInEditMode) {
         SideEffect {
             val window = (view.context as Activity).window
-            window.statusBarColor = colorScheme.primary.toArgb()
-            WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = darkTheme
+            window.statusBarColor = (statusBarColor ?: colorScheme.primary).toArgb()
+            WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = lightStatusBars ?: darkTheme
         }
     }
 

@@ -8,6 +8,7 @@ import android.view.ViewGroup
 import android.webkit.WebSettings
 import android.webkit.WebView
 import androidx.activity.compose.BackHandler
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -18,6 +19,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.viewinterop.AndroidView
@@ -30,6 +32,7 @@ fun Web(
     initUrl: String?,
     onlyOpenSameSite: Boolean = false,
     active: Boolean = false,
+    onNew: ((url: String) -> Unit)? = null,
     onProgressChange: (progress: Float) -> Unit = {},
     onUrlChange: (url: String?) -> Unit = {},
     onTitleChange: (title: String?) -> Unit = {},
@@ -43,6 +46,10 @@ fun Web(
         }
     },
     onHistory: ((webview: CustomWebView, url: String?, isReload: Boolean) -> Unit)? = null,
+    //本webview网页历史耗尽时的返回: 多webview模式下由浏览器关闭此webview回到上一个
+    onBoxBack: (() -> Unit)? = null,
+    //webview创建完成回调: 引用上交给上层(浏览器)持有,关闭box时由上层负责销毁
+    onWebViewReady: ((CustomWebView) -> Unit)? = null,
     //外部导航命令: navigateKey 每自增一次,就加载一次 navigateUrl(用于地址栏输入访问)
     navigateUrl: String? = null,
     navigateKey: Int = 0
@@ -50,11 +57,16 @@ fun Web(
 
     val innerOnlyOpenSameSite by rememberUpdatedState(onlyOpenSameSite)
 
+    val innerOnNew by rememberUpdatedState(onNew)
+
     val currentCoroutineScope = rememberCoroutineScope()
 
-    var innerWebView: WebView? by remember {
+    var innerWebView: CustomWebView? by remember {
         mutableStateOf(null)
     }
+
+    // 加载期显示优化: WebView一直可见(页面边加载边呈现)，背景色与主题一致避免白屏突兀
+    val themeBackground = MaterialTheme.colorScheme.background.toArgb()
 
     LaunchedEffect(navigateKey) {
         if (navigateKey > 0) {
@@ -63,13 +75,15 @@ fun Web(
     }
 
     // 返回优化: 当前网页有历史记录时,返回键先回退网页历史;
-    // 没有历史(首页)才交还给系统返回(关闭页面)
+    // 没有历史才关闭此webview回到上一个(多webview模式)
     val context = LocalContext.current
     val backEnabled = innerWebView != null && active
     BackHandler(enabled = backEnabled) {
         val wv = innerWebView
         if (wv != null && wv.canGoBack()) {
             wv.goBack()
+        } else if (onBoxBack != null) {
+            onBoxBack()
         } else {
             (context as? android.app.Activity)?.finish()
         }
@@ -86,6 +100,9 @@ fun Web(
         }
     }
 
+    // webview销毁说明: 不能在组合期onDispose/onRelease里destroy——factory写入状态会触发
+    // 组合丢弃重跑,刚创建的webview会被误destroy(渲染进程随之被杀,页面永远加载不出)。
+    // 引用经onWebViewReady上交给浏览器层,关闭box时由浏览器层移除视图树后destroy
     AndroidView(
         modifier = Modifier.clipToBounds(),
         factory = {
@@ -124,13 +141,18 @@ fun Web(
                 }
 
                 override fun openUrl(url: String?): Boolean {
-                    if (url != null && visibility != View.VISIBLE) {
+                    if (url != null && !firstLoadDone) {
                         //首个页面尚未加载完成(通常是重定向中转页)，在当前webview原地跳转，避免留下空白的无标题中转box
                         Log.i(TAG, "openUrl: 首页加载中原地跳转 $url")
                         loadUrl(url)
                         return true
                     }
-                    //跳转一律在当前webview加载，不再新开
+                    val openInNewWebView = innerOnNew
+                    if (openInNewWebView != null && url != null) {
+                        Log.i(TAG, "openUrl: 新webview打开 $url")
+                        openInNewWebView(url)
+                        return true
+                    }
                     return super.openUrl(url)
                 }
 
@@ -146,7 +168,8 @@ fun Web(
 
             }
             Log.i(TAG, "webview版本：${webView.settings.userAgentString}")
-            webView.visibility = View.INVISIBLE
+            // 背景色与主题一致: 加载期不会出现刺眼纯白
+            webView.setBackgroundColor(themeBackground)
             //开启js支持，不开启js代码不会执行
             webView.settings.javaScriptEnabled = true
             webView.settings.useWideViewPort = true
@@ -165,6 +188,7 @@ fun Web(
                 webView.loadUrl(initUrl)
             }
             innerWebView = webView
+            onWebViewReady?.invoke(webView)
             webView
         }
     )

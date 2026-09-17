@@ -1,9 +1,14 @@
 package com.yukino.tool.module.compress
 
+import android.content.ActivityNotFoundException
+import android.content.Intent
 import android.net.Uri
 import android.os.Environment
+import android.provider.DocumentsContract
 import android.provider.OpenableColumns
+import android.widget.Toast
 import android.util.Log
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -265,16 +270,6 @@ fun CompressDetail(
             errMsg?.let {
                 Text("解析错误：${errMsg.text()}")
             }
-            if (needPassword) {
-                OutlinedTextField(
-                    modifier = Modifier.fillMaxWidth(),
-                    value = password,
-                    onValueChange = { password = it },
-                    label = { Text("压缩包密码") },
-                    singleLine = true,
-                    isError = password.isNotEmpty() && errMsg != null
-                )
-            }
             LazyColumn(
                 modifier = Modifier
                     .weight(1f)
@@ -333,21 +328,68 @@ fun CompressDetail(
         var progressState by remember {
             mutableStateOf(0f)
         }
+        //解压成功后记录目标目录,供"打开目录"跳转
+        var extractDir by remember {
+            mutableStateOf<File?>(null)
+        }
         if (!isRunning) {
-            val downloadPath =
-                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).absolutePath
-            extractResult?.let { result ->
-                Text(
-                    text = result,
-                    color = if (extractResultIsError) {
-                        MaterialTheme.colorScheme.error
-                    } else {
-                        Color(0xFF2E7D32)
-                    },
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(bottom = 4.dp)
+            if (needPassword) {
+                OutlinedTextField(
+                    modifier = Modifier.fillMaxWidth(),
+                    value = password,
+                    onValueChange = { password = it },
+                    label = { Text("压缩包密码") },
+                    singleLine = true,
+                    isError = password.isNotEmpty() && errMsg != null
                 )
             }
+            extractResult?.let { result ->
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(bottom = 4.dp)
+                ) {
+                    Text(
+                        text = result,
+                        color = if (extractResultIsError) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            Color(0xFF2E7D32)
+                        },
+                        fontWeight = FontWeight.Bold
+                    )
+                    if (!extractResultIsError && extractDir != null) {
+                        Text(
+                            text = " 打开目录",
+                            color = Color(0xFF1565C0),
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.clickable {
+                                val dir = extractDir ?: return@clickable
+                                try {
+                                    // /storage/emulated/0/Download/tool/xxx -> primary:Download/tool/xxx
+                                    val documentId = "primary:" + dir.absolutePath
+                                        .removePrefix(Environment.getExternalStorageDirectory().absolutePath)
+                                        .trim('/')
+                                    val uri = DocumentsContract.buildDocumentUri(
+                                        "com.android.externalstorage.documents",
+                                        documentId
+                                    )
+                                    val intent = Intent(Intent.ACTION_VIEW).apply {
+                                        setDataAndType(uri, DocumentsContract.Document.MIME_TYPE_DIR)
+                                        putExtra(DocumentsContract.EXTRA_INITIAL_URI, uri)
+                                        //不能加FLAG_GRANT_URI_PERMISSION: 该URI不归本应用授权,系统校验会直接抛RemoteException
+                                    }
+                                    activity.startActivity(intent)
+                                } catch (e: ActivityNotFoundException) {
+                                    Log.e(TAG, "open extract dir failed", e)
+                                    Toast.makeText(activity, "未找到可用的文件管理器", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        )
+                    }
+                }
+            }
+            val downloadPath =
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).absolutePath
             Row {
                 val coroutineScope = rememberCoroutineScope()
                 Button(
@@ -373,6 +415,7 @@ fun CompressDetail(
                                     if (!dir.exists()) {
                                         dir.mkdirs()
                                     }
+                                    extractDir = dir
                                     inArchive.extract(
                                         null,
                                         false,
