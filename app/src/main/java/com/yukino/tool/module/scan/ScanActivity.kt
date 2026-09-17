@@ -1,6 +1,7 @@
 package com.yukino.tool.module.scan
 
 import android.Manifest
+import android.widget.Toast
 import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -95,14 +96,37 @@ private fun ScanNavHost() {
     NavHost(navController = navController, startDestination = ScanRoute) {
         composable<ScanRoute> {
             ScanCameraPage(
-                onScanned = { content ->
-                    //识别成功: 去重保存后跳转扫描记录; 右上角入口content为空串, 只跳转不保存
-                    if (content.isNotEmpty()) {
-                        val updated = ScanStore.save(context, content)
-                        historyItems.clear()
-                        historyItems.addAll(updated)
+                onScanned = { contents ->
+                    //右上角入口contents为空串列表, 只跳转不保存
+                    if (contents.isNotEmpty()) {
+                        //逐个去重保存: 新码落盘, 旧码跳过但同样提示
+                        val existing = historyItems.map { it.content }.toMutableSet()
+                        val newOnes = mutableListOf<String>()
+                        val oldOnes = mutableListOf<String>()
+                        for (content in contents) {
+                            if (content in existing) {
+                                oldOnes += content
+                            } else {
+                                newOnes += content
+                                existing += content
+                            }
+                        }
+                        if (newOnes.isNotEmpty()) {
+                            val updated = ScanStore.saveAll(context, newOnes)
+                            historyItems.clear()
+                            historyItems.addAll(updated)
+                        }
+                        //提示扫到几个码: 新码/旧码分开计数
+                        val msg = when {
+                            oldOnes.isEmpty() -> "扫到${newOnes.size}个码"
+                            newOnes.isEmpty() -> "扫到${oldOnes.size}个码(已在记录中)"
+                            else -> "扫到${newOnes.size + oldOnes.size}个码, 新保存${newOnes.size}个"
+                        }
+                        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                        navController.navigate(ScanHistoryRoute) { launchSingleTop = true }
+                    } else {
+                        navController.navigate(ScanHistoryRoute) { launchSingleTop = true }
                     }
-                    navController.navigate(ScanHistoryRoute) { launchSingleTop = true }
                 }
             )
         }
@@ -113,7 +137,7 @@ private fun ScanNavHost() {
 }
 
 @Composable
-private fun ScanCameraPage(onScanned: (String) -> Unit) {
+private fun ScanCameraPage(onScanned: (List<String>) -> Unit) {
     val context = LocalContext.current
 
     var hasPermission by remember {
@@ -145,14 +169,14 @@ private fun ScanCameraPage(onScanned: (String) -> Unit) {
                 fontSize = 18.sp,
                 modifier = Modifier.weight(1f).padding(start = 8.dp, top = 14.dp, bottom = 14.dp)
             )
-            IconButton(onClick = { onScanned("") }) {
+            IconButton(onClick = { onScanned(emptyList()) }) {
                 Icon(imageVector = Icons.Rounded.History, contentDescription = "扫描记录")
             }
         }
 
         when {
-            hasPermission -> CameraScanArea(onResult = { content ->
-                onScanned(content)
+            hasPermission -> CameraScanArea(onResult = { contents ->
+                onScanned(contents)
             })
             else -> Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text(text = "未授予相机权限, 无法扫码", color = Color.White)
@@ -161,13 +185,13 @@ private fun ScanCameraPage(onScanned: (String) -> Unit) {
     }
 }
 
-//相机预览+逐帧识别; 取景框内识别到条码回调onResult(内容由上层保存)
+//相机预览+逐帧识别; 一帧内识别到的全部条码回调onResult(内容由上层保存)
 @Composable
-private fun CameraScanArea(onResult: (String) -> Unit) {
+private fun CameraScanArea(onResult: (List<String>) -> Unit) {
     val lifecycleOwner = LocalLifecycleOwner.current
     val executor = remember { Executors.newSingleThreadExecutor() }
-    var lastContent by remember { mutableStateOf<String?>(null) }
-    var lastTime by remember { mutableStateOf(0L) }
+    //每个内容的上次触发时间: 逐码防抖, 同一内容2秒内只触发一次
+    val lastTimes = remember { java.util.concurrent.ConcurrentHashMap<String, Long>() }
 
     DisposableEffect(Unit) {
         onDispose { executor.shutdown() }
@@ -192,14 +216,18 @@ private fun CameraScanArea(onResult: (String) -> Unit) {
                         .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                         .build()
                     analysis.setAnalyzer(executor) { image ->
-                        scanFrame(scanner, image) { content ->
-                            //防抖: 同一内容2秒内只触发一次, 避免连续识别重复保存跳转
+                        scanFrame(scanner, image) { contents ->
+                            //逐码防抖: 同一内容2秒内只触发一次
                             val now = System.currentTimeMillis()
-                            val debounced = content == lastContent && now - lastTime < 2000
-                            if (!debounced) {
-                                lastContent = content
-                                lastTime = now
-                                previewView.post { onResult(content) }
+                            val fired = contents.filter { content ->
+                                val last = lastTimes[content] ?: 0L
+                                if (now - last < 2000) false else {
+                                    lastTimes[content] = now
+                                    true
+                                }
+                            }
+                            if (fired.isNotEmpty()) {
+                                previewView.post { onResult(fired) }
                             }
                         }
                     }
@@ -239,13 +267,15 @@ private fun CameraScanArea(onResult: (String) -> Unit) {
 private fun scanFrame(
     scanner: BarcodeScanner,
     image: ImageProxy,
-    onResult: (String) -> Unit
+    onResult: (List<String>) -> Unit
 ) {
     val media = image.image ?: run { image.close(); return }
     val input = InputImage.fromMediaImage(media, image.imageInfo.rotationDegrees)
     scanner.process(input)
         .addOnSuccessListener { barcodes ->
-            barcodes.firstOrNull { !it.rawValue.isNullOrBlank() }?.let { onResult(it.rawValue!!) }
+            //一帧内可能同时出现多个码: 全部返回, 去重保序
+            val contents = barcodes.mapNotNull { it.rawValue }.filter { it.isNotBlank() }.distinct()
+            if (contents.isNotEmpty()) onResult(contents)
         }
         .addOnCompleteListener { image.close() }
 }

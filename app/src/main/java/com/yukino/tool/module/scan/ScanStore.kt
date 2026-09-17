@@ -25,10 +25,15 @@ object ScanStore {
     }.getOrDefault(mutableListOf())
 
     // 保存并返回更新后的列表: 相同内容先删旧记录再插到最前(去重且最新在上)
-    fun save(context: Context, content: String): MutableList<ScanItem> {
+    fun save(context: Context, content: String): MutableList<ScanItem> = saveAll(context, listOf(content))
+
+    // 批量保存: 新码逐个插到最前(列表内新码顺序=帧内识别顺序), 返回更新后的列表
+    fun saveAll(context: Context, contents: List<String>): MutableList<ScanItem> {
         val items = load(context)
-        items.removeAll { it.content == content }
-        items.add(0, ScanItem(content = content, time = System.currentTimeMillis()))
+        for (content in contents) {
+            items.removeAll { it.content == content }
+            items.add(0, ScanItem(content = content, time = System.currentTimeMillis()))
+        }
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit().putString(KEY, json.encodeToString(items.toList())).apply()
         return items
