@@ -8,6 +8,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
@@ -15,6 +16,8 @@ import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -35,6 +38,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -46,6 +50,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
@@ -197,7 +202,35 @@ private fun CameraScanArea(onResult: (List<String>) -> Unit) {
         onDispose { executor.shutdown() }
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
+    //缩放: camera引用供手势调焦; zoomRatio仅用于双击切换判断
+    var camera by remember { mutableStateOf<Camera?>(null) }
+    val zoomRatio = remember { mutableFloatStateOf(1f) }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .pointerInput(Unit) {
+                //捏合缩放: 以当前倍率为基准乘手势系数, 夹在设备支持范围内
+                detectTransformGestures { _, _, zoom, _ ->
+                    camera?.let { cam ->
+                        val state = cam.cameraInfo.zoomState.value ?: return@let
+                        val target = (state.zoomRatio * zoom).coerceIn(state.minZoomRatio, state.maxZoomRatio)
+                        cam.cameraControl.setZoomRatio(target)
+                        zoomRatio.floatValue = target
+                    }
+                }
+            }
+            .pointerInput(Unit) {
+                //双击: 1x与2x互切
+                detectTapGestures(onDoubleTap = {
+                    camera?.let { cam ->
+                        val state = cam.cameraInfo.zoomState.value ?: return@let
+                        val target = if (zoomRatio.floatValue < 1.5f) 2f else 1f
+                        cam.cameraControl.setZoomRatio(target.coerceIn(state.minZoomRatio, state.maxZoomRatio))
+                        zoomRatio.floatValue = target
+                    }
+                })
+            }
+    ) {
         AndroidView(
             modifier = Modifier.fillMaxSize(),
             factory = { ctx ->
@@ -232,7 +265,12 @@ private fun CameraScanArea(onResult: (List<String>) -> Unit) {
                         }
                     }
                     provider.unbindAll()
-                    provider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
+                    camera = provider.bindToLifecycle(
+                        lifecycleOwner,
+                        CameraSelector.DEFAULT_BACK_CAMERA,
+                        preview,
+                        analysis
+                    )
                 }, ContextCompat.getMainExecutor(ctx))
                 previewView
             }
