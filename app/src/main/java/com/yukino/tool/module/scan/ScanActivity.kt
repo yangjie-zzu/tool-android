@@ -27,6 +27,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.FlashlightOff
+import androidx.compose.material.icons.rounded.FlashlightOn
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.QrCodeScanner
 import androidx.compose.material3.Icon
@@ -154,6 +156,9 @@ private fun ScanCameraPage(onScanned: (List<String>) -> Unit) {
         hasPermission = it
     }
 
+    //闪光灯开关: 扫低光环境下的码用
+    var torchOn by remember { mutableStateOf(false) }
+
     LaunchedEffect(Unit) {
         if (!hasPermission) permissionLauncher.launch(Manifest.permission.CAMERA)
     }
@@ -174,13 +179,20 @@ private fun ScanCameraPage(onScanned: (List<String>) -> Unit) {
                 fontSize = 18.sp,
                 modifier = Modifier.weight(1f).padding(start = 8.dp, top = 14.dp, bottom = 14.dp)
             )
+            IconButton(onClick = { torchOn = !torchOn }) {
+                Icon(
+                    imageVector = if (torchOn) Icons.Rounded.FlashlightOn else Icons.Rounded.FlashlightOff,
+                    contentDescription = "闪光灯",
+                    tint = if (torchOn) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                )
+            }
             IconButton(onClick = { onScanned(emptyList()) }) {
                 Icon(imageVector = Icons.Rounded.History, contentDescription = "扫描记录")
             }
         }
 
         when {
-            hasPermission -> CameraScanArea(onResult = { contents ->
+            hasPermission -> CameraScanArea(torchOn = torchOn, onResult = { contents ->
                 onScanned(contents)
             })
             else -> Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -192,7 +204,7 @@ private fun ScanCameraPage(onScanned: (List<String>) -> Unit) {
 
 //相机预览+逐帧识别; 一帧内识别到的全部条码回调onResult(内容由上层保存)
 @Composable
-private fun CameraScanArea(onResult: (List<String>) -> Unit) {
+private fun CameraScanArea(torchOn: Boolean, onResult: (List<String>) -> Unit) {
     val lifecycleOwner = LocalLifecycleOwner.current
     val executor = remember { Executors.newSingleThreadExecutor() }
     //每个内容的上次触发时间: 逐码防抖, 同一内容2秒内只触发一次
@@ -205,6 +217,11 @@ private fun CameraScanArea(onResult: (List<String>) -> Unit) {
     //缩放: camera引用供手势调焦; zoomRatio仅用于双击切换判断
     var camera by remember { mutableStateOf<Camera?>(null) }
     val zoomRatio = remember { mutableFloatStateOf(1f) }
+
+    //闪光灯开关跟随顶栏按钮, 相机重绑后也保持一致
+    LaunchedEffect(camera, torchOn) {
+        camera?.cameraControl?.enableTorch(torchOn)
+    }
     Box(
         modifier = Modifier
             .fillMaxSize()
