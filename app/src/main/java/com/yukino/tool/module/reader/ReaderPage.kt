@@ -156,7 +156,8 @@ fun ReaderScreen(
     val typoKey = typo?.let {
         listOf(
             it.fontPx, it.lineExtraPx, it.paraExtraPx, it.indentPx, it.marginPx,
-            it.textWidth, it.textHeight, it.justify, it.fgColor
+            it.textWidth, it.textHeight, it.justify, it.fgColor,
+            Typography.BREAK_STRATEGY_VERSION   // 断行算法升级时使旧缓存失效
         ).hashCode()
     }
 
@@ -175,6 +176,8 @@ fun ReaderScreen(
         val t = typo ?: return@LaunchedEffect
         val key = typoKey ?: return@LaunchedEffect
         if (specs != null && specsTypoKey == key) return@LaunchedEffect   // 已是当前版式,不重排
+        // 锚点 = 当前页页首偏移(阅读中改版式不丢位置);无当前页(刚打开书)才用持久化进度
+        val anchor = specs?.getOrNull(pageIndex)?.globalCharOffset ?: book.progress.globalCharOffset
         // 缓存命中: 直接用,跳过整本重排
         val cached = withContext(Dispatchers.IO) {
             ReaderStore.loadSpecs(context, book.id, key, book.totalChars)
@@ -182,10 +185,9 @@ fun ReaderScreen(
         if (cached != null) {
             specsTypoKey = key
             specs = cached
-            pageIndex = BookPager.locatePage(cached, book.progress.globalCharOffset)
+            pageIndex = BookPager.locatePage(cached, anchor)
             return@LaunchedEffect
         }
-        val anchor = specs?.getOrNull(pageIndex)?.globalCharOffset ?: book.progress.globalCharOffset
         val result = BookPager.buildSpecs(book, text, t)
         specsTypoKey = key
         specs = result

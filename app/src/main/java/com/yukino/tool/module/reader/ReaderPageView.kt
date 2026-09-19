@@ -43,6 +43,8 @@ class ReaderPageView(context: Context) : View(context) {
 
     private val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val chromePaint = android.text.TextPaint(Paint.ANTI_ALIAS_FLAG)
+    private val lastLinePaint = android.text.TextPaint(Paint.ANTI_ALIAS_FLAG)
+    private val fillPaint = Paint()
     private val shadowWidthPx = (SHADOW_WIDTH_DP * context.resources.displayMetrics.density).toInt()
     private val pagePadPx = (Typography.PAGE_PADDING_DP * context.resources.displayMetrics.density).toInt()
     private val topGapPx = (TOP_GAP_DP * context.resources.displayMetrics.density).toInt()
@@ -174,7 +176,7 @@ class ReaderPageView(context: Context) : View(context) {
     }
 
     // 画一页: 页矩形不透明背景(覆盖时上层才能盖住下层) → 页眉/页脚(在上下留白内,不压正文)
-    // → 内容区裁剪内画 layout(两端对齐哨兵行被底部裁剪裁掉)。封面/封底内容垂直居中
+    // → 内容区裁剪内画 layout(页末行段中截断时盖掉重画为两端对齐,见 BookPage.lastLine)。封面/封底内容垂直居中
     private fun drawPage(canvas: Canvas, page: BookPage, offsetX: Float, t: ResolvedTypography) {
         val save = canvas.save()
         canvas.clipRect(offsetX, 0f, offsetX + width, height.toFloat())
@@ -199,11 +201,23 @@ class ReaderPageView(context: Context) : View(context) {
         // 顶部加 8dp: 页眉与正文首行拉开间距
         val contentTop = topInsetPx + pagePadPx.toFloat() + topGapPx
         val contentBottom = (height - bottomInsetPx - footerGapPx).toFloat()
-        canvas.clipRect(offsetX, contentTop, offsetX + width, contentBottom)
+        // 页尾截断补偿的上下文行不可见: 裁剪底边收到可见末行行顶
+        val visibleBottom = if (page.clipBottomPx.isFinite()) contentTop + page.topOffsetPx + page.clipBottomPx
+        else contentBottom
+        canvas.clipRect(offsetX, contentTop, offsetX + width, minOf(contentBottom, visibleBottom))
         val y = if (page.spec.kind == PageKind.CONTENT) contentTop + page.topOffsetPx
         else contentTop + (height - topInsetPx - bottomInsetPx - 2 * pagePadPx - page.layout.height) / 2f
         canvas.translate(offsetX + t.marginPx, y)
         page.layout.draw(canvas)
+        // 页末行手工两端对齐: 系统把该行按"段落末行"参差画了,用背景色盖掉后按分段拉伸重画。
+        // 此处已在 layout 原点坐标系内(translate 已含边距与页首偏移),直接用相对坐标
+        page.lastLine?.let { ll ->
+            fillPaint.color = t.bgColor
+            canvas.drawRect(0f, ll.topPx, t.textWidth.toFloat(), ll.bottomPx, fillPaint)
+            lastLinePaint.textSize = t.fontPx
+            lastLinePaint.color = t.fgColor
+            ll.segments.forEach { seg -> canvas.drawText(seg.text, seg.x, ll.baselinePx, lastLinePaint) }
+        }
         canvas.restoreToCount(save2)
         canvas.restoreToCount(save)
     }

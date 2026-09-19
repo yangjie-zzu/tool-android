@@ -2,6 +2,7 @@ package com.yukino.tool.module.reader
 
 import kotlin.random.Random
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -131,5 +132,123 @@ class PaginationEngineTest {
         val trimmed = PaginationEngine.trimTrailingBlank(pages) { blank(it, widths) }
         assertEquals(1, trimmed.size)
         assertEquals(pages.last(), trimmed.last())
+    }
+
+    // ---- 垂直匀齐 justifyLineSpacing ----
+
+    // 模拟 relayout: 加 extra 后每行高 rowHeight + extra,整页高 = lineCount × (rowHeight + extra)
+    private fun relayoutSim(lineCount: Int, rowHeight: Int): (Float) -> Int =
+        { extra -> (lineCount * (rowHeight + extra)).toInt() }
+
+    @Test
+    fun `无剩余空白时不加增量`() {
+        val (extra, top) = PaginationEngine.justifyLineSpacing(500, 10, 500, 40f, relayoutSim(10, 50))
+        assertEquals(0f, extra, 0f)
+        assertEquals(0f, top, 0f)
+    }
+
+    @Test
+    fun `增量分摊后不溢出且零头上下各半`() {
+        val (extra, top) = PaginationEngine.justifyLineSpacing(480, 10, 500, 40f, relayoutSim(10, 48))
+        assertEquals(2f, extra, 0.001f)
+        assertEquals(0f, top, 0.001f)
+    }
+
+    @Test
+    fun `增量受单行封顶限制`() {
+        val (extra, top) = PaginationEngine.justifyLineSpacing(200, 10, 500, 10f, relayoutSim(10, 20))
+        assertEquals(10f, extra, 0.001f)
+        assertEquals(100f, top, 0.001f)
+    }
+
+    @Test
+    fun `重排溢出则增量减半重试`() {
+        val relayout: (Float) -> Int = { extra ->
+            val perLine = kotlin.math.ceil(extra.toDouble()).toInt()
+            480 + 10 * perLine * (if (perLine >= 3) 2 else 1)
+        }
+        val (extra, top) = PaginationEngine.justifyLineSpacing(480, 10, 540, 40f, relayout)
+        assertEquals(3f, extra, 0.001f)
+        assertEquals(0f, top, 0.001f)
+    }
+
+    @Test
+    fun `减半仍溢出则回退基础行距`() {
+        val (extra, top) = PaginationEngine.justifyLineSpacing(480, 10, 500, 40f) { _ -> 999 }
+        assertEquals(0f, extra, 0f)
+        assertEquals(0f, top, 0f)
+    }
+
+    @Test
+    fun `零行返回零增量`() {
+        val (extra, top) = PaginationEngine.justifyLineSpacing(0, 0, 500, 40f, relayoutSim(0, 50))
+        assertEquals(0f, extra, 0f)
+        assertEquals(0f, top, 0f)
+    }
+
+    @Test
+    fun `模拟真实分摊全程不溢出且行数守恒`() {
+        val rnd = Random(7)
+        val textHeight = 600
+        repeat(20) {
+            val lineCount = 3 + rnd.nextInt(30)
+            val rowHeight = 20 + rnd.nextInt(30)
+            val baseHeight = lineCount * rowHeight
+            if (baseHeight <= textHeight) {
+                val (extra, top) = PaginationEngine.justifyLineSpacing(
+                    baseHeight, lineCount, textHeight, 48f, relayoutSim(lineCount, rowHeight)
+                )
+                val newHeight = (lineCount * (rowHeight + extra)).toInt()
+                assertTrue("page $it overflow: $newHeight", newHeight <= textHeight)
+                assertTrue(newHeight + top * 2 <= textHeight + 1)
+            }
+        }
+    }
+
+    // ---- 页末行手工两端对齐 justifySegments ----
+
+    // 等宽假测量: 每字符宽 10
+    private val measure10: (String) -> Float = { it.length * 10f }
+
+    @Test
+    fun `等宽字符间距均分到每字之间`() {
+        // 5 字 × 10 = 50,目标 90 → 4 个间隙各 +10
+        val segs = PaginationEngine.justifySegments("你好吗好吗", 90f, 40f, measure10)!!
+        assertEquals(5, segs.size)
+        assertEquals(0f, segs[0].second, 0.001f)
+        assertEquals(20f, segs[1].second, 0.001f)
+        assertEquals(80f, segs[4].second, 0.001f)
+    }
+
+    @Test
+    fun `含空格按词分间距`() {
+        // 词宽 20+20+20=60,目标 80 → 词间 2 个空隙各 +10
+        val segs = PaginationEngine.justifySegments("ab cd ef", 80f, 40f, measure10)!!
+        assertEquals(listOf("ab", "cd", "ef"), segs.map { it.first })
+        assertEquals(0f, segs[0].second, 0.001f)
+        assertEquals(30f, segs[1].second, 0.001f)
+        assertEquals(60f, segs[2].second, 0.001f)
+    }
+
+    @Test
+    fun `无拉伸空间返回null`() {
+        // 3 字宽 30 = 目标 30 → per=0 → null
+        assertNull(PaginationEngine.justifySegments("你好吗", 30f, 40f, measure10))
+    }
+
+    @Test
+    fun `单字行返回null`() {
+        assertNull(PaginationEngine.justifySegments("好", 100f, 40f, measure10))
+    }
+
+    @Test
+    fun `间距超上限返回null`() {
+        // 2 字宽 20,目标 110 → 单处 90 > 40 → null
+        assertNull(PaginationEngine.justifySegments("你好", 110f, 40f, measure10))
+    }
+
+    @Test
+    fun `空串返回null`() {
+        assertNull(PaginationEngine.justifySegments("", 100f, 40f, measure10))
     }
 }

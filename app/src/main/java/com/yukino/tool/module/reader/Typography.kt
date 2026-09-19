@@ -22,10 +22,13 @@ data class ResolvedTypography(
 
 object Typography {
 
+    // 断行/排版算法版本: 算法变化(如断行策略切换)时 +1,使旧分页缓存失效
+    const val BREAK_STRATEGY_VERSION = 3
+
     // 页眉/页脚文字区高度(dp),悬浮于内容区上下留白内,不占版心
     const val TOP_GAP_DP: Int = 8
     const val PAGE_PADDING_DP: Int = 16
-    const val FOOTER_GAP_DP: Int = 24   // 页脚保留区: 正文底与页脚文字的间距
+    const val FOOTER_GAP_DP: Int = 36   // 页脚保留区: 正文底与页脚文字的间距(24dp 时底部观感偏小,与顶部 24dp 不对称)
 
     const val FONT_MIN = 12f
     const val FONT_MAX = 32f
@@ -56,7 +59,7 @@ object Typography {
 
     // 构建 StaticLayout: 文本可为 Spanned(样式/缩进 span 由调用方——ChapterComposer——套好)。
     // 测量(整章)与渲染(单页)共用同一构建规则,保证断行一致
-    fun buildLayout(text: CharSequence, typo: ResolvedTypography): StaticLayout {
+    fun buildLayout(text: CharSequence, typo: ResolvedTypography, extraLineSpacingPx: Float = 0f): StaticLayout {
         val paint = TextPaint(TextPaint.ANTI_ALIAS_FLAG).apply {
             textSize = typo.fontPx
             color = typo.fgColor
@@ -64,9 +67,13 @@ object Typography {
         val builder = StaticLayout.Builder
             .obtain(text, 0, text.length, paint, typo.textWidth)
             .setAlignment(Layout.Alignment.ALIGN_NORMAL)
-            .setLineSpacing(typo.lineExtraPx, 1f)   // 行距%转成行间增量
+            // 行距%转成行间增量; extraLineSpacingPx = 垂直匀齐按页剩余空白摊到每行的增量(只增空隙,不改断行)
+            .setLineSpacing(typo.lineExtraPx + extraLineSpacingPx, 1f)
             .setIncludePad(false)
-            .setBreakStrategy(Layout.BREAK_STRATEGY_HIGH_QUALITY) // CJK 避头尾
+            // 断行必须用贪心策略(SIMPLE): 贪心的行首只取决于前文,整章测量与单页重排
+            // 截断出的行完全一致;HIGH_QUALITY 做全局平衡,截断文本与整章断行可能不同,
+            // 导致页尾出现孤字。CJK 文本每行本就近乎排满,观感差异可忽略
+            .setBreakStrategy(Layout.BREAK_STRATEGY_SIMPLE)
         // 两端对齐: API 26+ 的字间对齐,低版本退化为普通对齐
         if (typo.justify && android.os.Build.VERSION.SDK_INT >= 26) {
             builder.setJustificationMode(Layout.JUSTIFICATION_MODE_INTER_WORD)

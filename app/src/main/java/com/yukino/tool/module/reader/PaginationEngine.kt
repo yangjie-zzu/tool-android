@@ -40,6 +40,57 @@ object PaginationEngine {
         return pages
     }
 
+    // 垂直匀齐: 页底剩余空白摊到本页每行行距。relayout(extra) 返回加增量后的排版高度。
+    // 返回 (每行增量, 页首下移): 按行数分摊留安全余量;单行增量封顶 cap;
+    // 重排后溢出则增量减半再试一次;仍溢出返回 (0,0) 回退基础行距;
+    // 分摊后的零头由 topAdd 上下各半,保持居中观感。章末页由调用方短路,不进本函数
+    fun justifyLineSpacing(
+        baseHeight: Int,
+        lineCount: Int,
+        textHeight: Int,
+        cap: Float,
+        relayout: (Float) -> Int
+    ): Pair<Float, Float> {
+        if (lineCount <= 0) return 0f to 0f
+        val leftover = textHeight - baseHeight
+        if (leftover <= 0) return 0f to 0f
+        var extra = (leftover.toFloat() / lineCount).coerceAtMost(cap)
+        var height = relayout(extra)
+        var left = textHeight - height
+        if (left < 0) {
+            extra /= 2f
+            height = relayout(extra)
+            left = textHeight - height
+        }
+        if (left < 0) return 0f to 0f   // 仍溢出: 回退基础行距,零头交还页底
+        return extra to left / 2f
+    }
+
+    // 页末行手工两端对齐: 把 (targetWidth-自然宽度) 均分到字间/词间。
+    // 西文按空格分词,中文逐字;单处间距超过 maxGap(一般传字号,末行字太少)或为负
+    // 视为不可拉伸,返回 null 保持系统默认参差。返回 (片段, 相对行首的 x 偏移) 列表
+    fun justifySegments(
+        line: String,
+        targetWidth: Float,
+        maxGap: Float,
+        measure: (String) -> Float
+    ): List<Pair<String, Float>>? {
+        if (line.isEmpty()) return null
+        val hasSpace = line.any { it == ' ' }
+        val tokens = if (hasSpace) line.split(' ').filter { it.isNotEmpty() } else line.map { it.toString() }
+        if (tokens.size < 2) return null
+        val natural = tokens.sumOf { measure(it).toDouble() }.toFloat()
+        val per = (targetWidth - natural) / (tokens.size - 1)
+        if (per <= 0f || per > maxGap) return null
+        val out = ArrayList<Pair<String, Float>>(tokens.size)
+        var x = 0f
+        tokens.forEach { t ->
+            out += t to x
+            x += measure(t) + per
+        }
+        return out
+    }
+
     // 偏移 → 行(由 StaticLayout.getLineForOffset 完成) → 页: 行区间二分,找最后一个 startLine <= line 的页
     fun pageForOffset(pages: List<PageSlice>, line: Int): Int {
         var lo = 0

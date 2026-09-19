@@ -35,6 +35,17 @@ class PageSpec(
     val chapterTitle: String      // 页眉文案;封面/封底空串
 )
 
+// 页末行手工两端对齐的绘制数据: layout 里该行仍是系统默认参差绘制,
+// 渲染层先用背景色盖掉它,再按 segments(片段+相对行首 x)等宽拉伸重画
+class LastLineDraw(
+    val segments: List<LineSeg>,
+    val topPx: Float,        // 相对 layout 原点
+    val baselinePx: Float,
+    val bottomPx: Float
+)
+
+class LineSeg(val text: String, val x: Float)
+
 // 可渲染页: 自包含(自身布局+页眉页脚文案),渲染层不接触章节/行切片概念。
 // 不可变——拖拽预览与落账引用同一实例,"看到的页"=="翻到的页"
 class BookPage(
@@ -42,7 +53,9 @@ class BookPage(
     val layout: StaticLayout,
     val headerTitle: String,      // 空串不画
     val footerLabel: String,      // 空串不画
-    val topOffsetPx: Float = 0f   // 页首额外下移: 底部剩余空白分配到顶部的一份(垂直匀齐)
+    val topOffsetPx: Float = 0f,  // 页首额外下移: 底部剩余空白分配到顶部的一份(垂直匀齐)
+    val lastLine: LastLineDraw? = null,
+    val clipBottomPx: Float = Float.MAX_VALUE   // 可见内容底(layout 相对坐标): 裁掉截断补偿的上下文行
 )
 
 // 章节文本合成: 章节名(1.4倍加粗)+空行+正文,样式随 span 进入文本流。
@@ -75,13 +88,17 @@ object ChapterComposer {
         }
     }
 
-    private class BlankLineSpan : LineHeightSpan {
+    private class BlankLineSpan(
+        private val lineExtraPx: Int   // 行距增量: StaticLayout 会把它加到行 descent 上,需预抵消
+    ) : LineHeightSpan {
         override fun chooseHeight(
             text: CharSequence, start: Int, end: Int,
             spanstartv: Int, lineHeight: Int, fm: Paint.FontMetricsInt
         ) {
+            // 空行压到 ~2px: descent 预扣行距增量(add 在 chooseHeight 之后追加),
+            // 空行无字形,负 descent 无副作用
             fm.ascent = -1
-            fm.descent = 1
+            fm.descent = 1 - lineExtraPx
         }
     }
 
@@ -94,7 +111,7 @@ object ChapterComposer {
         typo: ResolvedTypography, isParaStart: (Int) -> Boolean,
         chapterHasBlank: Boolean? = null
     ): Int {
-        if (typo.paraExtraPx <= 0f && from >= to) return 0
+        if (from >= to) return 0
         val fmf = Paint.FontMetrics()
         TextPaint().apply { textSize = typo.fontPx }.getFontMetrics(fmf)
 
@@ -106,7 +123,10 @@ object ChapterComposer {
             while (le < to && sb[le] != '\n') le++
             if (le < to && (ls until le).all { sb[it].isWhitespace() }) {
                 hasBlank = true
-                sb.setSpan(BlankLineSpan(), ls, (le + 1).coerceAtMost(to), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                sb.setSpan(
+                    BlankLineSpan(typo.lineExtraPx.toInt()),
+                    ls, (le + 1).coerceAtMost(to), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                )
             }
             ls = le + 1
         }
@@ -202,6 +222,8 @@ object ChapterComposer {
 // 分页器: 全书文本+版式 → 全量页目录(章测量 layout 用完即弃);页目录 → 可渲染页
 object BookPager {
 
+    private const val DBG = true   // 页末行对齐诊断日志(ReaderJustify),定位问题用
+
     // 全书页目录: 封面 + 各章 + 封底 的扁平页序列。
     // 各章测量互相独立(每次调用自建 Paint/StaticLayout,无共享可变状态),按章并行执行;
     // 信号量限流控制同时驻留内存的章测量布局数;awaitAll 按发起顺序取结果,与串行结果一致
@@ -289,21 +311,91 @@ object BookPager {
         val e = next
             ?.let { (it.globalCharOffset - bodyZero + bodyStart).toInt() }
             ?: composed.length
-        // 垂直匀齐两遍构建: 第一遍按基础段距测出内容高度,页底剩余空白一半下移页首、
-        // 一半均摊到本页各段距(单处增量封顶 1 行高,章末页大空白不硬拉,仍留在页底)
-        // 垂直匀齐: 内容不足整页时,剩余空白由上下边距各分一半(内容整体下移一半)。
-        // 章节最后一页不分配,剩余空白自然留在页底
+        // 页尾一致性: 断行用贪心策略(SIMPLE),行首只取决于前文,单页重排与整章测量的
+        // 断行完全一致,e 必为本页布局的行尾,不会出现截断点甩到本页末尾的孤字
         val hasBlank = ChapterComposer.hasBlankLine(composed, bodyStart, composed.length)
-        val text = pageText(composed, s, e, spec.chapterTitle.length, typo, hasBlank)
+        val (text, lead) = pageText(composed, s, e, spec.chapterTitle.length, typo, hasBlank)
+        if (DBG) android.util.Log.d(
+            "ReaderJustify",
+            "mat ch=${spec.chapterIndex} p=${spec.chapterPageIndex} s=$s e=$e " +
+                "tail='${text.takeLast(10)}'"
+        )
         val layout = Typography.buildLayout(text, typo)
+        // 垂直匀齐: 页底剩余空白摊到本页可见行的行距(单行封顶 1 字高)。
+        // setLineSpacing 只增行间空隙、不改断行,本页包含的行与分页目录一致;
+        // 章末页不分配,空白自然留在页底
         var topAdd = 0f
-        val leftover = typo.textHeight - layout.height
-        if (leftover > 0 && spec.chapterPageIndex < spec.chapterPageCount - 1) {
-            topAdd = leftover / 2f
+        var finalLayout = layout
+        if (spec.chapterPageIndex < spec.chapterPageCount - 1) {
+            val (extra, top) = PaginationEngine.justifyLineSpacing(
+                layout.height, layout.lineCount, typo.textHeight, typo.fontPx
+            ) { e2 -> Typography.buildLayout(text, typo, e2).height }
+            if (extra > 0f) {
+                finalLayout = Typography.buildLayout(text, typo, extra)
+                topAdd = top
+            }
         }
         val percent = percentOf(book, spec)
         val label = "第 ${spec.chapterPageIndex + 1}/${spec.chapterPageCount} 页 · ${(percent * 100).roundToInt()}%"
-        return BookPage(spec, layout, spec.chapterTitle, label, topAdd)
+        val last = finalLayout.lineCount - 1
+        val tailLine = buildTailLine(
+            PageBuild(text, lead, finalLayout, TailInfo(last, lead + finalLayout.getLineEnd(last))),
+            composed, e, spec, typo, finalLayout
+        )
+        return BookPage(spec, finalLayout, spec.chapterTitle, label, topAdd, tailLine)
+    }
+
+    private class PageBuild(
+        val text: CharSequence,
+        val lead: Int,           // 页文本起点在合成文本中的下标: 文本下标 i ↔ 合成下标 lead+i
+        val layout: StaticLayout,
+        val tail: TailInfo?
+    )
+
+    private class TailInfo(val vLine: Int, val vEnd: Int)
+
+    // 页尾可见末行处理。两种职责:
+    //  1) 行内带上下文字符(行尾超出 e)时,盖掉重画为仅含 [行首, e) 的字符(隐藏下一页开头的字);
+    //  2) 段中截断的末行做两端对齐拉伸(段落末行/标题行/不可拉伸的短行保持系统参差,不重画)
+    private fun buildTailLine(
+        build: PageBuild,
+        composed: CharSequence,
+        e: Int,
+        spec: PageSpec,
+        typo: ResolvedTypography,
+        layout: StaticLayout
+    ): LastLineDraw? {
+        val tail = build.tail ?: return null
+        val lead = build.lead
+        val v = tail.vLine
+        val ls = layout.getLineStart(v)
+        val le = layout.getLineEnd(v)
+        if (le <= ls) return null
+        val visibleEnd = (e - lead).coerceIn(ls, le)
+        val lineStr = build.text.substring(ls, visibleEnd)
+        if (lineStr.isEmpty()) return null
+        val hasHidden = le > visibleEnd   // 行内有上下文字符需要隐藏
+        val left = layout.getLineLeft(v)
+        var segments: List<Pair<String, Float>>? = null
+        if (typo.justify && !lineStr.endsWith("\n") &&
+            !(spec.chapterPageIndex == 0 && ls < spec.chapterTitle.length)
+        ) {
+            // 段落末行判定: 可见行尾(合成文本下标)之后是 '\n' 或已到章末 → 保持系统参差
+            val endInComposed = lead + visibleEnd
+            if (endInComposed < composed.length && composed[endInComposed] != '\n') {
+                val target = typo.textWidth - left
+                val paint = TextPaint(TextPaint.ANTI_ALIAS_FLAG).apply { textSize = typo.fontPx }
+                segments = PaginationEngine.justifySegments(lineStr, target, typo.fontPx) { paint.measureText(it) }
+            }
+        }
+        if (!hasHidden && segments == null) return null   // 布局本身正确且无需拉伸
+        val segs = segments ?: listOf(lineStr to left)    // 自然宽度重画,只为隐藏上下文字符
+        return LastLineDraw(
+            segs.map { LineSeg(it.first, it.second) },
+            layout.getLineTop(v).toFloat(),
+            layout.getLineBaseline(v).toFloat(),
+            layout.getLineBottom(v).toFloat()
+        )
     }
 
     // 全书偏移 → 全局页号: 二分找最后一个页首偏移 <= 目标的页
@@ -326,7 +418,8 @@ object BookPager {
 
     // 页文本 = 合成文本 [s, e) 的纯字符(丢弃测量 span,避免跨页裁剪污染)+ 本页样式重建:
     //  1) 标题样式延续到标题跨页的续页; 2) 段首缩进只给真正的段首(页首接段中不缩进);
-    //  3) 两端对齐且页末行是段中行时补哨兵行,使页末行保持拉伸(渲染时按内容区裁掉);
+    //  3) 页末行是段中行时由 materialize 手工拉伸对齐(见 buildTailLine);
+    // 返回 (页文本, 文本起点在合成文本中的下标 lead: 文本下标 i ↔ 合成下标 lead+i)
     private fun pageText(
         composed: CharSequence,
         start: Int,
@@ -334,7 +427,7 @@ object BookPager {
         titleLength: Int,
         typo: ResolvedTypography,
         chapterHasBlank: Boolean
-    ): CharSequence {
+    ): Pair<CharSequence, Int> {
         var e = end
         while (e > start && composed[e - 1] == '\n') e--   // 去章末残留空行
         var lead = start
@@ -374,7 +467,7 @@ object BookPager {
                 (q == spacingFrom && (base == 0 || composed[base - 1] == '\n')) || (q > 0 && sb[q - 1] == '\n')
             }, chapterHasBlank)
         }
-        return sb
+        return sb to lead
     }
 }
 
