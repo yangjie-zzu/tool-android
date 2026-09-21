@@ -13,3 +13,7 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+# JVM 崩溃/重放日志
+hs_err_pid*.log
+replay_pid*.log
