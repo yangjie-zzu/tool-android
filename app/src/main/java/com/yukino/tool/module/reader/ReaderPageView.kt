@@ -3,13 +3,22 @@ package com.yukino.tool.module.reader
 import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.Canvas
 import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.Shader
+import android.graphics.Typeface
+import android.os.BatteryManager
 import android.view.View
 import android.view.animation.DecelerateInterpolator
+import androidx.core.content.ContextCompat
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlin.math.abs
 
 // 只负责画页: 页自包含(布局+页眉页脚),本类只做平移与层叠,不新建布局、不处理手势。
@@ -43,18 +52,43 @@ class ReaderPageView(context: Context) : View(context) {
 
     private val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val chromePaint = android.text.TextPaint(Paint.ANTI_ALIAS_FLAG)
-    private val lastLinePaint = android.text.TextPaint(Paint.ANTI_ALIAS_FLAG)
-    private val fillPaint = Paint()
+    private val bodyPaint = android.text.TextPaint(Paint.ANTI_ALIAS_FLAG)
+    private val titlePaint = android.text.TextPaint(Paint.ANTI_ALIAS_FLAG)
+    private val batteryPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val timeFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
+
+    // 电量百分比(null=未获取): 系统电量广播驱动;时间由分钟定时器刷新
+    private var batteryPct: Int? = null
+
+    private val batteryReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+            val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
+            if (level >= 0 && scale > 0) {
+                batteryPct = level * 100 / scale
+                invalidate()
+            }
+        }
+    }
+
+    private val minuteTicker = object : Runnable {
+        override fun run() {
+            invalidate()
+            postDelayed(this, 60_000 - System.currentTimeMillis() % 60_000)
+        }
+    }
+
     private val shadowWidthPx = (SHADOW_WIDTH_DP * context.resources.displayMetrics.density).toInt()
     private val pagePadPx = (Typography.PAGE_PADDING_DP * context.resources.displayMetrics.density).toInt()
-    private val topGapPx = (TOP_GAP_DP * context.resources.displayMetrics.density).toInt()
-    private val footerGapPx = (FOOTER_GAP_DP * context.resources.displayMetrics.density).toInt()
+    private val topGapPx = (Typography.TOP_GAP_DP * context.resources.displayMetrics.density).toInt()
+    private val footerGapPx = (Typography.FOOTER_GAP_DP * context.resources.displayMetrics.density).toInt()
 
     init {
         shadowPaint.shader = LinearGradient(
             0f, 0f, shadowWidthPx.toFloat(), 0f,
             SHADOW_COLOR, 0x00000000, Shader.TileMode.CLAMP
         )
+        titlePaint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
     }
 
     fun setPage(page: BookPage, typo: ResolvedTypography) {
@@ -62,12 +96,22 @@ class ReaderPageView(context: Context) : View(context) {
         if (this.page === page && this.typo == typo) return
         this.page = page
         this.typo = typo
+        configurePaints(typo)
         invalidate()
     }
 
     fun setColors(typo: ResolvedTypography) {
         this.typo = typo
+        configurePaints(typo)
         invalidate()
+    }
+
+    // 行绘制 paint: 正文/标题两套字号;颜色随版式(主题切换)更新
+    private fun configurePaints(t: ResolvedTypography) {
+        bodyPaint.textSize = t.fontPx
+        bodyPaint.color = t.fgColor
+        titlePaint.textSize = t.fontPx * ChapterComposer.TITLE_SCALE
+        titlePaint.color = t.fgColor
     }
 
     fun setContentInsets(topPx: Int, bottomPx: Int) {
@@ -135,7 +179,20 @@ class ReaderPageView(context: Context) : View(context) {
 
     // 书首/书末越界不提供拖拽反馈: 封面/封底页保持静止(产品约定)
 
+    // 电量广播 + 分钟定时: 页脚右侧时间/电量的数据源。注册即收到系统 sticky 电量广播,
+    // 拿到初始电量;定时器对齐到下一分钟整,保证时间分钟级准确
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        ContextCompat.registerReceiver(
+            context, batteryReceiver,
+            IntentFilter(Intent.ACTION_BATTERY_CHANGED), ContextCompat.RECEIVER_NOT_EXPORTED
+        )
+        postDelayed(minuteTicker, 60_000 - System.currentTimeMillis() % 60_000)
+    }
+
     override fun onDetachedFromWindow() {
+        removeCallbacks(minuteTicker)
+        runCatching { context.unregisterReceiver(batteryReceiver) }
         cancelAnim()
         super.onDetachedFromWindow()
     }
@@ -176,7 +233,8 @@ class ReaderPageView(context: Context) : View(context) {
     }
 
     // 画一页: 页矩形不透明背景(覆盖时上层才能盖住下层) → 页眉/页脚(在上下留白内,不压正文)
-    // → 内容区裁剪内画 layout(页末行段中截断时盖掉重画为两端对齐,见 BookPage.lastLine)。封面/封底内容垂直居中
+    // → 内容区裁剪内逐行画行模型(基线坐标物化时算好,此处只平移)。
+    // 封面/封底画居中的虚拟布局,内容垂直居中
     private fun drawPage(canvas: Canvas, page: BookPage, offsetX: Float, t: ResolvedTypography) {
         val save = canvas.save()
         canvas.clipRect(offsetX, 0f, offsetX + width, height.toFloat())
@@ -194,29 +252,47 @@ class ReaderPageView(context: Context) : View(context) {
             //页脚文字画在保留区内,距屏幕底部再留出边距,不贴底
             canvas.drawText(
                 page.footerLabel, offsetX + t.marginPx,
-                height - bottomInsetPx - footerGapPx * 0.4f, chromePaint
+                height - bottomInsetPx - footerGapPx * 0.2f, chromePaint
             )
+        }
+        // 页脚右侧: 时间 + 电量图标(正文页;时间/电量是动态信息,绘制时实时取)
+        if (page.spec.kind == PageKind.CONTENT) {
+            chromePaint.textSize = textSize
+            chromePaint.color = chromeColor
+            val baseline = height - bottomInsetPx - footerGapPx * 0.2f
+            var right = offsetX + width - t.marginPx
+            val pct = batteryPct
+            if (pct != null) {
+                val iconW = textSize * 0.68f * 2.3f
+                drawBattery(canvas, right, baseline, iconW, textSize * 0.68f, pct, chromeColor)
+                right -= iconW + 10f
+            }
+            val timeText = timeFormat.format(Date())
+            right -= chromePaint.measureText(timeText)
+            canvas.drawText(timeText, right, baseline, chromePaint)
         }
         val save2 = canvas.save()
         // 顶部加 8dp: 页眉与正文首行拉开间距
         val contentTop = topInsetPx + pagePadPx.toFloat() + topGapPx
         val contentBottom = (height - bottomInsetPx - footerGapPx).toFloat()
-        // 页尾截断补偿的上下文行不可见: 裁剪底边收到可见末行行顶
-        val visibleBottom = if (page.clipBottomPx.isFinite()) contentTop + page.topOffsetPx + page.clipBottomPx
-        else contentBottom
-        canvas.clipRect(offsetX, contentTop, offsetX + width, minOf(contentBottom, visibleBottom))
-        val y = if (page.spec.kind == PageKind.CONTENT) contentTop + page.topOffsetPx
-        else contentTop + (height - topInsetPx - bottomInsetPx - 2 * pagePadPx - page.layout.height) / 2f
-        canvas.translate(offsetX + t.marginPx, y)
-        page.layout.draw(canvas)
-        // 页末行手工两端对齐: 系统把该行按"段落末行"参差画了,用背景色盖掉后按分段拉伸重画。
-        // 此处已在 layout 原点坐标系内(translate 已含边距与页首偏移),直接用相对坐标
-        page.lastLine?.let { ll ->
-            fillPaint.color = t.bgColor
-            canvas.drawRect(0f, ll.topPx, t.textWidth.toFloat(), ll.bottomPx, fillPaint)
-            lastLinePaint.textSize = t.fontPx
-            lastLinePaint.color = t.fgColor
-            ll.segments.forEach { seg -> canvas.drawText(seg.text, seg.x, ll.baselinePx, lastLinePaint) }
+        canvas.clipRect(offsetX, contentTop, offsetX + width, contentBottom)
+        val virtual = page.virtualLayout
+        if (virtual != null) {
+            val y = contentTop + (height - topInsetPx - bottomInsetPx - 2 * pagePadPx - virtual.height) / 2f
+            canvas.translate(offsetX + t.marginPx, y)
+            virtual.draw(canvas)
+        } else {
+            canvas.translate(offsetX + t.marginPx, contentTop)
+            for (ln in page.lines) {
+                val paint = if (ln.title) titlePaint else bodyPaint
+                val segs = ln.segments
+                if (segs == null) {
+                    canvas.drawText(ln.text, ln.x, ln.baseline, paint)
+                } else {
+                    // 两端对齐行: 物化时按词元拉伸算好的分段直接画
+                    for (seg in segs) canvas.drawText(seg.text, ln.x + seg.x, ln.baseline, paint)
+                }
+            }
         }
         canvas.restoreToCount(save2)
         canvas.restoreToCount(save)
@@ -231,13 +307,39 @@ class ReaderPageView(context: Context) : View(context) {
         canvas.restoreToCount(save)
     }
 
+    // 电池图标: 右缘对齐 right、底边贴文字基线;外框+正极凸头描边,内部按电量填充,
+    // 低电量(≤15%)填充转红。尺寸随页脚文字字号缩放
+    private fun drawBattery(
+        canvas: Canvas, right: Float, baseline: Float,
+        w: Float, h: Float, pct: Int, color: Int
+    ) {
+        val top = baseline - h
+        val bodyW = w - h * 0.18f
+        batteryPaint.color = color
+        batteryPaint.style = Paint.Style.STROKE
+        batteryPaint.strokeWidth = Math.max(1.5f, h * 0.09f)
+        canvas.drawRoundRect(right - bodyW, top, right - h * 0.18f, baseline, h * 0.12f, h * 0.12f, batteryPaint)
+        batteryPaint.style = Paint.Style.FILL
+        canvas.drawRoundRect(
+            right - h * 0.12f, top + h * 0.30f, right, baseline - h * 0.30f,
+            h * 0.06f, h * 0.06f, batteryPaint
+        )
+        val inset = h * 0.16f
+        val fillW = (bodyW - inset * 2f) * pct / 100f
+        if (fillW > 1f) {
+            batteryPaint.color = if (pct <= 15) 0xFFE53935.toInt() else color
+            canvas.drawRoundRect(
+                right - bodyW + inset, top + inset, right - bodyW + inset + fillW, baseline - inset,
+                h * 0.06f, h * 0.06f, batteryPaint
+            )
+        }
+    }
+
     companion object {
         private const val COVER_DURATION_MS = 260L
         private const val MIN_ANIM_MS = 90L
         private const val SHADOW_WIDTH_DP = 12f
         private const val SHADOW_COLOR = 0x33000000
         private const val CHROME_TEXT_SP = 12f
-        private const val TOP_GAP_DP = 8f   // 页眉与正文首行的额外间距
-        private const val FOOTER_GAP_DP = 24f // 正文底与页脚文字的间距(与 Typography.FOOTER_GAP_DP 一致)
     }
 }

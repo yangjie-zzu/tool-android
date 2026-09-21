@@ -202,10 +202,8 @@ fun ReaderScreen(
         val text = fullText ?: return@LaunchedEffect
         if (sp.isEmpty()) return@LaunchedEffect
         val idx = pageIndex.coerceIn(0, sp.lastIndex)
-        val spec = sp[idx]
-        val next = sp.getOrNull(idx + 1)?.takeIf { it.chapterIndex == spec.chapterIndex }
         currentBookPage = withContext(Dispatchers.Default) {
-            BookPager.materialize(book, text, spec, next, t)
+            BookPager.materialize(book, text, sp[idx], t)
         }
     }
 
@@ -224,11 +222,8 @@ fun ReaderScreen(
             for (off in intArrayOf(1, -1)) {
                 val i = pageIndex + off
                 if (i !in sp.indices || neighborCache.containsKey(i)) continue
-                val spec = sp[i]
-                val next = sp.getOrNull(i + 1)?.takeIf { it.chapterIndex == spec.chapterIndex }
                 launch(Dispatchers.Default) {
-                    val materialized = BookPager.materialize(book, text, spec, next, t)
-                    neighborCache[i] = materialized
+                    neighborCache[i] = BookPager.materialize(book, text, sp[i], t)
                 }
             }
         }
@@ -292,11 +287,9 @@ fun ReaderScreen(
                     val idx = livePageIndex.coerceIn(0, sp.lastIndex)
                     val target = if (dir > 0) idx + 1 else idx - 1
                     if (target !in sp.indices) return null
-                    val tSpec = sp[target]
-                    val next = sp.getOrNull(target + 1)?.takeIf { it.chapterIndex == tSpec.chapterIndex }
                     // 命中预物化缓存则零成本定向;未命中(理论上仅冷启动首拖)才同步兜底
                     val neighbor = neighborCache.getOrPut(target) {
-                        BookPager.materialize(liveBook, text, tSpec, next, t)
+                        BookPager.materialize(liveBook, text, sp[target], t)
                     }
                     return DragSession(dir, target, cur, neighbor)
                 }
