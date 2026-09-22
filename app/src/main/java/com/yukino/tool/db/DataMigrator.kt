@@ -248,7 +248,7 @@ object DataMigrator {
         } finally {
             db.endTransaction()
         }
-        sp.edit().remove("items").apply()
+        // 旧数据暂保留不删(观察期后再清理); 幂等靠 migration_flag
         markDone(context, Module.WEB)
         log("浏览历史: 迁移完成(${items.size}条), 旧存储已清除")
     }
@@ -282,7 +282,7 @@ object DataMigrator {
         } finally {
             db.endTransaction()
         }
-        sp.edit().remove("items").apply()
+        // 旧数据暂保留不删(观察期后再清理); 幂等靠 migration_flag
         markDone(context, Module.SCAN)
         log("扫码记录: 迁移完成(${items.size}条), 旧存储已清除")
     }
@@ -366,13 +366,10 @@ object DataMigrator {
                 data class SpecsCache(val typoKey: Int, val totalChars: Long, val specs: List<PageSpec>)
                 val c = json.decodeFromString<SpecsCache>(f.readText())
                 ReaderStore.saveSpecs(context, f.nameWithoutExtension, c.typoKey, c.totalChars, c.specs)
-                f.delete()
                 specsMoved++
             }
         }
-        // 旧json清除(正文文本缓存保留, cache_path 还指着)
-        booksFile.delete()
-        settingsFile.delete()
+        // 旧json暂保留不删(观察期后再清理); 幂等靠 migration_flag
         markDone(context, Module.READER)
         log("书架: 迁移完成, 分页缓存 $specsMoved 项, 旧json已清除")
     }

@@ -441,10 +441,6 @@ object NoteCrypto {
         legacyJson.decodeFromString<LegacyMemFile>(f.readText())
     }.getOrNull()
 
-    private fun deleteLegacyFile(context: Context) {
-        java.io.File(context.filesDir, LEGACY_FILE).delete()
-    }
-
     /*
      * v3 旧文件静默导入(无需密码: plain 段本身是明文JSON, 密文在各字段value里)。
      * 不是v3(需密码)返回null; 无旧文件/已导入返回0; 成功返回条数并删除旧文件。
@@ -463,7 +459,7 @@ object NoteCrypto {
             )
         )
         save(context, entries)
-        deleteLegacyFile(context)
+        // note.json 暂保留不删(观察期后再清理)
         return entries.size
     }
 
@@ -490,7 +486,6 @@ object NoteCrypto {
                 decodeSecrets(vk, meta.encIv, meta.enc)
             } else emptyMap()
             val count = importEntries(context, meta, secrets, dk, MemFile(salt = salt, checkIv = newCheck.first, check = newCheck.second))
-            deleteLegacyFile(context)
             return count
         }
         // v2: 有校验值, 先验证密码
@@ -506,7 +501,6 @@ object NoteCrypto {
             context, meta, secrets, dk,
             MemFile(salt = salt, checkIv = checkIv, check = check, bioIv = meta.bioIv, bioKey = meta.bioKey)
         )
-        deleteLegacyFile(context)
         return count
     }
 
