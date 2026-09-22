@@ -2,8 +2,10 @@ package com.yukino.tool.module.scan
 
 import android.content.Context
 import com.yukino.tool.db.AppDb
+import kotlinx.serialization.Serializable
 
 // 扫码记录条目: content为识别出的字符串, time为保存时间戳
+@Serializable
 data class ScanItem(
     val content: String,
     val time: Long
