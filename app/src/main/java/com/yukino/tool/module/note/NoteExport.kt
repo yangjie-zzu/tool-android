@@ -3,6 +3,7 @@ package com.yukino.tool.module.note
 import android.content.Context
 import android.content.Intent
 import androidx.core.content.FileProvider
+import com.yukino.tool.db.AppDb
 import net.lingala.zip4j.ZipFile
 import net.lingala.zip4j.model.ZipParameters
 import net.lingala.zip4j.model.enums.AesKeyStrength
@@ -12,17 +13,43 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+
+// 备忘录备份结构(加密ZIP内的JSON): 加密元数据+全部条目, secret字段的value仍是密文
+@Serializable
+data class NoteCryptoBackup(
+    val salt: String? = null,
+    val checkIv: String? = null,
+    val check: String? = null,
+    val bioIv: String? = null,
+    val bioKey: String? = null,
+    val entries: List<NoteEntry> = emptyList()
+) {
+    companion object {
+        internal val json = Json { ignoreUnknownKeys = true }
+
+        internal fun metaOf(context: Context, k: String): String? {
+            AppDb.get(context).rawQuery("SELECT v FROM note_meta WHERE k = ?", arrayOf(k)).use { c ->
+                return if (c.moveToFirst()) c.getString(0) else null
+            }
+        }
+
+        internal fun parse(text: String): NoteCryptoBackup = json.decodeFromString(text)
+    }
+}
 
 /*
  * 备忘录导出:
- *  - 加密备份: 打包成AES-256加密的ZIP并分享,原样打包数据文件(note.json)，
+ *  - 加密备份: 打包成AES-256加密的ZIP并分享,导出库内全部数据(元数据+条目,密文原样)，
  *    数据仍由主密钥加密，恢复需导回本应用；
  *  - 明文导出: 解密后的全部条目生成可读Markdown(.md)文件直接分享(含密码和2FA密钥)，请妥善保管。
  */
 object NoteExport {
 
     // 导出模式
-    const val MODE_BACKUP = 0       // 备份: 加密ZIP(原始数据文件note.json)
+    const val MODE_BACKUP = 0       // 备份: 加密ZIP(库内数据导出的JSON)
     const val MODE_ENCRYPTED_MD = 1 // 加密导出: 加密ZIP(内含明文Markdown)
     const val MODE_PLAIN_MD = 2     // 明文导出: Markdown文件直接分享
 
@@ -32,13 +59,20 @@ object NoteExport {
     private fun safeFileName(name: String): String =
         name.replace(Regex("[\\\\/:*?\"<>|]"), "_").ifBlank { "备忘录备份" }
 
-    // 加密备份: 原样打包数据文件(无需认证，数据本身仍是密文)
+    // 加密备份: 导出库内全部数据(加密元数据+条目, secret字段仍是密文)为JSON打包(无需认证)
     fun exportEncryptedBackupZip(context: Context, name: String, password: String): File {
-        val dataFile = File(context.filesDir, "note.json")
-        if (!dataFile.exists()) error("没有可导出的数据")
+        val dump = NoteCryptoBackup(
+            salt = NoteCryptoBackup.metaOf(context, "salt"),
+            checkIv = NoteCryptoBackup.metaOf(context, "checkIv"),
+            check = NoteCryptoBackup.metaOf(context, "check"),
+            bioIv = NoteCryptoBackup.metaOf(context, "bioIv"),
+            bioKey = NoteCryptoBackup.metaOf(context, "bioKey"),
+            entries = NoteCrypto.readPlain(context)
+        )
+        if (dump.salt == null) error("没有可导出的数据")
         return zipWithPassword(
             context, name, password,
-            "${safeFileName(name)}.json", dataFile.readText()
+            "${safeFileName(name)}.json", NoteCryptoBackup.json.encodeToString(dump)
         )
     }
 

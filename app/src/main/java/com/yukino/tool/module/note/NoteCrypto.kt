@@ -6,7 +6,7 @@ import android.security.keystore.KeyProperties
 import android.util.Base64
 import android.util.Log
 import com.yukino.tool.TAG
-import java.io.File
+import com.yukino.tool.db.AppDb
 import java.security.KeyStore
 import java.security.SecureRandom
 import javax.crypto.Cipher
@@ -16,17 +16,16 @@ import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
+
+private const val LEGACY_FILE = "note.json"   // 旧版数据文件名(仅迁移时读取)
 
 /*
  * ============================ 加密方案总览(写给不熟悉密码学的自己) ============================
  *
  * 名词:
  *   主密钥 (DK)   由主密码经 PBKDF2 派生的 256 位 AES 密钥，直接用于加解密敏感字段，从不明文落盘。
- *   主密码路:     用户输入主密码 + 文件里的 salt → PBKDF2(12万轮，故意算得慢以对抗暴力猜解) → 现场得到 DK。
- *                文件里另存一段"DK加密的固定校验值"(check)，解得开=密码正确，解不开=密码错。
+ *   主密码路:     用户输入主密码 + note_meta 里的 salt → PBKDF2(12万轮，故意算得慢以对抗暴力猜解) → 现场得到 DK。
+ *                另存一段"DK加密的固定校验值"(check)，解得开=密码正确，解不开=密码错。
  *   指纹路:       Keystore 硬件密钥把 DK 封存一份(bioKey+bioIv)。
  *                setUserAuthenticationRequired(true)+validity=-1 ⇒ 每次解封都必须现场过指纹，
  *                认证成功后系统才放行 cipher.doFinal——指纹因此在当前设备上代替主密码。
@@ -34,8 +33,10 @@ import kotlinx.serialization.json.Json
  *   AES/GCM: 对称加密算法+认证标签。每次加密用随机 IV(不保密，和密文一起存)；
  *            解密时若数据被篡改或密钥不对会直接抛异常(自带完整性校验)。
  *
- * v3 存储布局(密文就地存放):
- *   敏感字段的 value 直接存"Base64(IV)|Base64(密文)"，不再有独立的enc段。
+ * 存储布局(数据在 SQLite: note_meta/note_entry/note_field 三张表):
+ *   note_meta   一行一个 k/v: salt、checkIv+check、bioIv+bioKey(二进制 Base64 存文本)
+ *   note_entry  条目(ord 列保持列表顺序)
+ *   note_field  字段。敏感字段的 value 直接存"Base64(IV)|Base64(密文)"，明文字段存原文。
  *   好处: 密文跟着字段走——改字段名/删除字段自动带上/丢掉对应密文；
  *         只改明文内容时完全不碰任何密文，也就不需要主密钥。
  *   不变量: 内存中的 ui.entries 里 secret 字段的 value 永远是密文(或空串)，
@@ -45,10 +46,6 @@ import kotlinx.serialization.json.Json
  *   - 平时列表/预览只读明文内容，完全不需要任何凭证。
  *   - 查看/复制/保存加密内容 时才验证(指纹或主密码)拿到 DK → 解密/加密对应字段。
  *   - 指纹已启用时优先指纹；点"使用密码"负按钮或未启用指纹时验证主密码；首次保存未设置则现场设置。
- *
- * 旧格式自动迁移(首次使用旧数据时各输一次主密码):
- *   v1: 随机VK加密数据+独立enc段 → DK解开旧VK，数据逐字段改密文落盘。
- *   v2: DK加密+独立enc段      → 解开enc段，数据逐字段改密文落盘(有指纹时拿DK不用输密码)。
  *
  * 指纹的一个重要限制(容易踩坑):
  *   Keystore 认证绑定密钥的 cipher.init(ENCRYPT_MODE) 可以随便调，
@@ -60,7 +57,7 @@ import kotlinx.serialization.json.Json
 
 // 单个字段。secret=加密存储(value里是密文"Base64(IV)|Base64(密文)")；totp=2FA密钥字段(必须secret)；
 // title=作为条目标题；preview=在列表中预览
-@Serializable
+@kotlinx.serialization.Serializable
 data class NoteField(
     val key: String = "",
     val value: String = "",
@@ -71,75 +68,139 @@ data class NoteField(
 )
 
 // 一条记忆 = 字段列表。名称/账号/密码/备注只是新增时的"预填充模板"，字段完全可自定义
-@Serializable
+@kotlinx.serialization.Serializable
 data class NoteEntry(val id: Long = System.currentTimeMillis(), val fields: List<NoteField> = emptyList())
 
-// 磁盘文件结构(v3，所有二进制都 Base64 后存 JSON):
-//   salt         : PBKDF2 盐(随机16字节)
-//   checkIv+check: DK加密的固定校验值，用于识别主密码对错
-//   bioIv+bioKey : DK被Keystore指纹密钥封存后的密文
-//   plain        : 全部条目。加密字段的value是"Base64(IV)|Base64(密文)"，非加密字段是明文
-//   以下为v1/v2遗留字段，仅在自动迁移时读取:
-//   encIv+enc    : (v2)整段敏感值JSON被DK加密
-//   pwdIv+vkByPwd: (v1)VK被DK封存
-//   vkByBio      : (v1)VK被Keystore指纹密钥封存
-@Serializable
+// 加密元数据(SQLite note_meta 表的内存映射, 全部为非机密的加密材料: 盐/IV/密文)
 private data class MemFile(
-    val version: Int = 3,
     val salt: String? = null,
     val checkIv: String? = null,
     val check: String? = null,
     val bioIv: String? = null,
-    val bioKey: String? = null,
-    val plain: String = "[]",
-    val encIv: String? = null,
-    val enc: String? = null,
-    val pwdIv: String? = null,
-    val vkByPwd: String? = null,
-    val vkByBio: String? = null
+    val bioKey: String? = null
 )
 
 object NoteCrypto {
 
-    private const val FILE_NAME = "note.json"
     private const val KS_ALIAS = "note_bio_key"   // Keystore 里指纹路密钥的别名
     private const val GCM_TAG_BITS = 128            // GCM 认证标签长度
     private const val PBKDF2_ROUNDS = 120_000       // 派生轮数: 越大越慢越抗暴力破解
     private val CHECK_MAGIC = "NoteDK-v2-check".toByteArray()   // 主密码校验内容
     private const val FIELD_SEP = '|'               // 字段密文的IV与密文分隔符
 
-    private val json = Json { ignoreUnknownKeys = true }
     private val random = SecureRandom()
 
-    private fun file(context: Context) = File(context.filesDir, FILE_NAME)
+    // ---------- note_meta 表读写(元数据只有几行, 整读整写) ----------
 
-    private fun b64(bytes: ByteArray): String = Base64.encodeToString(bytes, Base64.NO_WRAP)
-    private fun unb64(text: String): ByteArray = Base64.decode(text, Base64.NO_WRAP)
-
-    private fun readMeta(context: Context): MemFile? = runCatching {
-        json.decodeFromString<MemFile>(file(context).readText())
-    }.getOrNull()
+    private fun readMeta(context: Context): MemFile? {
+        val rows = mutableMapOf<String, String>()
+        AppDb.get(context).rawQuery("SELECT k, v FROM note_meta", null).use { c ->
+            while (c.moveToNext()) rows[c.getString(0)] = c.getString(1)
+        }
+        if (rows.isEmpty()) return null
+        return MemFile(
+            salt = rows["salt"],
+            checkIv = rows["checkIv"],
+            check = rows["check"],
+            bioIv = rows["bioIv"],
+            bioKey = rows["bioKey"]
+        )
+    }
 
     private fun write(context: Context, meta: MemFile) {
-        file(context).writeText(json.encodeToString(meta))
+        val db = AppDb.get(context)
+        db.beginTransaction()
+        try {
+            db.execSQL("DELETE FROM note_meta")
+            val st = db.compileStatement("INSERT INTO note_meta(k, v) VALUES(?,?)")
+            fun put(k: String, v: String?) {
+                if (v == null) return
+                st.bindString(1, k)
+                st.bindString(2, v)
+                st.executeInsert()
+            }
+            put("salt", meta.salt)
+            put("checkIv", meta.checkIv)
+            put("check", meta.check)
+            put("bioIv", meta.bioIv)
+            put("bioKey", meta.bioKey)
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
     }
 
-    fun isInitialized(context: Context): Boolean = file(context).exists()
+    // ---------- note_entry/note_field 表读写(全量读/全量覆写, 与调用方内存模型一致) ----------
 
-    // 主密码是否已设置(校验值齐备，或旧格式待迁移)
-    fun masterReady(context: Context): Boolean {
-        val meta = readMeta(context) ?: return false
-        return meta.vkByPwd != null || meta.check != null
+    // 读全部条目(加密字段的value是密文，调用方不能把secret字段的value直接展示/落盘为明文)
+    fun readPlain(context: Context): List<NoteEntry> {
+        val fields = LinkedHashMap<Long, MutableList<NoteField>>()
+        AppDb.get(context).rawQuery(
+            "SELECT entry_id, idx, key, value, secret, totp, is_title, preview FROM note_field ORDER BY entry_id, idx",
+            null
+        ).use { c ->
+            while (c.moveToNext()) {
+                fields.getOrPut(c.getLong(0)) { mutableListOf() }.add(
+                    NoteField(
+                        key = c.getString(2),
+                        value = c.getString(3),
+                        secret = c.getInt(4) != 0,
+                        totp = c.getInt(5) != 0,
+                        title = c.getInt(6) != 0,
+                        preview = c.getInt(7) != 0
+                    )
+                )
+            }
+        }
+        val entries = mutableListOf<NoteEntry>()
+        AppDb.get(context).rawQuery("SELECT id FROM note_entry ORDER BY ord", null).use { c ->
+            while (c.moveToNext()) {
+                val id = c.getLong(0)
+                entries.add(NoteEntry(id = id, fields = fields[id] ?: emptyList()))
+            }
+        }
+        return entries
     }
 
-    // 是否为v1旧格式(VK方案，需迁移)
-    fun isLegacy(context: Context): Boolean = readMeta(context)?.vkByPwd != null
-
-    // 是否为v2格式(独立enc段，需拆入字段)
-    fun isV2(context: Context): Boolean {
-        val meta = readMeta(context) ?: return false
-        return meta.check != null && meta.enc != null
+    // 保存: entries的secret字段value已由encryptEntries写成密文(见顶部不变量说明)。全量覆写
+    fun save(context: Context, entries: List<NoteEntry>) {
+        val db = AppDb.get(context)
+        db.beginTransaction()
+        try {
+            db.execSQL("PRAGMA foreign_keys = ON")
+            db.execSQL("DELETE FROM note_entry") // 字段表级联删除
+            entries.forEachIndexed { ord, e ->
+                var st = db.compileStatement("INSERT INTO note_entry(id, ord) VALUES(?,?)")
+                st.bindLong(1, e.id)
+                st.bindLong(2, ord.toLong())
+                st.executeInsert()
+                e.fields.forEachIndexed { idx, f ->
+                    st = db.compileStatement(
+                        "INSERT INTO note_field(entry_id, idx, key, value, secret, totp, is_title, preview) VALUES(?,?,?,?,?,?,?,?)"
+                    )
+                    st.bindLong(1, e.id)
+                    st.bindLong(2, idx.toLong())
+                    st.bindString(3, f.key)
+                    st.bindString(4, f.value)
+                    st.bindLong(5, if (f.secret) 1 else 0)
+                    st.bindLong(6, if (f.totp) 1 else 0)
+                    st.bindLong(7, if (f.title) 1 else 0)
+                    st.bindLong(8, if (f.preview) 1 else 0)
+                    st.executeInsert()
+                }
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
     }
+
+    // ==================== 状态查询 ====================
+
+    fun isInitialized(context: Context): Boolean = readMeta(context) != null
+
+    // 主密码是否已设置(有校验值)
+    fun masterReady(context: Context): Boolean = readMeta(context)?.check != null
 
     // 指纹是否已启用(封存过DK且Keystore密钥可用)
     fun biometricEnabled(context: Context): Boolean {
@@ -177,20 +238,15 @@ object NoteCrypto {
         return cipher.doFinal(unb64(encrypted))
     }
 
+    private fun b64(bytes: ByteArray): String = Base64.encodeToString(bytes, Base64.NO_WRAP)
+    private fun unb64(text: String): ByteArray = Base64.decode(text, Base64.NO_WRAP)
+
     // 首次设置主密码: 生成 salt，派生 DK，写入校验值。返回 DK 供本次保存直接使用。
-    // 全新设置会清掉一切旧封存(含可能残留的旧格式字段)
     fun setupMaster(context: Context, password: String): ByteArray {
-        val meta = readMeta(context) ?: MemFile()
         val salt = ByteArray(16).also { random.nextBytes(it) }
         val dk = deriveKey(password, salt)
         val (checkIv, check) = gcmEncrypt(dk, CHECK_MAGIC)
-        write(
-            context, meta.copy(
-                version = 3, salt = b64(salt), checkIv = checkIv, check = check,
-                bioIv = null, bioKey = null, encIv = null, enc = null,
-                pwdIv = null, vkByPwd = null, vkByBio = null
-            )
-        )
+        write(context, MemFile(salt = b64(salt), checkIv = checkIv, check = check))
         return dk.encoded
     }
 
@@ -210,116 +266,37 @@ object NoteCrypto {
     }
 
     /*
-     * 修改主密码: 验证旧密码 → 新盐派生新DK → 全部加密值解密后用新DK重加密 → 换校验值。
+     * 修改主密码: 验证旧密码 → 新盐派生新DK → 全部条目的加密字段解密后用新DK重加密 → 换校验值。
      * 指纹封存的DK随之失效(封存的是旧DK)，需重新启用指纹(返回值供自动引导)。
-     * 失败抛IllegalStateException(含提示信息)；兼容v1/v2遗留格式(先校验后整体转换)。
+     * 失败抛IllegalStateException(含提示信息)。
      */
     fun changeMasterPassword(context: Context, oldPassword: String, newPassword: String): Pair<ByteArray, Boolean> {
         if (newPassword.length < 4) error("新主密码至少4位")
         val meta = readMeta(context) ?: error("记忆未初始化")
         val salt = meta.salt ?: error("未设置主密码")
-        val oldDk: SecretKey
-        // 修改前是否启用指纹: v2/v3看bioKey，v1旧格式看vkByBio。改密后封存的是旧DK，必须引导重新认证
-        val hadBio = meta.bioKey != null || meta.vkByBio != null
-        if (meta.check != null && meta.checkIv != null) {
-            // v3: 校验值验证旧密码
-            oldDk = deriveKey(oldPassword, unb64(salt))
-            try {
-                if (!gcmDecrypt(oldDk, meta.checkIv, meta.check).contentEquals(CHECK_MAGIC)) error("x")
-            } catch (e: Exception) {
-                error("主密码错误")
-            }
-        } else if (meta.vkByPwd != null) {
-            // v1/v2遗留: 旧密码只能靠解开封存的旧VK验证
-            oldDk = deriveKey(oldPassword, unb64(salt))
-            try {
-                gcmDecrypt(oldDk, meta.pwdIv!!, meta.vkByPwd)
-            } catch (e: Exception) {
-                error("主密码错误")
-            }
-        } else {
-            error("未设置主密码")
+        val checkIv = meta.checkIv ?: error("未设置主密码")
+        val check = meta.check ?: error("未设置主密码")
+        val hadBio = meta.bioKey != null
+        val oldDk = deriveKey(oldPassword, unb64(salt))
+        try {
+            if (!gcmDecrypt(oldDk, checkIv, check).contentEquals(CHECK_MAGIC)) error("x")
+        } catch (e: Exception) {
+            error("主密码错误")
         }
         val newSalt = ByteArray(16).also { random.nextBytes(it) }
         val newDk = deriveKey(newPassword, newSalt)
         val (newCheckIv, newCheck) = gcmEncrypt(newDk, CHECK_MAGIC)
-        // 全部加密值用旧DK解出、新DK重加密(兼容v2 enc段与v3字段密文)
+        // 全部加密字段用旧DK解出、新DK重加密(以磁盘上的密文为准, 不依赖内存缓存)
         val secrets = readSecrets(context, oldDk.encoded)
-        val newPlain = fillEncryptedValues(meta.plain, secrets, SecretKeySpec(newDk.encoded, "AES"))
+        val finalEntries = encryptEntries(readPlain(context), secrets, newDk.encoded)
+        save(context, finalEntries)
         write(
-            context, meta.copy(
-                version = 3, salt = b64(newSalt), checkIv = newCheckIv, check = newCheck,
-                plain = newPlain, encIv = null, enc = null,
-                bioIv = null, bioKey = null, pwdIv = null, vkByPwd = null, vkByBio = null
+            context, MemFile(
+                salt = b64(newSalt), checkIv = newCheckIv, check = newCheck,
+                bioIv = null, bioKey = null
             )
         )
         return newDk.encoded to hadBio
-    }
-
-    // v1旧格式专用: 只派生不校验(旧格式没有校验值)。密码对错由迁移时旧VK能否解开判定
-    fun deriveLegacy(context: Context, password: String): ByteArray {
-        val meta = readMeta(context) ?: error("记忆未初始化")
-        val salt = meta.salt ?: error("数据损坏")
-        return deriveKey(password, unb64(salt)).encoded
-    }
-
-    /*
-     * v1→v3 自动迁移: 用 DK 解开旧封存的 VK → 解出全部敏感值 → 逐字段加密写入value。
-     * 返回迁移前是否启用过指纹(上层据此引导重新封存DK)。
-     * dk 来自用户输入的主密码；旧VK解不开即密码错误，抛异常。
-     */
-    fun migrateLegacy(context: Context, dk: ByteArray): Boolean {
-        val meta = readMeta(context) ?: return false
-        val vkByPwd = meta.vkByPwd ?: return false
-        val aesKey = SecretKeySpec(dk, "AES")
-        val vk = try {
-            gcmDecrypt(aesKey, meta.pwdIv!!, vkByPwd)
-        } catch (e: Exception) {
-            error("主密码错误")
-        }
-        val secrets = if (meta.enc != null) {
-            json.decodeFromString<Map<String, String>>(String(gcmDecrypt(SecretKeySpec(vk, "AES"), meta.encIv!!, meta.enc)))
-        } else emptyMap()
-        val (checkIv, check) = gcmEncrypt(aesKey, CHECK_MAGIC)
-        val newPlain = fillEncryptedValues(meta.plain, secrets, aesKey)
-        write(
-            context, meta.copy(
-                version = 3, checkIv = checkIv, check = check, plain = newPlain,
-                encIv = null, enc = null, bioIv = null, bioKey = null,
-                pwdIv = null, vkByPwd = null, vkByBio = null
-            )
-        )
-        return meta.vkByBio != null
-    }
-
-    /*
-     * v2→v3 自动迁移: 解开独立enc段 → 敏感值逐字段加密写入value。
-     * DK可来自指纹或主密码；失败时文件保持v2，下次重试。
-     */
-    fun migrateV2(context: Context, dk: ByteArray) {
-        val meta = readMeta(context) ?: return
-        val enc = meta.enc ?: return
-        val aesKey = SecretKeySpec(dk, "AES")
-        val secrets = runCatching {
-            json.decodeFromString<Map<String, String>>(String(gcmDecrypt(aesKey, meta.encIv!!, enc)))
-        }.getOrDefault(emptyMap())
-        val newPlain = fillEncryptedValues(meta.plain, secrets, aesKey)
-        write(context, meta.copy(version = 3, plain = newPlain, encIv = null, enc = null))
-    }
-
-    // 把明文secrets逐字段加密写进plain的value里(v1/v2迁移共用)
-    private fun fillEncryptedValues(plain: String, secrets: Map<String, String>, key: SecretKey): String {
-        val entries = runCatching { json.decodeFromString<List<NoteEntry>>(plain) }.getOrDefault(emptyList())
-        val newEntries = entries.map { e ->
-            e.copy(fields = e.fields.map { f ->
-                if (!f.secret) f
-                else {
-                    val v = secrets["${e.id}:${f.key}"]
-                    f.copy(value = if (v != null) encryptFieldValue(key, v) else "")
-                }
-            })
-        }
-        return json.encodeToString(newEntries)
     }
 
     // 指纹认证成功后(认证过的cipher)解封DK
@@ -407,27 +384,14 @@ object NoteCrypto {
 
     // ==================== 数据读写 ====================
 
-    // 读全部条目(加密字段的value是密文，调用方不能把secret字段的value直接展示/落盘为明文)
-    fun readPlain(context: Context): List<NoteEntry> {
-        val meta = readMeta(context) ?: return emptyList()
-        return runCatching { json.decodeFromString<List<NoteEntry>>(meta.plain) }.getOrDefault(emptyList())
-    }
-
     /*
      * 用主密钥解密全部加密字段，键为"条目id:字段名"。
-     * 兼容v2(独立enc段，迁移前)与v3(密文在字段value里)；单字段解密失败跳过该字段。
+     * 单字段解密失败跳过该字段。
      */
     fun readSecrets(context: Context, key: ByteArray): Map<String, String> {
-        val meta = readMeta(context) ?: return emptyMap()
         val aesKey = SecretKeySpec(key, "AES")
-        if (meta.enc != null) {
-            return runCatching {
-                json.decodeFromString<Map<String, String>>(String(gcmDecrypt(aesKey, meta.encIv!!, meta.enc)))
-            }.getOrDefault(emptyMap())
-        }
-        val entries = runCatching { json.decodeFromString<List<NoteEntry>>(meta.plain) }.getOrDefault(emptyList())
         val result = mutableMapOf<String, String>()
-        entries.forEach { e ->
+        readPlain(context).forEach { e ->
             e.fields.forEach { f ->
                 if (f.secret && f.value.isNotEmpty()) {
                     decryptFieldValue(aesKey, f.value)?.let { result["${e.id}:${f.key}"] = it }
@@ -454,12 +418,6 @@ object NoteCrypto {
         }
     }
 
-    // 保存: entries的secret字段value已由encryptEntries写成密文(见persist里的不变量说明)
-    fun save(context: Context, entries: List<NoteEntry>) {
-        val meta = readMeta(context) ?: MemFile()
-        write(context, meta.copy(plain = json.encodeToString(entries)))
-    }
-
     // 字段值加解密(密文格式"Base64(IV)|Base64(密文)")
     private fun encryptFieldValue(key: SecretKey, value: String): String {
         val (iv, ct) = gcmEncrypt(key, value.toByteArray())
@@ -472,4 +430,129 @@ object NoteCrypto {
         if (iv.isEmpty() || ct.isEmpty()) return null
         return runCatching { String(gcmDecrypt(key, iv, ct)) }.getOrNull()
     }
+
+    // ==================== 旧 note.json 一次性导入(仅 DataMigrator 调用) ====================
+
+    private val legacyJson = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+
+    private fun readLegacyFile(context: Context): LegacyMemFile? = runCatching {
+        val f = java.io.File(context.filesDir, LEGACY_FILE)
+        if (!f.exists()) return null
+        legacyJson.decodeFromString<LegacyMemFile>(f.readText())
+    }.getOrNull()
+
+    private fun deleteLegacyFile(context: Context) {
+        java.io.File(context.filesDir, LEGACY_FILE).delete()
+    }
+
+    /*
+     * v3 旧文件静默导入(无需密码: plain 段本身是明文JSON, 密文在各字段value里)。
+     * 不是v3(需密码)返回null; 无旧文件/已导入返回0; 成功返回条数并删除旧文件。
+     */
+    @Synchronized
+    fun importV3File(context: Context): Int? {
+        val meta = readLegacyFile(context) ?: return 0
+        if (meta.plain == null || meta.enc != null || meta.vkByPwd != null) return null
+        val entries = runCatching {
+            legacyJson.decodeFromString<List<NoteEntry>>(meta.plain)
+        }.getOrElse { error("旧数据解析失败") }
+        write(
+            context, MemFile(
+                salt = meta.salt, checkIv = meta.checkIv, check = meta.check,
+                bioIv = meta.bioIv, bioKey = meta.bioKey
+            )
+        )
+        save(context, entries)
+        deleteLegacyFile(context)
+        return entries.size
+    }
+
+    /*
+     * v1/v2 旧文件导入(需主密码换出DK):
+     *   v1: DK解开封存的旧VK → VK解独立enc段; 旧格式无校验值, 现场补写; 封存的指纹VK作废(需重开指纹)
+     *   v2: DK解独立enc段; 校验值/指纹封存原样沿用
+     * 密码错误抛"主密码错误"; 成功返回条数并删除旧文件。
+     */
+    @Synchronized
+    fun importLegacyFile(context: Context, password: String): Int {
+        val meta = readLegacyFile(context) ?: error("没有旧数据")
+        val salt = meta.salt ?: error("数据损坏")
+        val dk = deriveKey(password, unb64(salt))
+        if (meta.vkByPwd != null) {
+            // v1: 密码对错靠旧VK能否解开判定
+            val vk = try {
+                gcmDecrypt(dk, meta.pwdIv ?: error("数据损坏"), meta.vkByPwd)
+            } catch (e: Exception) {
+                error("主密码错误")
+            }
+            val newCheck = gcmEncrypt(dk, CHECK_MAGIC)   // v1没有校验值, 补写
+            val secrets = if (meta.enc != null) {
+                decodeSecrets(vk, meta.encIv, meta.enc)
+            } else emptyMap()
+            val count = importEntries(context, meta, secrets, dk, MemFile(salt = salt, checkIv = newCheck.first, check = newCheck.second))
+            deleteLegacyFile(context)
+            return count
+        }
+        // v2: 有校验值, 先验证密码
+        val checkIv = meta.checkIv ?: error("数据损坏")
+        val check = meta.check ?: error("数据损坏")
+        try {
+            if (!gcmDecrypt(dk, checkIv, check).contentEquals(CHECK_MAGIC)) error("主密码错误")
+        } catch (e: Exception) {
+            error("主密码错误")
+        }
+        val secrets = decodeSecrets(dk.encoded, meta.encIv, meta.enc)
+        val count = importEntries(
+            context, meta, secrets, dk,
+            MemFile(salt = salt, checkIv = checkIv, check = check, bioIv = meta.bioIv, bioKey = meta.bioKey)
+        )
+        deleteLegacyFile(context)
+        return count
+    }
+
+    // 解开独立enc段(v1用VK, v2用DK), 得到"条目id:字段名"→明文值
+    private fun decodeSecrets(rawKey: ByteArray, encIv: String?, enc: String?): Map<String, String> {
+        if (enc == null) return emptyMap()
+        return runCatching {
+            legacyJson.decodeFromString<Map<String, String>>(
+                String(gcmDecrypt(SecretKeySpec(rawKey, "AES"), encIv ?: error("数据损坏"), enc))
+            )
+        }.getOrElse { error("旧数据解析失败") }
+    }
+
+    // 把plain(条目JSON)里secret字段的空值按secrets用DK逐字段重加密后入库, 并写meta
+    private fun importEntries(context: Context, meta: LegacyMemFile, secrets: Map<String, String>, dk: SecretKey, newMeta: MemFile): Int {
+        val entries = runCatching {
+            legacyJson.decodeFromString<List<NoteEntry>>(meta.plain ?: "[]")
+        }.getOrElse { error("旧数据解析失败") }
+        val filled = entries.map { e ->
+            e.copy(fields = e.fields.map { f ->
+                if (!f.secret) f
+                else {
+                    val v = secrets["${e.id}:${f.key}"]
+                    f.copy(value = if (v != null) encryptFieldValue(dk, v) else "")
+                }
+            })
+        }
+        write(context, newMeta)
+        save(context, filled)
+        return filled.size
+    }
 }
+
+// 旧版note.json磁盘结构(v1/v2/v3), 仅迁移时读取
+@kotlinx.serialization.Serializable
+private data class LegacyMemFile(
+    val version: Int = 3,
+    val salt: String? = null,
+    val checkIv: String? = null,
+    val check: String? = null,
+    val bioIv: String? = null,
+    val bioKey: String? = null,
+    val plain: String? = null,
+    val encIv: String? = null,
+    val enc: String? = null,
+    val pwdIv: String? = null,
+    val vkByPwd: String? = null,
+    val vkByBio: String? = null
+)

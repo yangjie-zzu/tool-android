@@ -304,49 +304,10 @@ fun NoteApp() {
 
     /*
      * 拿主密钥DK的统一入口(挂起，按需验证):
-     * v1旧格式 → 输一次主密码迁移(解开封存的旧VK，数据逐字段改密文)；
-     * v2旧格式 → 正常验证拿DK后，把独立enc段拆成逐字段密文(失败下次重试)；
-     * v3 → 直接走常规取钥(指纹优先，主密码兜底)。
-     * 返回null = 用户取消或验证失败(提示已在内部给出)。
+     * 指纹优先，主密码兜底。返回null = 用户取消或验证失败(提示已在内部给出)。
      */
-    suspend fun obtainKey(reason: String, offerEnableBio: Boolean = biometricUsable && !NoteCrypto.biometricEnabled(context)): ByteArray? {
-        if (NoteCrypto.isLegacy(context)) {
-            // v1迁移: 旧格式没有校验值，只能"派生→解封旧VK"来验证密码，错误可重试
-            Log.i(TAG, "obtainKey[$reason]: v1旧格式，进入迁移流程")
-            while (true) {
-                val password = askPassword("迁移加密格式，验证主密码")?.first ?: return null
-                try {
-                    var hadBio = false
-                    val dk = withContext(Dispatchers.Default) {
-                        val derived = NoteCrypto.deriveLegacy(context, password)
-                        hadBio = NoteCrypto.migrateLegacy(context, derived)   // 密码错在这里抛"主密码错误"
-                        Log.i(TAG, "obtainKey[$reason]: v1→v3迁移完成, 原指纹启用=$hadBio")
-                        derived
-                    }
-                    // 原来启用过指纹: 引导现场认证一次，把DK重新封存进Keystore，指纹继续可用
-                    if (hadBio) enableBiometricWith(dk)
-                    return dk
-                } catch (e: Exception) {
-                    Log.w(TAG, "obtainKey[$reason]: 迁移失败: ${e.message}")
-                    Toast.makeText(
-                        context,
-                        if (e.message == "主密码错误") "主密码错误" else "迁移失败: ${e.message}",
-                        Toast.LENGTH_LONG
-                    ).show()
-                }
-            }
-        }
-        val key = obtainKeyNormal(reason, offerEnableBio) ?: return null
-        if (NoteCrypto.isV2(context)) {
-            try {
-                withContext(Dispatchers.IO) { NoteCrypto.migrateV2(context, key) }
-                Log.i(TAG, "obtainKey[$reason]: v2→v3迁移完成(加密值拆入字段)")
-            } catch (e: Exception) {
-                Log.e(TAG, "obtainKey[$reason]: v2→v3迁移失败(下次重试)", e)
-            }
-        }
-        return key
-    }
+    suspend fun obtainKey(reason: String, offerEnableBio: Boolean = biometricUsable && !NoteCrypto.biometricEnabled(context)): ByteArray? =
+        obtainKeyNormal(reason, offerEnableBio)
 
     // 解密全部敏感值并写入缓存(挂起)。返回null = 用户取消或解密失败(提示已在内部给出)
     suspend fun unlockSecrets(reason: String): Map<String, String>? {
