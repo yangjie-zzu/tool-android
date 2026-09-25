@@ -64,6 +64,7 @@ class DrawLine(
     val x: Float,                 // 行首 x: 段首行为首行缩进,其余 0(自带缩进的段落缩进在字符里)
     val baseline: Float,
     val title: Boolean,           // true 用标题 paint(大字号加粗)
+    val lineStartGlobal: Long,    // 行首字符的全书偏移(行内第 i 字符 = lineStartGlobal + i,正文区线性)
     val segments: List<LineSeg>? = null   // 两端对齐拉伸分段(相对行首 x);null = 自然宽整行画
 )
 
@@ -333,7 +334,11 @@ object BookPager {
         val percent = percentOf(book, spec)
         val label = "${spec.chapterPageIndex + 1}/${spec.chapterPageCount} ${(percent * 100).roundToInt()}%"
         val paint = TextPaint(TextPaint.ANTI_ALIAS_FLAG).apply { textSize = typo.fontPx }
-        return BookPage(spec, spec.chapterTitle, label, drawLines(cl, slice, typo) { paint.measureText(it) })
+        val chapterStartGlobal = chapter?.startChar ?: 0L
+        return BookPage(
+            spec, spec.chapterTitle, label,
+            drawLines(cl, slice, typo, measure = { paint.measureText(it) }, chapterStartGlobal = chapterStartGlobal)
+        )
     }
 
     // 行窗口 → 可绘制行。跳过空行(其行高已占位);窗口首个非空行豁免段前距(与分页同口径);
@@ -343,7 +348,8 @@ object BookPager {
         cl: ChapterLines,
         slice: PageSlice,
         typo: ResolvedTypography,
-        measure: (String) -> Float
+        measure: (String) -> Float,
+        chapterStartGlobal: Long = 0L
     ): List<DrawLine> {
         val out = ArrayList<DrawLine>(slice.endLineExclusive - slice.startLine)
         var head = slice.startLine
@@ -363,7 +369,10 @@ object BookPager {
                     PaginationEngine.justifySegments(text, typo.textWidth - x, typo.fontPx, measure)
                         ?.map { LineSeg(it.first, it.second) }
                 } else null
-                out += DrawLine(text, x, (y + above + ln.ascentAbs).toFloat(), ln.kind == LineKind.TITLE, segs)
+                out += DrawLine(
+                    text, x, (y + above + ln.ascentAbs).toFloat(), ln.kind == LineKind.TITLE,
+                    globalOffset(ln.start, cl.bodyStart, cl.bodyZero, chapterStartGlobal), segs
+                )
             }
             y += ln.pitch - (if (li == head) ln.paraAbove else 0)
         }

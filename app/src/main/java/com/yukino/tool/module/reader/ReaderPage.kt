@@ -6,7 +6,10 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
@@ -15,6 +18,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.systemGestureExclusion
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -39,19 +44,31 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.positionInWindow
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -59,14 +76,33 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.systemBars
 import androidx.core.view.WindowCompat
+import com.yukino.tool.R
 import com.yukino.tool.util.findActivity
 import java.io.File
 import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import android.view.ActionMode
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
+import android.graphics.Rect
+import android.graphics.RectF
+import android.os.Build
+import android.os.SystemClock
+import android.view.Menu
+import android.view.MenuItem
+import android.view.View
+import android.widget.Magnifier
+import android.widget.Toast
 
 private const val EDGE_DEADZONE_DP = 24
 
@@ -259,6 +295,285 @@ fun ReaderScreen(
     val topInsetPx = with(density) { sysPad.calculateTopPadding().toPx() }.toInt()
     val bottomInsetPx = with(density) { sysPad.calculateBottomPadding().toPx() }.toInt()
 
+    // ==================== 文字选择 ====================
+    // 选区锚定全书字符偏移: 跨页/跨章统一,字号重排不漂移。翻页保留选区(跨页选择的前提)
+    var selection by remember(book.id) { mutableStateOf<ReaderSelection?>(null) }
+    var actionMode by remember { mutableStateOf<ActionMode?>(null) }
+    val scope = rememberCoroutineScope()
+    val haptic = LocalHapticFeedback.current
+
+    // 选择激活时返回键先清选择再退出;声明在退出 BackHandler 之后(后注册优先接管)
+    BackHandler(enabled = selection != null) {
+        selection = null
+        actionMode?.finish()
+    }
+
+    // 版式变化 → 整本重排,行模型全部失效,选区清除
+    LaunchedEffect(typoKey) { if (selection != null) selection = null }
+    // 菜单浮层弹出时收起文本工具栏(浮层盖在选区上,工具栏留着无意义)
+    LaunchedEffect(menuVisible) { if (menuVisible) actionMode?.finish() }
+
+    // 版心上下界(屏幕坐标): 与 ReaderPageView.drawPage 同一套常量
+    val contentTopPx = topInsetPx +
+        with(density) { (Typography.PAGE_PADDING_DP + Typography.TOP_GAP_DP).dp.toPx() }.roundToInt()
+    val contentBottomY = (viewport?.height ?: 0) + topInsetPx -
+        with(density) { Typography.FOOTER_GAP_DP.dp.toPx() }
+
+    // 字体度量 + 测量(正文/标题两套字号),选择会话期间复用
+    val selMetrics = remember(typo) {
+        typo?.let { t ->
+            val bodyP = android.text.TextPaint(android.text.TextPaint.ANTI_ALIAS_FLAG)
+                .apply { textSize = t.fontPx }
+            val titleP = android.text.TextPaint(android.text.TextPaint.ANTI_ALIAS_FLAG)
+                .apply { textSize = t.fontPx * ChapterComposer.TITLE_SCALE }
+            val fm = android.graphics.Paint.FontMetrics()
+            bodyP.getFontMetrics(fm)
+            val bodyAscent = -fm.ascent
+            val bodyDescent = fm.descent
+            titleP.getFontMetrics(fm)
+            SelectionGeometry.Metrics(bodyAscent, bodyDescent, -fm.ascent, fm.descent) { text, title ->
+                (if (title) titleP else bodyP).measureText(text)
+            }
+        }
+    }
+
+    // 选区可视化(版心坐标): 高亮矩形 + 手柄锚 + 跨页延续标志
+    val selectionVisual = remember(currentBookPage, selection, selMetrics) {
+        val bp = currentBookPage ?: return@remember null
+        val sel = selection ?: return@remember null
+        val m = selMetrics ?: return@remember null
+        if (bp.spec.kind != PageKind.CONTENT) return@remember null
+        SelectionGeometry.visual(bp, sel, m)
+    }
+    // 事件回调里读最新值,防闭包过期
+    val selVisualRef = remember { mutableStateOf(selectionVisual) }
+    selVisualRef.value = selectionVisual
+
+    // 工具栏延迟弹出: 长按建选区后不能同步 startActionMode——选区坐标要等重组后才算好,
+    // 同步弹时 onGetContentRect 拿不到矩形,系统会把工具栏放到屏幕顶部。
+    // 标记 pending,等 selectionVisual 就绪的下一帧再弹,锚点一次到位。
+    // (LaunchedEffect 在 showSelectionToolbar 定义之后,局部函数只能向后引用)
+    var toolbarPending by remember { mutableStateOf(false) }
+
+    fun showSelectionToolbar() {
+        val v = pageViewRef.value ?: return
+        actionMode?.finish()
+        actionMode = v.startActionMode(object : ActionMode.Callback2() {
+            override fun onCreateActionMode(mode: ActionMode, menu: Menu): Boolean {
+                menu.add(0, 1, 0, "复制").setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS)
+                menu.add(0, 2, 0, "全选").setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS)
+                menu.add(0, 3, 0, "分享").setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS)
+                return true
+            }
+
+            override fun onPrepareActionMode(mode: ActionMode, menu: Menu) = false
+
+            override fun onActionItemClicked(mode: ActionMode, item: MenuItem): Boolean {
+                val sel = selection ?: return false
+                val text = liveText ?: return false
+                return when (item.itemId) {
+                    1 -> {   // 复制
+                        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        cm.setPrimaryClip(ClipData.newPlainText("text", selectionText(liveBook, text, sel)))
+                        Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show()
+                        mode.finish()
+                        selection = null
+                        true
+                    }
+                    2 -> {   // 全选 = 选至本页首尾(整本全选无意义;配合拖到页缘驻留翻页可达任意范围)
+                        val bp = livePage
+                        if (bp != null && bp.lines.isNotEmpty()) {
+                            selection = ReaderSelection(
+                                bp.lines.first().lineStartGlobal,
+                                bp.lines.last().lineStartGlobal + bp.lines.last().text.length,
+                                anchorIsStart = false
+                            )
+                            mode.invalidateContentRect()
+                        }
+                        true
+                    }
+                    3 -> {   // 分享
+                        val send = Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_TEXT, selectionText(liveBook, text, sel))
+                        }
+                        context.startActivity(Intent.createChooser(send, "分享选中文字"))
+                        mode.finish()
+                        true
+                    }
+                    else -> false
+                }
+            }
+
+            // 工具栏销毁不清选区: 保留高亮,点选区可再弹(系统惯例)
+            override fun onDestroyActionMode(mode: ActionMode) {
+                actionMode = null
+            }
+
+            // 浮动工具栏锚定选区包围盒(版心坐标 → 窗口坐标;页面 View 全屏,平移即窗口坐标)
+            override fun onGetContentRect(mode: ActionMode, view: View, outRect: Rect) {
+                val sv = selVisualRef.value
+                val t = liveTypo
+                if (sv == null || t == null) {
+                    super.onGetContentRect(mode, view, outRect)
+                    return
+                }
+                var l = Float.MAX_VALUE
+                var tp = Float.MAX_VALUE
+                var r = -Float.MAX_VALUE
+                var b = -Float.MAX_VALUE
+                for (rc in sv.rects) {
+                    l = min(l, rc.left)
+                    tp = min(tp, rc.top)
+                    r = max(r, rc.right)
+                    b = max(b, rc.bottom)
+                }
+                outRect.set(
+                    (l + t.marginPx).toInt(), (tp + contentTopPx).toInt(),
+                    (r + t.marginPx).toInt() + 1, (b + contentTopPx).toInt() + 1
+                )
+            }
+        }, ActionMode.TYPE_FLOATING)
+    }
+
+    // 选区坐标就绪后再弹工具栏(见 toolbarPending 注释)
+    LaunchedEffect(selectionVisual) {
+        if (toolbarPending && selectionVisual != null) {
+            toolbarPending = false
+            showSelectionToolbar()
+        }
+    }
+
+    // 长按选词: 命中 → 词边界 → 建选区 + 触觉,工具栏由上面的 effect 延迟弹出
+    fun beginSelection(offset: Offset) {
+        val bp = livePage ?: return
+        val t = liveTypo ?: return
+        val m = selMetrics ?: return
+        if (bp.spec.kind != PageKind.CONTENT || bp.lines.isEmpty()) return
+        val hit = SelectionGeometry.hit(bp, offset.x - t.marginPx, offset.y - contentTopPx, m) ?: return
+        val (s, e) = SelectionGeometry.wordRange(bp, hit.first, hit.second)
+        selection = ReaderSelection(s, e, anchorIsStart = true)
+        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+        toolbarPending = true
+    }
+
+    // 选择模式下的驻留翻页: 手柄拖到版心上下缘,400ms 驻留翻一页,可连续;目标页优先邻页缓存
+    fun flipForSelection(dir: Int) {
+        val sp = liveSpecs ?: return
+        val t = liveTypo ?: return
+        val text = liveText ?: return
+        val target = livePageIndex + dir
+        if (target !in sp.indices) return
+        neighborCache.getOrPut(target) { BookPager.materialize(liveBook, text, sp[target], t) }
+        pageIndex = target
+    }
+
+    // 手柄拖动会话状态(不放 Compose state: 高频更新,无需触发重组)。
+    // fromStart: 本会话抓的是起点柄还是终点柄——以手柄身份为准,
+    // 不沿用上次手势残留的 anchorIsStart(否则先左拖再右拖会误坍缩掉左半选区)
+    val selDrag = remember {
+        object {
+            var magnifier: Any? = null   // Magnifier(API 29+),Any 持有避免低版本类校验
+            var dwellJob: Job? = null
+            var pointerY = 0f
+            var bandDir = 0
+            var bandSince = 0L
+            var fromStart = true
+            var frozen: Long? = null   // 拖动开始时固定端的全书偏移(兜底校验用)
+            var grabDy: Float? = null  // 按下时手指与锚点行中心的垂直偏移
+        }
+    }
+
+    fun onHandleDragStart(fromStart: Boolean) {
+        selDrag.fromStart = fromStart
+        // 兜底记录: 本会话固定端的位置。一次只能有一个锚点在动,固定端必须全程钉死
+        selDrag.frozen = if (fromStart) selection?.endGlobal else selection?.startGlobal
+        selDrag.grabDy = null
+        val v = pageViewRef.value
+        if (Build.VERSION.SDK_INT >= 29 && v != null) selDrag.magnifier = Magnifier(v)
+        selDrag.bandDir = 0
+        selDrag.bandSince = 0
+        selDrag.dwellJob = scope.launch {
+            while (isActive) {
+                delay(50)
+                val dir = when {
+                    selDrag.pointerY < contentTopPx -> -1
+                    selDrag.pointerY > contentBottomY -> 1
+                    else -> 0
+                }
+                val now = SystemClock.uptimeMillis()
+                if (dir == 0) {
+                    selDrag.bandDir = 0
+                    continue
+                }
+                if (selDrag.bandDir != dir) {
+                    selDrag.bandDir = dir
+                    selDrag.bandSince = now
+                    continue
+                }
+                if (now - selDrag.bandSince >= 400) {
+                    // 翻页瞬间隐藏放大镜(挡视线且无观察价值),落定回到选字区由拖动回调重新 show
+                    selDrag.magnifier?.let { if (Build.VERSION.SDK_INT >= 29) (it as Magnifier).dismiss() }
+                    flipForSelection(dir)
+                    selDrag.bandSince = now
+                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                }
+            }
+        }
+    }
+
+    fun onHandleDrag(fromStart: Boolean, px: Float, py: Float) {
+        selDrag.fromStart = fromStart   // 每个事件按指针在两锚中点的左右刷新拖动端
+        selDrag.pointerY = py
+        // 手指抓的是挂在选字行下方的图标,天然比本行低: 用按下时的"手指-锚点行"偏移
+        // 修正有效行位置——手指平移选本行字符,手指下移一行才换行
+        if (selDrag.grabDy == null) {
+            val sv = selVisualRef.value
+            if (sv != null) {
+                val h = if (fromStart) sv.startHandle else sv.endHandle
+                val anchorCy = (h.top + h.bottom) / 2f + contentTopPx
+                selDrag.grabDy = py - anchorCy
+            }
+        }
+        val cyEff = py - (selDrag.grabDy ?: 0f)
+        val bp = livePage ?: return
+        val t = liveTypo ?: return
+        val m = selMetrics ?: return
+        val sel = selection ?: return
+        val sp = liveSpecs ?: return
+        // 驻留翻页后新页异步物化: 页描述与当前页号未对齐前不做命中,防止在旧页上算出错误偏移
+        val idx = livePageIndex.coerceIn(0, sp.lastIndex)
+        if (bp.spec != sp[idx] || bp.spec.kind != PageKind.CONTENT || bp.lines.isEmpty()) return
+        val hit = SelectionGeometry.hit(bp, px - t.marginPx, cyEff, m)
+        val hit2 = hit ?: return
+        // 关键: 把本次会话的手柄身份同步到选区——上一次手势可能翻转过 anchorIsStart,
+        // 不同步的话,抓右柄会被当成拖起点,导致原起点到原终点之间的选区被丢弃
+        val sel2 = if (sel.anchorIsStart != fromStart) sel.copy(anchorIsStart = fromStart) else sel
+        val updated = sel2.withAnchor(SelectionGeometry.globalAt(bp, hit2.first, hit2.second))
+        // 兜底: 一次只允许一个锚点在动——固定端被连带移动、或结果为空选区时,丢弃本次更新
+        val frozenIntact = selDrag.frozen == null ||
+            updated.startGlobal == selDrag.frozen || updated.endGlobal == selDrag.frozen
+        if (updated.isEmpty() || !frozenIntact) return
+        if (updated != sel2) selection = updated
+        val inBand = py < contentTopPx || py > contentBottomY
+        selDrag.magnifier?.let {
+            if (Build.VERSION.SDK_INT >= 29) {
+                val mag = it as Magnifier
+                if (inBand) mag.dismiss() else mag.show(px, py)
+            }
+        }
+    }
+
+    fun onHandleDragEnd() {
+        selDrag.dwellJob?.cancel()
+        selDrag.dwellJob = null
+        selDrag.magnifier?.let { if (Build.VERSION.SDK_INT >= 29) (it as Magnifier).dismiss() }
+        selDrag.magnifier = null
+        // 坐标已就绪直接弹;驻留翻页刚落账时选区可视未更新,交给 effect 延迟弹
+        if (selVisualRef.value != null) showSelectionToolbar() else toolbarPending = true
+    }
+    // ==================== 文字选择结束 ====================
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -266,11 +581,35 @@ fun ReaderScreen(
             .onSizeChanged {
                 viewport = IntSize(it.width, (it.height - topInsetPx - bottomInsetPx).coerceAtLeast(0))
             }
+            // 单击/长按: 无选择时单击开关菜单、长按选词;有选择时单击弹工具栏(选区内)或清除(选区外)。
+            // key 带选择态: 模式切换重建检测器,闭包取到最新行为
+            // 单击/长按检测器: key 固定 Unit,不在选择态切换时重建——
+            // 长按建选区会改 selection,若以其为 key,长按抬指会被重建后的新检测器
+            // 当成一次新单击(菜单误开/选区误清)。分支在事件时实时读最新状态
             .pointerInput(Unit) {
-                detectTapGestures { menuVisible = !menuVisible }
+                detectTapGestures(
+                    onTap = { offset ->
+                        if (selection == null) {
+                            menuVisible = !menuVisible
+                        } else {
+                            val sv = selVisualRef.value
+                            val t = liveTypo
+                            val inside = sv != null && t != null &&
+                                sv.contains(offset.x - t.marginPx, offset.y - contentTopPx, 24f)
+                            if (inside) showSelectionToolbar() else {
+                                selection = null
+                                actionMode?.finish()
+                            }
+                        }
+                    },
+                    onLongPress = { offset ->
+                        if (selection == null && !menuVisible) beginSelection(offset)
+                    }
+                )
             }
-            .pointerInput(menuVisible, typoKey, specs) {
-                if (menuVisible) return@pointerInput
+            .pointerInput(menuVisible, selection != null, typoKey, specs) {
+                // 菜单打开或选择激活期间翻页手势让位(选择下翻页只经由手柄驻留自动翻页)
+                if (menuVisible || selection != null) return@pointerInput
                 var startX = 0f
                 var totalDrag = 0f
                 var velocityPxPerSec = 0f
@@ -367,8 +706,38 @@ fun ReaderScreen(
                 v.setContentInsets(topInsetPx, bottomInsetPx)
                 val bp = currentBookPage
                 if (bp != null) v.setPage(bp, t) else v.setColors(t)
+                // 选择高亮: 版心坐标直接交给 View(与行绘制同一平移)
+                val sv = selectionVisual
+                val hlColor = fgColor.copy(alpha = 0.25f).toArgb()
+                if (sv != null) {
+                    v.setSelection(
+                        sv.rects.map { RectF(it.left, it.top, it.right, it.bottom) },
+                        sv.extendsTop, sv.extendsBottom, hlColor
+                    )
+                } else {
+                    v.setSelection(null, false, false, hlColor)
+                }
             }
         )
+
+        // 选择手柄: 左右倾斜水滴挂在各自锚点下方(参考系统选区柄),
+        // 共用一个触摸区,按指针在两锚点中点的左右判定拖哪个柄——
+        // 单字选中时两柄贴近,分立热区会互相遮挡导致抓错,合并后按位置判定不会错
+        if (selectionVisual != null && typo != null && !menuVisible) {
+            val t = typo
+            val sv = selectionVisual
+            val handleColor = Color(0xFF26A69A)   // 水滴柄用固定强调色(青),深浅主题下都醒目
+            SelectionHandles(
+                startX = sv.startHandle.left + t.marginPx,
+                endX = sv.endHandle.left + t.marginPx,
+                startY = sv.startHandle.bottom + contentTopPx,
+                endY = sv.endHandle.bottom + contentTopPx,
+                color = handleColor,
+                onDragStart = ::onHandleDragStart,
+                onDrag = ::onHandleDrag,
+                onDragEnd = ::onHandleDragEnd
+            )
+        }
 
         // loading 延迟显示: 内容就绪通常只需几十 ms(分页缓存命中),spinner 闪一下反而晃眼;
         // 超过 350ms 未就绪(冷缓存整本重排/大文件)才出现
@@ -535,3 +904,91 @@ private fun currentPercent(
     specs: List<PageSpec>?,
     pageIndex: Int
 ): Double = specs?.getOrNull(pageIndex)?.let { BookPager.percentOf(book, it) } ?: 0.0
+
+
+// 选择双柄: 左右倾斜水滴图标挂在各自锚点下方(参考系统选区柄样式),
+// 共用一个触摸区——按下/拖动时按指针在两锚点中点的左右判定拖的是哪个柄,
+// 单字选中时两柄贴近也不会互相遮挡抓错。图标只作视觉,拖动仅在此触摸区生效
+@Composable
+private fun SelectionHandles(
+    startX: Float,
+    endX: Float,
+    startY: Float,
+    endY: Float,
+    color: Color,
+    onDragStart: (Boolean) -> Unit,
+    onDrag: (fromStart: Boolean, px: Float, py: Float) -> Unit,
+    onDragEnd: () -> Unit
+) {
+    val density = LocalDensity.current
+    // 水滴几何: 锚点为杆的尖端,圆头沿 45° 斜向外下方;热区把圆头和热区半径都包进来
+    val dropR = with(density) { 14.dp.toPx() }
+    val dropDx = with(density) { 24.dp.toPx() }   // 圆心相对锚点的水平偏移(左柄向左 45°,右柄向右 45°)
+    val dropDy = with(density) { 24.dp.toPx() }   // 圆心相对锚点的垂直偏移(向下)
+    val padPx = with(density) { 16.dp.toPx() }    // 图标外侧的热区半径
+    val left = minOf(startX - dropDx, endX - dropDx) - dropR - padPx
+    val right = maxOf(startX + dropDx, endX + dropDx) + dropR + padPx
+    val top = minOf(startY, endY)
+    val wPx = right - left
+    val height = (maxOf(startY, endY) - top) + dropDy + dropR + padPx
+
+    // 盒随选区移动,窗口坐标 = 盒原点(实时)+ 盒内指针位置,两者此消彼长保持连续
+    var origin by remember { mutableStateOf<Offset?>(null) }
+    val liveStartX by rememberUpdatedState(startX)
+    val liveEndX by rememberUpdatedState(endX)
+    // 拖动端在按下瞬间判定一次并固定整个会话: 逐事件判定会在越过中线时来回翻转,
+    // 造成选区坍缩/状态抖动。会话内越过另一端的情形由 withAnchor 的翻转语义处理
+    var sessionFromStart by remember { mutableStateOf(true) }
+
+    Box(
+        modifier = Modifier
+            .offset { IntOffset(left.roundToInt(), top.roundToInt()) }
+            .size(with(density) { (wPx / density.density).dp }, with(density) { (height / density.density).dp })
+            .onGloballyPositioned { origin = it.positionInWindow() }
+            .pointerInput(Unit) {
+                detectDragGestures(
+                    onDragStart = { pos ->
+                        origin?.let { o ->
+                            val px = o.x + pos.x
+                            val fromStart = px < (liveStartX + liveEndX) / 2f
+                            sessionFromStart = fromStart
+                            onDragStart(fromStart)
+                            onDrag(fromStart, px, o.y + pos.y)
+                        }
+                    },
+                    onDrag = { change, _ ->
+                        change.consume()
+                        origin?.let { o ->
+                            val px = o.x + change.position.x
+                            onDrag(sessionFromStart, px, o.y + change.position.y)
+                        }
+                    },
+                    onDragEnd = { onDragEnd() },
+                    onDragCancel = { onDragEnd() }
+                )
+            }
+    ) {
+        // 系统样式水滴矢量图: 尖端贴锚点;绕尖端向外倾斜 45°(左柄向左倒,右柄向右倒)
+        val iconWTpx = with(density) { 28.dp.toPx() }
+        val iconHTpx = with(density) { 36.dp.toPx() }
+        fun handleModifier(anchorX: Float, relY: Float, tilt: Float): Modifier = Modifier
+            .offset { IntOffset((anchorX - left - iconWTpx / 2).roundToInt(), relY.roundToInt()) }
+            .size(24.dp, 30.dp)
+            .graphicsLayer {
+                rotationZ = tilt
+                transformOrigin = TransformOrigin(0.5f, 0f)   // 绕尖端旋转,尖端始终贴锚点
+            }
+        Image(
+            painter = painterResource(R.drawable.reader_handle_drop),
+            contentDescription = null,
+            colorFilter = ColorFilter.tint(color),
+            modifier = handleModifier(startX, startY - top, 45f)
+        )
+        Image(
+            painter = painterResource(R.drawable.reader_handle_drop),
+            contentDescription = null,
+            colorFilter = ColorFilter.tint(color),
+            modifier = handleModifier(endX, endY - top, -45f)
+        )
+    }
+}

@@ -50,6 +50,13 @@ class ReaderPageView(context: Context) : View(context) {
 
     private var animator: ValueAnimator? = null
 
+    // 选择层: 高亮矩形(版心坐标系,与 DrawLine 同一空间)+ 跨页延续标志。
+    // 手柄由上层 Compose 组件绘制与交互,本类只画高亮与边缘指示条
+    private var selRects: List<android.graphics.RectF>? = null
+    private var selExtendsTop = false
+    private var selExtendsBottom = false
+    private val selPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+
     private val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val chromePaint = android.text.TextPaint(Paint.ANTI_ALIAS_FLAG)
     private val bodyPaint = android.text.TextPaint(Paint.ANTI_ALIAS_FLAG)
@@ -118,6 +125,18 @@ class ReaderPageView(context: Context) : View(context) {
         if (topInsetPx == topPx && bottomInsetPx == bottomPx) return
         topInsetPx = topPx
         bottomInsetPx = bottomPx
+        invalidate()
+    }
+
+    // 设置选择高亮(rects 为版心坐标系;null 清除)。color 为高亮填充色(前景色低透明度)
+    fun setSelection(rects: List<android.graphics.RectF>?, extendsTop: Boolean, extendsBottom: Boolean, color: Int) {
+        val same = selRects == rects && selExtendsTop == extendsTop && selExtendsBottom == extendsBottom &&
+            selPaint.color == color
+        if (same) return
+        selRects = rects
+        selExtendsTop = extendsTop
+        selExtendsBottom = extendsBottom
+        selPaint.color = color
         invalidate()
     }
 
@@ -293,8 +312,25 @@ class ReaderPageView(context: Context) : View(context) {
                     for (seg in segs) canvas.drawText(seg.text, ln.x + seg.x, ln.baseline, paint)
                 }
             }
+            // 选择高亮: 画在正文之后(叠加),版心坐标直接用
+            selRects?.let { rs ->
+                for (r in rs) canvas.drawRoundRect(r, 6f, 6f, selPaint)
+            }
         }
         canvas.restoreToCount(save2)
+        // 跨页延续指示: 选区延伸到上/下一页时,在版心对应缘画一条窄条提示
+        val rects = selRects
+        if (rects != null && page.spec.kind == PageKind.CONTENT) {
+            val barH = (INDICATOR_BAR_DP * resources.displayMetrics.density)
+            val left = t.marginPx.toFloat()
+            val right = (width - t.marginPx).toFloat()
+            if (selExtendsTop) {
+                canvas.drawRect(left, contentTop - barH * 2f, right, contentTop - barH, selPaint)
+            }
+            if (selExtendsBottom) {
+                canvas.drawRect(left, contentBottom + barH, right, contentBottom + barH * 2f, selPaint)
+            }
+        }
         canvas.restoreToCount(save)
     }
 
@@ -341,5 +377,6 @@ class ReaderPageView(context: Context) : View(context) {
         private const val SHADOW_WIDTH_DP = 12f
         private const val SHADOW_COLOR = 0x33000000
         private const val CHROME_TEXT_SP = 12f
+        private const val INDICATOR_BAR_DP = 3f
     }
 }
