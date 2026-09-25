@@ -464,18 +464,30 @@ fun ReaderScreen(
         val text = liveText ?: return
         val target = livePageIndex + dir
         if (target !in sp.indices) return
-        neighborCache.getOrPut(target) { BookPager.materialize(liveBook, text, sp[target], t) }
+        val neighbor = neighborCache.getOrPut(target) {
+            BookPager.materialize(liveBook, text, sp[target], t)
+        }
+        // 与手势翻页同一套动画: 摆好拖拽层后提交收尾,整页顺势滑入/滑出
+        pageViewRef.value?.let { v ->
+            livePage?.let { cur ->
+                v.showDrag(cur, neighbor, dir, 0f)
+                v.animateDragEnd(true)
+            }
+        }
         pageIndex = target
     }
 
     // 手柄拖动会话状态(不放 Compose state: 高频更新,无需触发重组)。
     // fromStart: 本会话抓的是起点柄还是终点柄——以手柄身份为准,
     // 不沿用上次手势残留的 anchorIsStart(否则先左拖再右拖会误坍缩掉左半选区)
+    var selDragActive by remember { mutableStateOf(false) }
     val selDrag = remember {
         object {
             var magnifier: Any? = null   // Magnifier(API 29+),Any 持有避免低版本类校验
             var dwellJob: Job? = null
+            var pointerX = 0f
             var pointerY = 0f
+            var sawContent = false   // 抓柄后指针是否进过内容区(防边缘抓柄误触发驻留)
             var bandDir = 0
             var bandSince = 0L
             var fromStart = true
@@ -485,7 +497,15 @@ fun ReaderScreen(
     }
 
     fun onHandleDragStart(fromStart: Boolean) {
+        selDragActive = true
         selDrag.fromStart = fromStart
+        // 把手柄身份同步到选区(仅此一次): 上一次手势可能翻转过 anchorIsStart,
+        // 不同步的话,抓左柄会被当成拖终点,导致原起点到原终点之间的选区被丢弃。
+        // 之后的翻转交给 withAnchor 自然进行——逐事件强行重同步会让翻转后的
+        // 固定端丢失,后续更新全被 frozen 兜底拒绝,拖动卡死
+        selection?.let {
+            if (it.anchorIsStart != fromStart) selection = it.copy(anchorIsStart = fromStart)
+        }
         // 兜底记录: 本会话固定端的位置。一次只能有一个锚点在动,固定端必须全程钉死
         selDrag.frozen = if (fromStart) selection?.endGlobal else selection?.startGlobal
         selDrag.grabDy = null
@@ -493,12 +513,19 @@ fun ReaderScreen(
         if (Build.VERSION.SDK_INT >= 29 && v != null) selDrag.magnifier = Magnifier(v)
         selDrag.bandDir = 0
         selDrag.bandSince = 0
+        // 四向驻留带: 上下缘钳制到页首/页尾, 左右缘钳制到手指所在行的行首/行尾。
+        // 左右带仅在指针进过内容区后武装——首/尾行选区的手柄本来就在版心边缘,
+        // 抓柄静止时不能误触发驻留
+        val dwellLeft = (liveTypo?.marginPx ?: 0).toFloat()
+        val dwellRight = (viewport?.width ?: 0) - (liveTypo?.marginPx ?: 0).toFloat()
         selDrag.dwellJob = scope.launch {
             while (isActive) {
                 delay(50)
                 val dir = when {
                     selDrag.pointerY < contentTopPx -> -1
                     selDrag.pointerY > contentBottomY -> 1
+                    selDrag.sawContent && selDrag.pointerX < dwellLeft -> -1
+                    selDrag.sawContent && selDrag.pointerX > dwellRight -> 1
                     else -> 0
                 }
                 val now = SystemClock.uptimeMillis()
@@ -511,7 +538,36 @@ fun ReaderScreen(
                     selDrag.bandSince = now
                     continue
                 }
-                if (now - selDrag.bandSince >= 400) {
+                if (now - selDrag.bandSince >= 800) {
+                    // 选区端点必须已追到钳制目标(上下缘=页首尾, 左右缘=所在行行首/尾)
+                    // 才允许继续翻——否则页会跑在选区前面,选区与当前页不相交,
+                    // 高亮手柄消失、工具栏孤立
+                    val mDwell = selMetrics
+                    val reachedEdge = selection?.let { sel ->
+                        val bp = livePage
+                        if (bp == null || bp.lines.isEmpty()) false
+                        else when {
+                            selDrag.pointerY > contentBottomY -> {
+                                val last = bp.lines.last()
+                                sel.endGlobal >= last.lineStartGlobal + last.text.length
+                            }
+                            selDrag.pointerX > dwellRight -> {
+                                val m = mDwell ?: return@let false
+                                val li = SelectionGeometry.locateLine(bp, selDrag.pointerY - contentTopPx, m)
+                                    ?: return@let false
+                                val ln = bp.lines[li]
+                                sel.endGlobal >= ln.lineStartGlobal + ln.text.length
+                            }
+                            selDrag.pointerX < dwellLeft -> {
+                                val m = mDwell ?: return@let false
+                                val li = SelectionGeometry.locateLine(bp, selDrag.pointerY - contentTopPx, m)
+                                    ?: return@let false
+                                sel.startGlobal <= bp.lines[li].lineStartGlobal
+                            }
+                            else -> sel.startGlobal <= bp.lines.first().lineStartGlobal
+                        }
+                    } == true
+                    if (!reachedEdge) continue
                     // 翻页瞬间隐藏放大镜(挡视线且无观察价值),落定回到选字区由拖动回调重新 show
                     selDrag.magnifier?.let { if (Build.VERSION.SDK_INT >= 29) (it as Magnifier).dismiss() }
                     flipForSelection(dir)
@@ -524,6 +580,7 @@ fun ReaderScreen(
 
     fun onHandleDrag(fromStart: Boolean, px: Float, py: Float) {
         selDrag.fromStart = fromStart   // 每个事件按指针在两锚中点的左右刷新拖动端
+        selDrag.pointerX = px
         selDrag.pointerY = py
         // 手指抓的是挂在选字行下方的图标,天然比本行低: 用按下时的"手指-锚点行"偏移
         // 修正有效行位置——手指平移选本行字符,手指下移一行才换行
@@ -544,18 +601,37 @@ fun ReaderScreen(
         // 驻留翻页后新页异步物化: 页描述与当前页号未对齐前不做命中,防止在旧页上算出错误偏移
         val idx = livePageIndex.coerceIn(0, sp.lastIndex)
         if (bp.spec != sp[idx] || bp.spec.kind != PageKind.CONTENT || bp.lines.isEmpty()) return
-        val hit = SelectionGeometry.hit(bp, px - t.marginPx, cyEff, m)
+        // cyEff 是窗口坐标,hit 期望版心坐标: 必须减 contentTopPx,否则命中点
+        // 系统性偏下一行(contentTopPx≈一行高),一动锚点选区就翻转
+        val hit = SelectionGeometry.hit(bp, px - t.marginPx, cyEff - contentTopPx, m)
         val hit2 = hit ?: return
-        // 关键: 把本次会话的手柄身份同步到选区——上一次手势可能翻转过 anchorIsStart,
-        // 不同步的话,抓右柄会被当成拖起点,导致原起点到原终点之间的选区被丢弃
-        val sel2 = if (sel.anchorIsStart != fromStart) sel.copy(anchorIsStart = fromStart) else sel
-        val updated = sel2.withAnchor(SelectionGeometry.globalAt(bp, hit2.first, hit2.second))
+        // 指针进入四向驻留带: 端点直接钳制到页首/页尾(上下缘)或所在行的行首/行尾
+        // (左右缘)——否则端点只能到手指 x 所在的字符,永远到不了边界,驻留翻页门不放开
+        val cxContent = px - t.marginPx
+        if (py >= contentTopPx && py <= contentBottomY &&
+            cxContent >= 0f && cxContent <= (viewport?.width ?: 0) - 2 * t.marginPx
+        ) selDrag.sawContent = true
+        val v = when {
+            py < contentTopPx -> bp.lines.first().lineStartGlobal
+            py > contentBottomY -> {
+                val last = bp.lines.last()
+                last.lineStartGlobal + last.text.length
+            }
+            cxContent < 0f -> bp.lines[hit2.first].lineStartGlobal
+            cxContent > (viewport?.width ?: 0) - 2 * t.marginPx -> {
+                val ln = bp.lines[hit2.first]
+                ln.lineStartGlobal + ln.text.length
+            }
+            else -> SelectionGeometry.globalAt(bp, hit2.first, hit2.second)
+        }
+        val updated = sel.withAnchor(v)
         // 兜底: 一次只允许一个锚点在动——固定端被连带移动、或结果为空选区时,丢弃本次更新
         val frozenIntact = selDrag.frozen == null ||
             updated.startGlobal == selDrag.frozen || updated.endGlobal == selDrag.frozen
         if (updated.isEmpty() || !frozenIntact) return
-        if (updated != sel2) selection = updated
-        val inBand = py < contentTopPx || py > contentBottomY
+        if (updated != sel) selection = updated
+        val inBand = py < contentTopPx || py > contentBottomY ||
+            cxContent < 0f || cxContent > (viewport?.width ?: 0) - 2 * t.marginPx
         selDrag.magnifier?.let {
             if (Build.VERSION.SDK_INT >= 29) {
                 val mag = it as Magnifier
@@ -565,6 +641,7 @@ fun ReaderScreen(
     }
 
     fun onHandleDragEnd() {
+        selDragActive = false
         selDrag.dwellJob?.cancel()
         selDrag.dwellJob = null
         selDrag.magnifier?.let { if (Build.VERSION.SDK_INT >= 29) (it as Magnifier).dismiss() }
@@ -723,20 +800,28 @@ fun ReaderScreen(
         // 选择手柄: 左右倾斜水滴挂在各自锚点下方(参考系统选区柄),
         // 共用一个触摸区,按指针在两锚点中点的左右判定拖哪个柄——
         // 单字选中时两柄贴近,分立热区会互相遮挡导致抓错,合并后按位置判定不会错
-        if (selectionVisual != null && typo != null && !menuVisible) {
+        // 拖动会话期间即使选区与当前页暂时不相交(跨页驻留翻页的一瞬间)也保持挂载,
+        // 否则手柄被卸载会取消拖动手势,跨页扩展中断、选区滞留在页外
+        val lastVisual = remember { mutableStateOf<SelectionGeometry.SelectionVisual?>(null) }
+        selectionVisual?.let { lastVisual.value = it }
+        if ((selectionVisual != null || selDragActive) && typo != null && !menuVisible) {
             val t = typo
-            val sv = selectionVisual
-            val handleColor = Color(0xFF26A69A)   // 水滴柄用固定强调色(青),深浅主题下都醒目
-            SelectionHandles(
+            val sv = selectionVisual ?: lastVisual.value
+            if (sv != null) {
+                val handleColor = Color(0xFF26A69A)   // 水滴柄用固定强调色(青),深浅主题下都醒目
+                SelectionHandles(
                 startX = sv.startHandle.left + t.marginPx,
                 endX = sv.endHandle.left + t.marginPx,
                 startY = sv.startHandle.bottom + contentTopPx,
                 endY = sv.endHandle.bottom + contentTopPx,
                 color = handleColor,
+                drawStart = !sv.extendsTop,
+                drawEnd = !sv.extendsBottom,
                 onDragStart = ::onHandleDragStart,
                 onDrag = ::onHandleDrag,
                 onDragEnd = ::onHandleDragEnd
-            )
+                )
+            }
         }
 
         // loading 延迟显示: 内容就绪通常只需几十 ms(分页缓存命中),spinner 闪一下反而晃眼;
@@ -916,6 +1001,8 @@ private fun SelectionHandles(
     startY: Float,
     endY: Float,
     color: Color,
+    drawStart: Boolean,
+    drawEnd: Boolean,
     onDragStart: (Boolean) -> Unit,
     onDrag: (fromStart: Boolean, px: Float, py: Float) -> Unit,
     onDragEnd: () -> Unit
@@ -932,39 +1019,46 @@ private fun SelectionHandles(
     val wPx = right - left
     val height = (maxOf(startY, endY) - top) + dropDy + dropR + padPx
 
-    // 盒随选区移动,窗口坐标 = 盒原点(实时)+ 盒内指针位置,两者此消彼长保持连续
-    var origin by remember { mutableStateOf<Offset?>(null) }
+    // 触摸盒随选区频繁跳位,而 onGloballyPositioned 的原点更新与指针事件异步——
+    // 盒一跳,盒内坐标跟着突变,拼出的指针 y 瞬间窜动约一行,命中窜到邻行导致选区错误翻转。
+    // 因此拖动会话期间冻结盒原点(按下时快照),坐标全程稳定;图标仍按实时锚点绘制。
+    // 手势外的缓慢跟随不受影响(盒原点只快照不更新)
+    val frozenTopLeft = remember { mutableStateOf<Offset?>(null) }
+    val originRef = remember { mutableStateOf<Offset?>(null) }
     val liveStartX by rememberUpdatedState(startX)
     val liveEndX by rememberUpdatedState(endX)
-    // 拖动端在按下瞬间判定一次并固定整个会话: 逐事件判定会在越过中线时来回翻转,
-    // 造成选区坍缩/状态抖动。会话内越过另一端的情形由 withAnchor 的翻转语义处理
-    var sessionFromStart by remember { mutableStateOf(true) }
+    // 拖动端在首个事件判定一次并固定整个会话;null = 会话尚未判定
+    var sessionFromStart by remember { mutableStateOf<Boolean?>(null) }
+    val effLeft = frozenTopLeft.value?.x ?: left
+    val effTop = frozenTopLeft.value?.y ?: top
 
     Box(
         modifier = Modifier
-            .offset { IntOffset(left.roundToInt(), top.roundToInt()) }
+            .offset { IntOffset(effLeft.roundToInt(), effTop.roundToInt()) }
             .size(with(density) { (wPx / density.density).dp }, with(density) { (height / density.density).dp })
-            .onGloballyPositioned { origin = it.positionInWindow() }
+            .onGloballyPositioned { originRef.value = it.positionInWindow() }
             .pointerInput(Unit) {
                 detectDragGestures(
                     onDragStart = { pos ->
-                        origin?.let { o ->
-                            val px = o.x + pos.x
-                            val fromStart = px < (liveStartX + liveEndX) / 2f
-                            sessionFromStart = fromStart
-                            onDragStart(fromStart)
-                            onDrag(fromStart, px, o.y + pos.y)
-                        }
+                        frozenTopLeft.value = Offset(left, top)
+                        sessionFromStart = null
                     },
                     onDrag = { change, _ ->
                         change.consume()
-                        origin?.let { o ->
+                        originRef.value?.let { o ->
                             val px = o.x + change.position.x
-                            onDrag(sessionFromStart, px, o.y + change.position.y)
+                            val py = o.y + change.position.y
+                            var fs = sessionFromStart
+                            if (fs == null) {
+                                fs = px < (liveStartX + liveEndX) / 2f
+                                sessionFromStart = fs
+                                onDragStart(fs)
+                            }
+                            onDrag(fs, px, py)
                         }
                     },
-                    onDragEnd = { onDragEnd() },
-                    onDragCancel = { onDragEnd() }
+                    onDragEnd = { frozenTopLeft.value = null; onDragEnd() },
+                    onDragCancel = { frozenTopLeft.value = null; onDragEnd() }
                 )
             }
     ) {
@@ -972,23 +1066,25 @@ private fun SelectionHandles(
         val iconWTpx = with(density) { 28.dp.toPx() }
         val iconHTpx = with(density) { 36.dp.toPx() }
         fun handleModifier(anchorX: Float, relY: Float, tilt: Float): Modifier = Modifier
-            .offset { IntOffset((anchorX - left - iconWTpx / 2).roundToInt(), relY.roundToInt()) }
+            .offset { IntOffset((anchorX - effLeft - iconWTpx / 2).roundToInt(), relY.roundToInt()) }
             .size(24.dp, 30.dp)
             .graphicsLayer {
                 rotationZ = tilt
                 transformOrigin = TransformOrigin(0.5f, 0f)   // 绕尖端旋转,尖端始终贴锚点
             }
-        Image(
+        // 端点被钳制到页首/页尾(选区延续到邻页)时, 该柄不画——它不对应真实选区边界,
+        // 画出来会像一个游离在页角的锚点; 高亮已铺满整页, 延续关系由整页高亮表达
+        if (drawStart) Image(
             painter = painterResource(R.drawable.reader_handle_drop),
             contentDescription = null,
             colorFilter = ColorFilter.tint(color),
-            modifier = handleModifier(startX, startY - top, 45f)
+            modifier = handleModifier(startX, startY - effTop, 45f)
         )
-        Image(
+        if (drawEnd) Image(
             painter = painterResource(R.drawable.reader_handle_drop),
             contentDescription = null,
             colorFilter = ColorFilter.tint(color),
-            modifier = handleModifier(endX, endY - top, -45f)
+            modifier = handleModifier(endX, endY - effTop, -45f)
         )
     }
 }
