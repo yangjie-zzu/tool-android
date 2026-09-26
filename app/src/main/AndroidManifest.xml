@@ -11,7 +11,20 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- 下载文件写公共Download目录: 仅API28-需要scoped storage豁免, API29+走MediaStore免权限 -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28"/>
     <uses-permission android:name="android.permission.CAMERA"/>
+    <!-- APK下载完成点击通知直达安装: Android 8+触发安装需"允许安装未知应用"授权 -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
+
+    <!-- 下载完成通知点击打开文件: resolveActivity需可见能处理VIEW的包(Android 11+包可见性) -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <data android:mimeType="*/*"/>
+        </intent>
+    </queries>
+
     <application
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
@@ -39,6 +52,7 @@
             android:taskAffinity="${applicationId}.web"
             android:enableOnBackInvokedCallback="true"
             android:configChanges="orientation|screenSize|keyboardHidden"
+            android:windowSoftInputMode="adjustResize"
             >
             <!-- 注册为浏览器: 其他应用"用浏览器打开"时可选到本应用 -->
             <intent-filter>
@@ -122,6 +136,11 @@
             <meta-data android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/provider_paths"/>
         </provider>
+
+        <!-- 下载中断通知点击续传: exported=false仅应用内显式intent可达 -->
+        <receiver
+            android:name="com.yukino.tool.module.web.DownloadResumeReceiver"
+            android:exported="false"/>
     </application>
 
 </manifest>

@@ -2,4 +2,6 @@
 <paths>
     <files-path name="web" path="web/"/>
     <cache-path name="export" path="export/"/>
+    <!-- 下载文件打开: API28-直写公共下载目录的场景 -->
+    <external-path name="download" path="Download/tool/"/>
 </paths>

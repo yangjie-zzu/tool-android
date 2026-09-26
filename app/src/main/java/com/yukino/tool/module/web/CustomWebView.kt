@@ -3,9 +3,13 @@ package com.yukino.tool.module.web
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.app.DownloadManager
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.ActivityNotFoundException
+import android.content.ContentUris
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -24,6 +28,8 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
 import android.webkit.ConsoleMessage
+import android.webkit.CookieManager
+import android.webkit.MimeTypeMap
 import android.webkit.PermissionRequest
 import android.webkit.SslErrorHandler
 import android.webkit.ValueCallback
@@ -42,6 +48,7 @@ import com.yukino.tool.util.findActivity
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.timeout
+import io.ktor.client.request.headers
 import io.ktor.client.request.prepareGet
 import io.ktor.client.statement.bodyAsChannel
 import io.ktor.http.HttpHeaders
@@ -50,8 +57,12 @@ import io.ktor.utils.io.core.readBytes
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import java.io.File
-import java.io.RandomAccessFile
+import java.io.FileOutputStream
+import java.io.IOException
+import java.io.OutputStream
+import java.net.URLDecoder
 import java.util.concurrent.CompletableFuture
 import kotlin.math.abs
 
@@ -64,6 +75,8 @@ interface WebInterface {
     fun onTitleChange(title: String?) {}
     fun onUrlChange(url: String?) {}
     fun onHistory(webview: CustomWebView, url: String?, isReload: Boolean) {}
+    //下载触发: 链接先被当作页面新开box, 转入下载后由浏览器层回收空白无标题的box
+    fun onDownloadTriggered(url: String?) {}
     fun isOnlyOpenSameSite(): Boolean {
         return false
     }
@@ -245,6 +258,8 @@ open class CustomWebView(context: Context) : WebView(context), WebInterface {
                 isReload: Boolean
             ) {
                 Log.i(TAG, "doUpdateVisitedHistory: ${url}, $isReload")
+                //pushState/replaceState路由变化不触发onPageStarted: 在此同步更新地址栏显示
+                onUrlChange(url)
                 onHistory(this@CustomWebView, url, isReload)
                 super.doUpdateVisitedHistory(view, url, isReload)
             }
@@ -305,77 +320,21 @@ open class CustomWebView(context: Context) : WebView(context), WebInterface {
         //下载处理
         this.setDownloadListener { url, userAgent, contentDisposition, mimetype, contentLength ->
             Log.i(TAG, "onDownloadStart: $url, $userAgent, $contentDisposition, $mimetype, $contentLength")
+            onDownloadTriggered(url)
             if (url.isNotEmpty()) {
-                downloadFile(url)
-            }
-        }
-    }
-
-    //下载文件到公共下载目录(Downloads/tool)，通知栏展示进度
-    private fun downloadFile(url: String) {
-        val name = url.split('?').first().split('/').last()
-        val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            notificationManager.createNotificationChannel(
-                NotificationChannel("download", "download", NotificationManager.IMPORTANCE_DEFAULT)
-            )
-        }
-        CoroutineScope(Dispatchers.IO).launch {
-            val builder = NotificationCompat.Builder(context, "download")
-                .setContentTitle("准备下载").setContentText(name).setSmallIcon(android.R.drawable.stat_sys_download)
-            try {
-                if (permissionRequester.request(Manifest.permission.POST_NOTIFICATIONS)) {
-                    notificationManager.notify(1, builder.build())
-                }
-                val httpClient = HttpClient {
-                    install(HttpTimeout) {
-                        requestTimeoutMillis = 10000
-                    }
-                }
-                httpClient.prepareGet(url) {
-                    timeout {
-                        connectTimeoutMillis = 300000
-                        requestTimeoutMillis = HttpTimeout.INFINITE_TIMEOUT_MS
-                    }
-                }.execute { res ->
-                    val len = res.headers[HttpHeaders.ContentLength]?.toLong() ?: 0L
-                    val startTime = System.currentTimeMillis()
-                    var finish = 0L
-                    val downloadPath = Environment.getExternalStoragePublicDirectory(
-                        Environment.DIRECTORY_DOWNLOADS).absolutePath
-                    val dir = File("$downloadPath/tool")
-                    if (!dir.exists()) {
-                        dir.mkdirs()
-                    }
-                    val file = File(dir, name)
-                    file.createNewFile()
-                    val randomAccessFile = RandomAccessFile(file, "rw")
-                    randomAccessFile.setLength(len)
-                    val channel = res.bodyAsChannel()
-                    while (!channel.isClosedForRead) {
-                        val packet = channel.readRemaining(limit = DEFAULT_BUFFER_SIZE.toLong())
-                        while (packet.isNotEmpty) {
-                            val bytes = packet.readBytes()
-                            randomAccessFile.write(bytes)
-                            finish += bytes.size
-                            val now = System.currentTimeMillis()
-                            if (now - startTime > 1000 || finish >= len) {
-                                builder.setContentTitle("下载中: $name").setProgress(len.toInt(), finish.toInt(), false)
-                                notificationManager.notify(1, builder.build())
-                            }
-                            if (finish >= len) {
-                                Log.i(TAG, "downloadFile: 下载完成 $name")
-                                builder.setContentTitle("下载完成: $name").setSmallIcon(android.R.drawable.stat_sys_download_done)
-                                    .setAutoCancel(true)
-                                notificationManager.notify(1, builder.build())
-                            }
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                builder.setContentTitle("下载失败: $name").setContentText(e.message).setSmallIcon(android.R.drawable.stat_notify_error).setAutoCancel(true)
-                notificationManager.notify(1, builder.build())
-                Log.e(TAG, "downloadFile: ", e)
+                //回调在主线程: cookie与当前页url(Referer)需在此刻取
+                val cookie = runCatching { CookieManager.getInstance().getCookie(url) }.getOrNull()
+                WebDownloader.download(
+                    context,
+                    WebDownloader.Task(
+                        url = url,
+                        userAgent = userAgent,
+                        referer = this@CustomWebView.url,
+                        cookie = cookie,
+                        contentDisposition = contentDisposition,
+                        mimetype = mimetype
+                    )
+                )
             }
         }
     }

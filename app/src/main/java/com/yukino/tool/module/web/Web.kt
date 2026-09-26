@@ -166,6 +166,15 @@ fun Web(
                     onHistory?.invoke(webview, url, isReload)
                 }
 
+                override fun onDownloadTriggered(url: String?) {
+                    //下载链接先被当作页面新开box(其initUrl即下载url), 转入下载后本box是空白无标题页: 回收它回到上一页.
+                    //不能用firstLoadDone判断: onPageFinished先于onDownloadStart触发, 首载标志已被置位
+                    if (url != null && url == initUrl && title.isNullOrBlank()) {
+                        Log.i(TAG, "onDownloadTriggered: 回收下载空标签 $url")
+                        onBoxBack?.invoke()
+                    }
+                }
+
             }
             Log.i(TAG, "webview版本：${webView.settings.userAgentString}")
             // 背景色与主题一致: 加载期不会出现刺眼纯白

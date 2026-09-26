@@ -32,6 +32,7 @@ import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.gestures.scrollable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -353,6 +354,8 @@ fun WebBrowser(initialUrl: String? = null) {
 
     Box(
         modifier = Modifier
+            //键盘弹出时整体内容上移到键盘上方: 边到边模式下窗口不自动resize, 网页内底部输入框才不被遮挡
+            .imePadding()
             .onSizeChanged {
                 containerHeight.value = it.height.toFloat()
                 containerWidth.value = it.width.toFloat()

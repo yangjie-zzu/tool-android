@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.size
@@ -25,11 +26,13 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -136,13 +139,18 @@ val WebBox: WebBoxFunc = { initUrl, onNew, onShowList, webLength, webIndex, acti
     }
 
     fun navigate(target: String) {
-        url = if (target.startsWith("http://") || target.startsWith("https://")) {
-            target
-        } else {
-            "https://www.google.com/search?q=$target"
+        val t = target.trim()
+        url = when {
+            t.startsWith("http://") || t.startsWith("https://") -> t
+            //无scheme但形态像网址(无空格且含点, 如baidu.com): 补https直接访问
+            t.isNotEmpty() && !t.contains(" ") && t.contains(".") -> "https://$t"
+            else -> "https://www.google.com/search?q=$t"
         }
         navUrl = url
         navKey++   // 触发 Web 组件加载
+        //新导航开始: 清掉上一页标题与图标, 避免加载中新页面favicon未到货时顶栏残留旧站图标
+        title = null
+        icon = null
         showUrlEdit = false
     }
 
@@ -250,6 +258,8 @@ val WebBox: WebBoxFunc = { initUrl, onNew, onShowList, webLength, webIndex, acti
                     .weight(1f)
                     .clickable {
                         urlInput = url
+                        //刷新一次历史, 供输入时候选下拉用最新数据
+                        historyItems = WebHistoryStore.load(historyContext)
                         showUrlEdit = true
                     }
             )
@@ -329,23 +339,75 @@ val WebBox: WebBoxFunc = { initUrl, onNew, onShowList, webLength, webIndex, acti
                 properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .fillMaxHeight(0.8f)
                     .padding(horizontal = 12.dp, vertical = 12.dp),
                 title = { Text(text = "访问网址") },
                 text = {
-                    Column(modifier = Modifier.fillMaxSize()) {
-                    OutlinedTextField(
-                        value = urlInput,
-                        onValueChange = { urlInput = it },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f),
-                        //多行软换行,长地址尽量完整显示
-                        maxLines = 20,
-                        placeholder = { Text(text = "输入网址或搜索内容") },
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
-                        keyboardActions = KeyboardActions(onGo = { navigate(urlInput) })
-                    )
+                    Column {
+                        OutlinedTextField(
+                            value = urlInput,
+                            onValueChange = { urlInput = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            //初始一行高, 随内容自动长高, 到maxLines封顶后框内滚动
+                            minLines = 1,
+                            //多行软换行,长地址尽量完整显示
+                            maxLines = 10,
+                            trailingIcon = {
+                                //清除按钮: 一键清空输入, 有内容时才显示
+                                if (urlInput.isNotEmpty()) {
+                                    IconButton(onClick = { urlInput = "" }) {
+                                        Icon(
+                                            imageVector = Icons.Default.Clear,
+                                            contentDescription = "清空",
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            },
+                            placeholder = { Text(text = "输入网址或搜索内容") },
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
+                            keyboardActions = KeyboardActions(onGo = { navigate(urlInput) })
+                        )
+                        //历史候选: 输入非空(单字也出)且历史url包含匹配(忽略大小写), 条数不限, 列表限高超出内部滚动
+                        val candidates = historyItems.filter {
+                            urlInput.isNotEmpty() && it.url.contains(urlInput, ignoreCase = true)
+                        }
+                        LazyColumn(modifier = Modifier.heightIn(max = 360.dp)) {
+                            itemsIndexed(items = candidates, key = { _, item -> item.url + item.time }) { _, item ->
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { navigate(item.url) }
+                                        .padding(vertical = 6.dp)
+                                ) {
+                                    val bmp = item.iconBitmap()
+                                    if (bmp != null) {
+                                        Image(
+                                            bitmap = bmp.asImageBitmap(),
+                                            contentDescription = null,
+                                            modifier = Modifier.size(28.dp)
+                                        )
+                                    } else {
+                                        Text(text = "🌐", fontSize = 16.sp)
+                                    }
+                                    Column(modifier = Modifier.weight(1f).padding(start = 8.dp)) {
+                                        Text(
+                                            text = item.title.ifBlank { item.url },
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            fontSize = 13.sp
+                                        )
+                                        Text(
+                                            text = item.url,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            fontSize = 11.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 },
                 confirmButton = {
