@@ -50,6 +50,7 @@
             android:exported="true"
             android:theme="@style/Theme.Tool"
             android:taskAffinity="${applicationId}.web"
+            android:launchMode="singleTop"
             android:enableOnBackInvokedCallback="true"
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:windowSoftInputMode="adjustResize"
@@ -138,9 +139,6 @@
         </provider>
 
         <!-- 下载中断通知点击续传: exported=false仅应用内显式intent可达 -->
-        <receiver
-            android:name="com.yukino.tool.module.web.DownloadResumeReceiver"
-            android:exported="false"/>
     </application>
 
 </manifest>

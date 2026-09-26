@@ -33,6 +33,7 @@ import androidx.compose.foundation.gestures.scrollable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -41,15 +42,20 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Surface
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -73,6 +79,7 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogWindowProvider
@@ -113,13 +120,18 @@ class WebWrapper(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun WebBrowser(initialUrl: String? = null) {
+fun WebBrowser(initialUrl: String? = null, openDownloadsTick: Int = 0) {
 
     val webBoxes = remember {
         mutableStateListOf<WebWrapper>()
     }
 
     var showList by remember {
+        mutableStateOf(false)
+    }
+
+    //下载页面(浏览器级弹窗): 菜单入口与下载完成通知点击都会打开
+    var showDownloads by remember {
         mutableStateOf(false)
     }
 
@@ -314,8 +326,18 @@ fun WebBrowser(initialUrl: String? = null) {
     }
 
     LaunchedEffect(Unit) {
+        // 下载列表从库恢复(下载中遗留显示为已中断)
+        WebDownloader.loadPersisted(currentActivity)
         // 外部"用浏览器打开"传入的链接优先; 否则打开默认主页
         addWebBox(initialUrl ?: "https://www.google.com/ncr")
+    }
+
+    //下载通知点击: 版本号变化即弹出下载页面
+    LaunchedEffect(openDownloadsTick) {
+        if (openDownloadsTick > 0) {
+            WebDownloader.loadPersisted(currentActivity)
+            showDownloads = true
+        }
     }
 
     // 卡片变换: 浏览⇄堆叠在stackProgress上插值; 卡片尺寸统一, 层次感靠阴影; 关闭沿appear滑出
@@ -437,7 +459,8 @@ fun WebBrowser(initialUrl: String? = null) {
                         { webview, url, isReload -> recordHistory(webview, url, isReload) },
                         { url, icon -> saveHistoryIcon(url, icon) },
                         { closeWebBox(it) },
-                        { created -> it.webview = created }
+                        { created -> it.webview = created },
+                        { showDownloads = true }
                     )
                     if (showList) {
                         Box(
@@ -483,6 +506,87 @@ fun WebBrowser(initialUrl: String? = null) {
                 }
             }
         }
+
+        //下载页面弹窗(菜单入口/通知点击打开)
+        if (showDownloads) {
+            DownloadsDialog(onDismiss = { showDownloads = false })
+        }
     }
 
+}
+
+//下载页面: 任务列表, 每条含进度/状态与暂停-继续-取消-打开操作
+@Composable
+fun DownloadsDialog(onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    val states by WebDownloader.states.collectAsState()
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+        modifier = Modifier
+            .fillMaxWidth()
+            .fillMaxHeight(0.85f)
+            .padding(horizontal = 12.dp, vertical = 12.dp),
+        title = { Text(text = "下载管理(${states.size})") },
+        text = {
+            if (states.isEmpty()) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("暂无下载任务", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            } else {
+                LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    itemsIndexed(items = states, key = { _, s -> s.url }) { _, s ->
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Text(
+                                text = s.name,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            val progressText = when (s.status) {
+                                WebDownloader.Status.RUNNING ->
+                                    "${WebDownloader.formatBytes(s.offset)}" +
+                                        (if (s.total > 0) "/${WebDownloader.formatBytes(s.total)}" else "") +
+                                        " · ${WebDownloader.formatBytes(s.speedBps)}/s"
+                                WebDownloader.Status.PAUSED -> "已暂停 · ${WebDownloader.formatBytes(s.offset)}"
+                                WebDownloader.Status.INTERRUPTED -> "已中断 · ${WebDownloader.formatBytes(s.offset)}"
+                                WebDownloader.Status.FAILED -> "失败: ${s.error ?: "未知错误"}"
+                                WebDownloader.Status.DONE -> "已完成 · ${if (s.total > 0) WebDownloader.formatBytes(s.total) else WebDownloader.formatBytes(s.offset)}"
+                            }
+                            Text(
+                                text = progressText,
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            if (s.status == WebDownloader.Status.RUNNING) {
+                                LinearProgressIndicator(
+                                    progress = { if (s.total > 0) (s.offset.toFloat() / s.total) else 0f },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(top = 4.dp)
+                                )
+                            }
+                            Row {
+                                when (s.status) {
+                                    WebDownloader.Status.RUNNING ->
+                                        TextButton(onClick = { WebDownloader.pause(s.url) }) { Text("暂停") }
+                                    WebDownloader.Status.PAUSED, WebDownloader.Status.INTERRUPTED ->
+                                        TextButton(onClick = { WebDownloader.resume(context, s.url) }) { Text("继续") }
+                                    WebDownloader.Status.DONE ->
+                                        TextButton(onClick = { WebDownloader.openDownloaded(context, s) }) { Text("打开") }
+                                    WebDownloader.Status.FAILED -> {}
+                                }
+                                if (s.status != WebDownloader.Status.DONE && s.status != WebDownloader.Status.FAILED) {
+                                    TextButton(onClick = {
+                                        WebDownloader.cancelDownload(context, s.url, s.notifyId)
+                                    }) { Text("取消") }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        //M3 AlertDialog的confirmButton是必填: 不渲染任何内容实现无按钮
+        confirmButton = {}
+    )
 }

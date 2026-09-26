@@ -9,13 +9,14 @@ import android.database.sqlite.SQLiteOpenHelper
  *   note_meta/note_entry/note_field  备忘录(加密元数据+条目+字段)
  *   reader_book/reader_settings/reader_specs  阅读(书架+设置+分页缓存)
  *   web_history/scan_history  浏览历史/扫码记录
+ *   web_download  web模块下载任务列表
  *   migration_flag  旧数据→SQLite 的一次性迁移标记(每模块一行)
  * 正文文本缓存仍在 files/(books.cache_path 指向)，不进库。
  */
 object AppDb {
 
     private const val NAME = "tool.db"
-    private const val VERSION = 1
+    private const val VERSION = 2
 
     @Volatile
     private var helper: SQLiteOpenHelper? = null
@@ -29,6 +30,9 @@ object AppDb {
                 override fun onCreate(db: SQLiteDatabase) = Schema.create(db)
                 override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
                     // 首版无历史版本; 后续 schema 变更在这里按 oldVersion 逐级 ALTER
+                    if (oldVersion < 2) {
+                        db.execSQL(Schema.WEB_DOWNLOAD)
+                    }
                 }
             }
             helper = h
@@ -121,6 +125,9 @@ object AppDb {
                     "time INTEGER NOT NULL)"
             )
             db.execSQL("CREATE UNIQUE INDEX idx_scan_content ON scan_history(content)")
+            // web下载任务列表
+            db.execSQL(WEB_DOWNLOAD)
+            db.execSQL("CREATE INDEX idx_dl_updated ON web_download(updated_at DESC)")
             // 迁移标记: 每模块一行, 有行即该模块已迁完
             db.execSQL(
                 "CREATE TABLE migration_flag (" +
@@ -128,5 +135,18 @@ object AppDb {
                     "done_at INTEGER NOT NULL)"
             )
         }
+
+        // v2: web下载任务列表(下载页面数据源)
+        const val WEB_DOWNLOAD =
+            "CREATE TABLE web_download (" +
+                "url TEXT PRIMARY KEY NOT NULL, " +
+                "name TEXT NOT NULL, " +
+                "status TEXT NOT NULL, " +   // RUNNING/PAUSED/INTERRUPTED/FAILED/DONE
+                "offset INTEGER NOT NULL, " +
+                "total INTEGER NOT NULL, " +
+                "mime TEXT, " +
+                "file_uri TEXT, " +          // 完成后用于打开
+                "error TEXT, " +
+                "updated_at INTEGER NOT NULL)"
     }
 }

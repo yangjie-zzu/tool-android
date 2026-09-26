@@ -10,7 +10,6 @@ import android.webkit.WebView
 import androidx.activity.compose.BackHandler
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -86,17 +85,6 @@ fun Web(
             onBoxBack()
         } else {
             (context as? android.app.Activity)?.finish()
-        }
-    }
-
-    DisposableEffect(innerWebView, active) {
-        if (active) {
-            innerWebView?.onResume()
-        } else {
-            innerWebView?.onPause()
-        }
-        onDispose {
-            innerWebView?.onPause()
         }
     }
 

@@ -89,11 +89,13 @@ typealias WebBoxFunc = @Composable (
     //favicon回调: url+图标交给浏览器层回填浏览历史
     onHistoryIcon: (url: String, icon: Bitmap) -> Unit,
     onCloseBox: () -> Unit,
-    onWebViewReady: (CustomWebView) -> Unit
+    onWebViewReady: (CustomWebView) -> Unit,
+    //打开下载页面(浏览器级弹窗): 设置菜单入口
+    onShowDownloads: (() -> Unit)?
 ) -> Unit
 
 @SuppressLint("SetJavaScriptEnabled")
-val WebBox: WebBoxFunc = { initUrl, onNew, onShowList, webLength, webIndex, active, onlyOpenSameSite, onOnlyOpenSameSiteChange, onBoxBack, onHistory, onHistoryIcon, onCloseBox, onWebViewReady ->
+val WebBox: WebBoxFunc = { initUrl, onNew, onShowList, webLength, webIndex, active, onlyOpenSameSite, onOnlyOpenSameSiteChange, onBoxBack, onHistory, onHistoryIcon, onCloseBox, onWebViewReady, onShowDownloads ->
 
     val scope = rememberCoroutineScope()
 
@@ -306,6 +308,13 @@ val WebBox: WebBoxFunc = { initUrl, onNew, onShowList, webLength, webIndex, acti
                             settingExpended = false
                             historyItems = WebHistoryStore.load(historyContext)
                             showHistory = true
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("下载管理") },
+                        onClick = {
+                            settingExpended = false
+                            onShowDownloads?.invoke()
                         }
                     )
                     DropdownMenuItem(

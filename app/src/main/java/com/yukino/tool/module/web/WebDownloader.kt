@@ -32,6 +32,7 @@ import io.ktor.utils.io.core.readBytes
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import java.io.File
@@ -44,11 +45,90 @@ import java.util.concurrent.ConcurrentHashMap
 //web下载器: 与webview解耦, 通知点击中断续传时进程/webview可能已不存在
 object WebDownloader {
 
-    const val ACTION_RESUME = "com.yukino.tool.web.action.RESUME_DOWNLOAD"
-    const val EXTRA_URL = "url"
-
     private const val PREFS = "dl_resume"
     private val activeJobs = ConcurrentHashMap<String, Job>()
+    //用户主动暂停/取消请求: 协程被cancel后由catch收尾分支消费, 区别于网络中断
+    private val pausedRequests: MutableSet<String> = ConcurrentHashMap.newKeySet()
+    private val cancelRequests: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+    //下载任务状态: 下载页面数据源(StateFlow驱动UI, 状态迁移落库, 进度只驻内存)
+    enum class Status { RUNNING, PAUSED, INTERRUPTED, FAILED, DONE }
+
+    data class DownloadState(
+        val url: String,
+        val name: String,
+        val status: Status,
+        val offset: Long = 0,
+        val total: Long = -1,
+        val speedBps: Long = 0,
+        val mime: String? = null,
+        val fileUri: String? = null,
+        val error: String? = null,
+        val notifyId: Int = 0
+    )
+
+    private val _states = MutableStateFlow<List<DownloadState>>(emptyList())
+    val states: kotlinx.coroutines.flow.StateFlow<List<DownloadState>> = _states
+
+    //状态迁移: 更新内存列表(最新在前)并落库; 加锁避免并发下载互相覆盖
+    private fun updateState(context: Context, s: DownloadState) {
+        synchronized(_states) {
+            _states.value = listOf(s) + _states.value.filterNot { it.url == s.url }
+        }
+        DownloadStore.upsert(
+            context,
+            DownloadRecord(
+                url = s.url, name = s.name, status = s.status.name,
+                offset = s.offset, total = s.total, mime = s.mime,
+                fileUri = s.fileUri, error = s.error
+            )
+        )
+    }
+
+    //进度更新: 高频(每秒), 只动内存不落库
+    private fun updateProgress(url: String, offset: Long, total: Long, speedBps: Long) {
+        synchronized(_states) {
+            _states.value = _states.value.map {
+                if (it.url == url) it.copy(offset = offset, total = total, speedBps = speedBps) else it
+            }
+        }
+    }
+
+    //移除任务条目(用户取消): 内存+库
+    private fun removeState(context: Context, url: String) {
+        synchronized(_states) {
+            _states.value = _states.value.filterNot { it.url == url }
+        }
+        DownloadStore.remove(context, url)
+    }
+
+    //进程重启后从库恢复下载列表(浏览器启动时调一次); 下载中是瞬态, 重启遗留显示为已中断(断点快照仍在可继续)
+    @Volatile
+    private var persistedLoaded = false
+
+    fun loadPersisted(context: Context) {
+        if (persistedLoaded) return
+        synchronized(this) {
+            if (persistedLoaded) return
+            persistedLoaded = true
+            val records = DownloadStore.load(context)
+            _states.value = records.map { r ->
+                if (r.status == Status.RUNNING.name) {
+                    val fixed = r.copy(status = Status.INTERRUPTED.name)
+                    DownloadStore.upsert(context, fixed)
+                    fixed
+                } else {
+                    r
+                }
+            }.map {
+                DownloadState(
+                    url = it.url, name = it.name, status = Status.valueOf(it.status),
+                    offset = it.offset, total = it.total, mime = it.mime,
+                    fileUri = it.fileUri, error = it.error
+                )
+            }
+        }
+    }
 
     data class Task(
         val url: String,
@@ -70,6 +150,9 @@ object WebDownloader {
             return
         }
         val name = resolveFileName(base.url, base.contentDisposition, base.mimetype)
+        //清理上次残留的暂停/取消标志(任务已结束后点按钮会遗留)
+        pausedRequests.remove(base.url)
+        cancelRequests.remove(base.url)
         //入库与打开用mime: 回调值缺失或太泛时按最终扩展名反推
         val mime = resolveMime(base.mimetype, name)
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -82,7 +165,9 @@ object WebDownloader {
         val resumePrefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val job = CoroutineScope(Dispatchers.IO).launch {
             val builder = NotificationCompat.Builder(context, "download")
-                .setContentTitle("准备下载").setContentText(name).setSmallIcon(android.R.drawable.stat_sys_download)
+                .setSmallIcon(android.R.drawable.stat_sys_download)
+                //通知只在下载完成/失败时发(点击进下载页面); 过程状态在下载管理页面实时看
+                .setContentIntent(downloadsPendingIntent(context))
             //通知权限: 异步请求不阻塞下载, 被拒时通知静默(下载照常)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
                 context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
@@ -105,7 +190,6 @@ object WebDownloader {
             var totalLen = -1L         //全文件总长, 未知为-1
             var serverSupportsRange = false
             try {
-                notifySafely()
                 //获取输出流: append=true续传追加, false首次/服务端不支持Range时截断重写
                 fun openOutput(append: Boolean): OutputStream {
                     return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -150,11 +234,13 @@ object WebDownloader {
                     try {
                         val o = org.json.JSONObject(json)
                         val uri = Uri.parse(o.getString("pendingUri"))
-                        context.contentResolver.openOutputStream(uri, "r")?.use { }
-                        pendingUri = uri
-                        context.contentResolver.query(uri, arrayOf(MediaStore.MediaColumns.SIZE), null, null, null)?.use { c ->
-                            if (c.moveToFirst()) offset = c.getLong(0)
+                        //断点=文件实际字节数: 用fd seek到尾取真实大小;
+                        //不能查MediaStore的SIZE列——IS_PENDING记录该列恒为0
+                        context.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
+                            offset = android.system.Os.lseek(pfd.fileDescriptor, 0, android.system.OsConstants.SEEK_END)
                         }
+                        if (offset < 0) offset = 0
+                        pendingUri = uri
                     } catch (e: Exception) {
                         Log.i(TAG, "download: 断点记录失效, 全新下载 ${base.url}")
                         resumePrefs.edit().remove(base.url).apply()
@@ -165,6 +251,14 @@ object WebDownloader {
                 if (offset > 0) {
                     Log.i(TAG, "download: 复用未完成下载 $name offset=$offset")
                 }
+                //任务登记进下载列表(全新/续传都含断点起点)
+                updateState(
+                    context,
+                    DownloadState(
+                        url = base.url, name = name, status = Status.RUNNING,
+                        offset = offset, total = -1, mime = mime, notifyId = notifyId
+                    )
+                )
 
                 var attempts = 0
                 HttpClient {
@@ -225,17 +319,8 @@ object WebDownloader {
                                                 val speedBps = (offset - lastNotifyBytes) * 1000 / dtMs
                                                 lastNotifyTime = now
                                                 lastNotifyBytes = offset
-                                                builder.setContentTitle("下载中: $name")
-                                                    .setContentText(
-                                                        "${formatBytes(offset)}" +
-                                                            (if (totalLen > 0) "/${formatBytes(totalLen)}" else "") +
-                                                            " · ${formatBytes(speedBps)}/s"
-                                                    )
-                                                    .setProgress(
-                                                        if (totalLen > 0) totalLen.toInt() else 0,
-                                                        offset.toInt(), totalLen <= 0
-                                                    )
-                                                notifySafely()
+                                                //过程不发通知, 进度只更新下载页面
+                                                updateProgress(base.url, offset, totalLen, speedBps)
                                             }
                                         }
                                     }
@@ -247,6 +332,8 @@ object WebDownloader {
                             }
                             break //流正常结束=下载完成
                         } catch (e: Exception) {
+                            //用户暂停/取消: 不做自动续传重试, 直接抛给外层收尾分支处理
+                            if (cancelRequests.contains(base.url) || pausedRequests.contains(base.url)) throw e
                             //连接中断且服务端支持Range: 从已落盘位置续传重试
                             if (offset > 0 && serverSupportsRange && attempts < 3) {
                                 Log.i(TAG, "download: 中断续传(第${attempts}次) $name offset=$offset")
@@ -269,66 +356,71 @@ object WebDownloader {
                 val doneUri = pendingUri ?: FileProvider.getUriForFile(
                     context, context.applicationContext.packageName + ".fileProvider", targetFile!!
                 )
-                val openIntent = Intent(Intent.ACTION_VIEW).apply {
-                    setDataAndType(doneUri, mime)
-                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
-                }
-                //按处理器数量决定点击行为, 规避两类系统限制:
-                //-隐式PendingIntent在新系统被拦截 -> 显式component
-                //-多处理器时resolveActivity返回系统内部ResolverActivity, 第三方显式启动会被拒 -> 改用系统chooser
-                val candidates = context.packageManager.queryIntentActivities(openIntent, PackageManager.MATCH_DEFAULT_ONLY)
-                    .filter { it.activityInfo.packageName != "android" }
-                //APK直达安装器: APK的mime注册者众多(解压缩/网盘/办公软件都把apk当zip), 多候选会弹chooser无法直达;
-                //从候选中挑包名含packageinstaller的系统安装器显式启动, 未授权"安装未知应用"则先跳设置引导(授权持久, 之后直达)
-                val isApk = mime.equals("application/vnd.android.package-archive", ignoreCase = true)
-                val installer = candidates.find { it.activityInfo.packageName.contains("packageinstaller", ignoreCase = true) }
-                val finalIntent = when {
-                    isApk && installer != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
-                        !context.packageManager.canRequestPackageInstalls() ->
-                        Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
-                            data = Uri.parse("package:${context.applicationContext.packageName}")
-                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        }
-                    isApk && installer != null -> openIntent.apply {
-                        setClassName(installer.activityInfo.packageName, installer.activityInfo.name)
-                    }
-                    candidates.size == 1 -> openIntent.apply {
-                        setClassName(candidates[0].activityInfo.packageName, candidates[0].activityInfo.name)
-                    }
-                    candidates.isEmpty() -> Intent(DownloadManager.ACTION_VIEW_DOWNLOADS).apply {
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                    else -> Intent.createChooser(openIntent, "打开 $finalName")
-                }
-                val pi = PendingIntent.getActivity(
-                    context, notifyId, finalIntent,
-                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-                )
                 Log.i(TAG, "download: 下载完成 $finalName")
-                builder.setContentTitle("下载完成: $finalName").setContentText(null)
+                //完成态落列表(打开入口在下载页面条目上)
+                updateState(
+                    context,
+                    DownloadState(
+                        url = base.url, name = finalName, status = Status.DONE,
+                        offset = if (totalLen > 0) totalLen else offset, total = totalLen,
+                        mime = mime, fileUri = doneUri.toString(), notifyId = notifyId
+                    )
+                )
+                builder.setContentTitle("下载完成: $finalName").setContentText("点击查看下载")
                     .setSmallIcon(android.R.drawable.stat_sys_download_done)
                     .setProgress(0, 0, false)
-                    .setContentIntent(pi)
                     .setAutoCancel(true)
                 notifySafely()
             } catch (e: Exception) {
                 Log.i(TAG, "download: 失败收尾 offset=$offset serverSupportsRange=$serverSupportsRange totalLen=$totalLen")
-                if (serverSupportsRange && offset > 0) {
-                    //服务端支持续传: 保留未完成下载, 点击中断通知即可续传
-                    builder.setContentTitle("下载中断: $name").setContentText("点击通知续传")
-                        .setSmallIcon(android.R.drawable.stat_notify_error)
-                        .setContentIntent(resumePendingIntent(context, notifyId, base.url))
-                        .setAutoCancel(true)
-                    notifySafely()
-                    Log.e(TAG, "download: 中断(已保留断点) $name offset=$offset", e)
-                } else {
-                    //无法续传: 清理半截文件与断点索引, 下次从头下载
-                    resumePrefs.edit().remove(base.url).apply()
-                    pendingUri?.let { context.contentResolver.delete(it, null, null) }
-                    targetFile?.delete()
-                    builder.setContentTitle("下载失败: $name").setContentText(e.message).setSmallIcon(android.R.drawable.stat_notify_error).setAutoCancel(true)
-                    notifySafely()
-                    Log.e(TAG, "download: ", e)
+                when {
+                    //用户取消: 清断点与半截文件, 移除列表条目(无通知)
+                    cancelRequests.remove(base.url) -> {
+                        resumePrefs.edit().remove(base.url).apply()
+                        pendingUri?.let { context.contentResolver.delete(it, null, null) }
+                        targetFile?.delete()
+                        removeState(context, base.url)
+                        Log.i(TAG, "download: 用户取消 $name")
+                    }
+                    //用户暂停: 保留断点(无通知, 状态在下载页面)
+                    pausedRequests.remove(base.url) -> {
+                        updateState(
+                            context,
+                            DownloadState(
+                                url = base.url, name = name, status = Status.PAUSED,
+                                offset = offset, total = totalLen, mime = mime, notifyId = notifyId
+                            )
+                        )
+                        Log.i(TAG, "download: 用户暂停 $name offset=$offset")
+                    }
+                    serverSupportsRange && offset > 0 -> {
+                        //服务端支持续传: 保留未完成下载, 下载页面可继续(无通知)
+                        updateState(
+                            context,
+                            DownloadState(
+                                url = base.url, name = name, status = Status.INTERRUPTED,
+                                offset = offset, total = totalLen, mime = mime, notifyId = notifyId
+                            )
+                        )
+                        Log.e(TAG, "download: 中断(已保留断点) $name offset=$offset", e)
+                    }
+                    else -> {
+                        //无法续传: 清理半截文件与断点索引, 下次从头下载
+                        resumePrefs.edit().remove(base.url).apply()
+                        pendingUri?.let { context.contentResolver.delete(it, null, null) }
+                        targetFile?.delete()
+                        builder.setContentTitle("下载失败: $name").setContentText(e.message).setSmallIcon(android.R.drawable.stat_notify_error).setAutoCancel(true)
+                        notifySafely()
+                        updateState(
+                            context,
+                            DownloadState(
+                                url = base.url, name = name, status = Status.FAILED,
+                                offset = offset, total = totalLen, mime = mime,
+                                error = e.message, notifyId = notifyId
+                            )
+                        )
+                        Log.e(TAG, "download: ", e)
+                    }
                 }
             }
         }
@@ -361,7 +453,89 @@ object WebDownloader {
         }
     }
 
-    //断点快照: pending uri + 会话信息(ua/referer/cookie/响应头文件名与类型), 续传与通知点击恢复都用它
+    //用户主动暂停: cancel下载协程, 断点与"已暂停"通知由catch收尾分支处理
+    fun pause(url: String) {
+        val job = activeJobs[url] ?: return
+        if (!job.isActive) return
+        pausedRequests.add(url)
+        job.cancel()
+    }
+
+    //用户主动取消(下载页面): 任务在跑则cancel后由catch分支清理; 已结束(如已暂停)则清半截文件/断点/通知/条目
+    fun cancelDownload(context: Context, url: String, notifyId: Int) {
+        val job = activeJobs[url]
+        if (job != null && job.isActive) {
+            cancelRequests.add(url)
+            job.cancel()
+        } else {
+            val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            //半截文件: 断点快照里的pending记录(API28-直写场景无快照, 文件路径拿不到, 略)
+            prefs.getString(url, null)?.let { json ->
+                runCatching {
+                    context.contentResolver.delete(
+                        Uri.parse(org.json.JSONObject(json).getString("pendingUri")), null, null
+                    )
+                }
+            }
+            prefs.edit().remove(url).apply()
+            if (notifyId > 0) {
+                (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(notifyId)
+            }
+            removeState(context, url)
+        }
+    }
+
+    //通知点击统一跳下载页面: 拉起WebActivity并带标记
+    private fun downloadsPendingIntent(context: Context): PendingIntent {
+        val intent = Intent(context, WebActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            putExtra(WebActivity.EXTRA_OPEN_DOWNLOADS, true)
+        }
+        return PendingIntent.getActivity(
+            context, 0, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+    }
+
+    //打开已完成的下载(下载页面条目[打开]):
+    //按处理器数量决定行为, 规避两类系统限制——隐式intent在新系统被拦截->显式component;
+    //多处理器时resolveActivity返回系统内部ResolverActivity, 第三方显式启动会被拒->改用系统chooser
+    fun openDownloaded(context: Context, state: DownloadState) {
+        val uri = state.fileUri?.let(Uri::parse) ?: return
+        val openIntent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, state.mime ?: "*/*")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        val candidates = context.packageManager.queryIntentActivities(openIntent, PackageManager.MATCH_DEFAULT_ONLY)
+            .filter { it.activityInfo.packageName != "android" }
+        //APK直达安装器: APK的mime注册者众多(解压缩/网盘/办公软件都把apk当zip), 多候选会弹chooser无法直达;
+        //从候选中挑包名含packageinstaller的系统安装器显式启动, 未授权"安装未知应用"则先跳设置引导(授权持久, 之后直达)
+        val isApk = state.mime?.equals("application/vnd.android.package-archive", ignoreCase = true) == true
+        val installer = candidates.find { it.activityInfo.packageName.contains("packageinstaller", ignoreCase = true) }
+        val finalIntent = when {
+            isApk && installer != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                !context.packageManager.canRequestPackageInstalls() ->
+                Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
+                    data = Uri.parse("package:${context.applicationContext.packageName}")
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+            isApk && installer != null -> openIntent.apply {
+                setClassName(installer.activityInfo.packageName, installer.activityInfo.name)
+            }
+            candidates.size == 1 -> openIntent.apply {
+                setClassName(candidates[0].activityInfo.packageName, candidates[0].activityInfo.name)
+            }
+            candidates.isEmpty() -> Intent(DownloadManager.ACTION_VIEW_DOWNLOADS).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            else -> Intent.createChooser(openIntent, "打开 ${state.name}")
+        }
+        runCatching { context.startActivity(finalIntent) }
+            .onFailure { Log.e(TAG, "openDownloaded: ", it) }
+    }
+
+    //断点快照: pending uri + 会话信息(ua/referer/cookie/响应头文件名与类型), 续传与通知点击恢复都用它;
+    //断点位置不入快照, 恢复时以文件实际大小(fd seek)为准
     private fun saveSnapshot(prefs: android.content.SharedPreferences, task: Task, pendingUri: Uri) {
         prefs.edit()
             .putString(
@@ -378,17 +552,6 @@ object WebDownloader {
             .apply()
     }
 
-    private fun resumePendingIntent(context: Context, notifyId: Int, url: String): PendingIntent {
-        val intent = Intent(context, DownloadResumeReceiver::class.java).apply {
-            action = ACTION_RESUME
-            putExtra(EXTRA_URL, url)
-        }
-        return PendingIntent.getBroadcast(
-            context, notifyId, intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-    }
-
     //mimetype解析: 回调值缺失或octet-stream时按最终扩展名反推
     private fun resolveMime(mimetype: String?, name: String): String {
         mimetype?.takeIf { it.isNotBlank() && !"application/octet-stream".equals(it, true) }?.let { return it }
@@ -399,8 +562,8 @@ object WebDownloader {
         return "application/octet-stream"
     }
 
-    //字节数人类可读: 1.5MB / 16.2MB / 230KB
-    private fun formatBytes(bytes: Long): String {
+    //字节数人类可读: 1.5MB / 16.2MB / 230KB (下载页面进度也用)
+    fun formatBytes(bytes: Long): String {
         if (bytes < 1024) return "${bytes}B"
         val kb = bytes / 1024.0
         if (kb < 1024) return String.format(java.util.Locale.US, "%.1fKB", kb)
@@ -458,13 +621,5 @@ object WebDownloader {
                     .setSmallIcon(android.R.drawable.stat_sys_download).setAutoCancel(true).build()
             )
         }
-    }
-}
-
-//下载中断通知点击: 按url取断点快照恢复下载
-class DownloadResumeReceiver : BroadcastReceiver() {
-    override fun onReceive(context: Context, intent: Intent) {
-        val url = intent.getStringExtra(WebDownloader.EXTRA_URL) ?: return
-        WebDownloader.resume(context, url)
     }
 }
