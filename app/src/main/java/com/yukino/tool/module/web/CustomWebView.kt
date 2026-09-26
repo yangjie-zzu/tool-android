@@ -317,25 +317,51 @@ open class CustomWebView(context: Context) : WebView(context), WebInterface {
             }
         }
 
-        //下载处理
+        //下载处理: 先弹确认框(必弹), 确认才开任务; 附带该下载的通知开关(默认关)
         this.setDownloadListener { url, userAgent, contentDisposition, mimetype, contentLength ->
             Log.i(TAG, "onDownloadStart: $url, $userAgent, $contentDisposition, $mimetype, $contentLength")
             onDownloadTriggered(url)
-            if (url.isNotEmpty()) {
-                //回调在主线程: cookie与当前页url(Referer)需在此刻取
-                val cookie = runCatching { CookieManager.getInstance().getCookie(url) }.getOrNull()
-                WebDownloader.download(
-                    context,
-                    WebDownloader.Task(
-                        url = url,
-                        userAgent = userAgent,
-                        referer = this@CustomWebView.url,
-                        cookie = cookie,
-                        contentDisposition = contentDisposition,
-                        mimetype = mimetype
-                    )
-                )
+            if (url.isEmpty()) return@setDownloadListener
+            val activity = context.findActivity() ?: return@setDownloadListener
+            //回调在主线程: cookie与当前页url(Referer)需在此刻取
+            val cookie = runCatching { CookieManager.getInstance().getCookie(url) }.getOrNull()
+            val name = url.substringBefore('?').substringBefore('#').substringAfterLast('/')
+                .ifBlank { "download_${System.currentTimeMillis()}" }
+            val sizeText = if (contentLength > 0) "\n大小: ${WebDownloader.formatBytes(contentLength)}" else ""
+            val checkbox = android.widget.CheckBox(activity).apply {
+                text = "下载完成后通知"
+                setPadding(paddingLeft, 20, paddingRight, 10)
             }
+            val container = android.widget.LinearLayout(activity).apply {
+                orientation = android.widget.LinearLayout.VERTICAL
+                setPadding(60, 20, 60, 0)
+                addView(android.widget.TextView(activity).apply {
+                    text = if (name.isNotBlank()) "$name$sizeText" else url
+                    setTextIsSelectable(false)
+                })
+                addView(checkbox)
+            }
+            android.app.AlertDialog.Builder(activity)
+                .setTitle("下载文件")
+                .setView(container)
+                .setPositiveButton("下载") { _, _ ->
+                    WebDownloader.setNotifyEnabled(context, url, checkbox.isChecked)
+                    WebDownloader.download(
+                        context,
+                        WebDownloader.Task(
+                            url = url,
+                            userAgent = userAgent,
+                            referer = this@CustomWebView.url,
+                            cookie = cookie,
+                            contentDisposition = contentDisposition,
+                            mimetype = mimetype
+                        )
+                    )
+                    //确认下载即打开下载管理页
+                    WebDownloader.openTick.intValue++
+                }
+                .setNegativeButton("取消", null)
+                .show()
         }
     }
 

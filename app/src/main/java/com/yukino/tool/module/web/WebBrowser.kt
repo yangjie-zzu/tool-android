@@ -19,7 +19,15 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.background
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Android
+import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.InsertDriveFile
+import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.VideoFile
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -51,8 +59,10 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text
+import androidx.compose.ui.draw.scale
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
@@ -340,6 +350,13 @@ fun WebBrowser(initialUrl: String? = null, openDownloadsTick: Int = 0) {
         }
     }
 
+    //确认下载: 自动打开下载页面看进度
+    LaunchedEffect(WebDownloader.openTick.intValue) {
+        if (WebDownloader.openTick.intValue > 0) {
+            showDownloads = true
+        }
+    }
+
     // 卡片变换: 浏览⇄堆叠在stackProgress上插值; 卡片尺寸统一, 层次感靠阴影; 关闭沿appear滑出
     // 在graphicsLayer lambda里读动画状态, 拖拽/过渡期间纯渲染层更新, 不触发重组
     fun cardTransform(index: Int, box: WebWrapper, gr: androidx.compose.ui.graphics.GraphicsLayerScope) {
@@ -515,6 +532,25 @@ fun WebBrowser(initialUrl: String? = null, openDownloadsTick: Int = 0) {
 
 }
 
+//下载条目文件类型: 按扩展名分组给图标着色
+data class FileTypeStyle(
+    val icon: androidx.compose.ui.graphics.vector.ImageVector,
+    val tint: Color
+)
+
+fun fileTypeStyle(name: String): FileTypeStyle {
+    val ext = name.substringAfterLast('.', "").lowercase()
+    return when (ext) {
+        "apk" -> FileTypeStyle(Icons.Filled.Android, Color(0xFF3DDC84))
+        "jpg", "jpeg", "png", "gif", "webp", "bmp" -> FileTypeStyle(Icons.Filled.Image, Color(0xFF1E88E5))
+        "mp4", "mkv", "avi", "mov", "webm", "flv" -> FileTypeStyle(Icons.Filled.VideoFile, Color(0xFF8E24AA))
+        "mp3", "flac", "aac", "wav", "ogg", "m4a" -> FileTypeStyle(Icons.Filled.MusicNote, Color(0xFFFB8C00))
+        "zip", "rar", "7z", "tar", "gz" -> FileTypeStyle(Icons.Filled.Archive, Color(0xFF6D4C41))
+        "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "md" -> FileTypeStyle(Icons.Filled.Description, Color(0xFF43A047))
+        else -> FileTypeStyle(Icons.Filled.InsertDriveFile, Color(0xFF757575))
+    }
+}
+
 //下载页面: 任务列表, 每条含进度/状态与暂停-继续-取消-打开操作
 @Composable
 fun DownloadsDialog(onDismiss: () -> Unit) {
@@ -527,7 +563,7 @@ fun DownloadsDialog(onDismiss: () -> Unit) {
             .fillMaxWidth()
             .fillMaxHeight(0.85f)
             .padding(horizontal = 12.dp, vertical = 12.dp),
-        title = { Text(text = "下载管理(${states.size})") },
+        title = { Text(text = "下载管理") },
         text = {
             if (states.isEmpty()) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -536,12 +572,31 @@ fun DownloadsDialog(onDismiss: () -> Unit) {
             } else {
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     itemsIndexed(items = states, key = { _, s -> s.url }) { _, s ->
+                        val style = fileTypeStyle(s.name)
                         Column(modifier = Modifier.fillMaxWidth()) {
-                            Text(
-                                text = s.name,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
+                            //第一行: 文件类型图标 + 文件名
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Box(
+                                    modifier = Modifier.size(20.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = style.icon,
+                                        contentDescription = null,
+                                        tint = style.tint,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                                Text(
+                                    text = s.name,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.padding(start = 8.dp)
+                                )
+                            }
                             val progressText = when (s.status) {
                                 WebDownloader.Status.RUNNING ->
                                     "${WebDownloader.formatBytes(s.offset)}" +
@@ -550,12 +605,15 @@ fun DownloadsDialog(onDismiss: () -> Unit) {
                                 WebDownloader.Status.PAUSED -> "已暂停 · ${WebDownloader.formatBytes(s.offset)}"
                                 WebDownloader.Status.INTERRUPTED -> "已中断 · ${WebDownloader.formatBytes(s.offset)}"
                                 WebDownloader.Status.FAILED -> "失败: ${s.error ?: "未知错误"}"
+                                WebDownloader.Status.CANCELED -> "已取消 · ${WebDownloader.formatBytes(s.offset)}"
                                 WebDownloader.Status.DONE -> "已完成 · ${if (s.total > 0) WebDownloader.formatBytes(s.total) else WebDownloader.formatBytes(s.offset)}"
                             }
+                            //第二行: 状态/进度文字(与图标/按钮行同左缘)
                             Text(
                                 text = progressText,
                                 fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 2.dp)
                             )
                             if (s.status == WebDownloader.Status.RUNNING) {
                                 LinearProgressIndicator(
@@ -565,20 +623,76 @@ fun DownloadsDialog(onDismiss: () -> Unit) {
                                         .padding(top = 4.dp)
                                 )
                             }
-                            Row {
+                            //第三行: 操作按钮 + 通知开关
+                            //按钮用Text+clickable(无TextButton内边距), 文字与图标/状态行严格左对齐
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                val actionText: @Composable (String, Boolean, () -> Unit) -> Unit = { label, enabled, onClick ->
+                                    Text(
+                                        text = label,
+                                        color = if (enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier
+                                            .clickable(enabled = enabled, onClick = onClick)
+                                            .padding(start = 0.dp, top = 8.dp, end = 16.dp, bottom = 8.dp)
+                                    )
+                                }
                                 when (s.status) {
                                     WebDownloader.Status.RUNNING ->
-                                        TextButton(onClick = { WebDownloader.pause(s.url) }) { Text("暂停") }
-                                    WebDownloader.Status.PAUSED, WebDownloader.Status.INTERRUPTED ->
-                                        TextButton(onClick = { WebDownloader.resume(context, s.url) }) { Text("继续") }
-                                    WebDownloader.Status.DONE ->
-                                        TextButton(onClick = { WebDownloader.openDownloaded(context, s) }) { Text("打开") }
-                                    WebDownloader.Status.FAILED -> {}
+                                        actionText("暂停", true) { WebDownloader.pause(s.url) }
+                                    WebDownloader.Status.PAUSED ->
+                                        actionText("继续", true) { WebDownloader.resume(context, s.url) }
+                                    WebDownloader.Status.INTERRUPTED ->
+                                        actionText("继续", true) { WebDownloader.resume(context, s.url) }
+                                    WebDownloader.Status.CANCELED -> {
+                                        actionText("重新下载", true) { WebDownloader.redownload(context, s.url) }
+                                        actionText("删除", true) { WebDownloader.deleteRecord(context, s.url, s.notifyId) }
+                                    }
+                                    WebDownloader.Status.DONE -> {
+                                        actionText("打开", true) { WebDownloader.openDownloaded(context, s) }
+                                        actionText("重新下载", true) { WebDownloader.redownload(context, s.url) }
+                                    }
+                                    WebDownloader.Status.FAILED ->
+                                        actionText("重新下载", true) { WebDownloader.redownload(context, s.url) }
                                 }
-                                if (s.status != WebDownloader.Status.DONE && s.status != WebDownloader.Status.FAILED) {
-                                    TextButton(onClick = {
-                                        WebDownloader.cancelDownload(context, s.url, s.notifyId)
-                                    }) { Text("取消") }
+                                if (s.status == WebDownloader.Status.RUNNING ||
+                                    s.status == WebDownloader.Status.PAUSED ||
+                                    s.status == WebDownloader.Status.INTERRUPTED
+                                ) {
+                                    actionText("取消", true) { WebDownloader.cancelDownload(context, s.url, s.notifyId) }
+                                }
+                                //通知开关(默认关): 未到终态时提前设置, 完成后按此决定发不发通知; 终态后开关消失
+                                if (s.status == WebDownloader.Status.RUNNING ||
+                                    s.status == WebDownloader.Status.PAUSED ||
+                                    s.status == WebDownloader.Status.INTERRUPTED
+                                ) {
+                                    val notifyOn = remember(s.url) { mutableStateOf(WebDownloader.isNotifyEnabled(context, s.url)) }
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .clickable {
+                                                notifyOn.value = !notifyOn.value
+                                                WebDownloader.setNotifyEnabled(context, s.url, notifyOn.value)
+                                            }
+                                            .padding(start = 8.dp),
+                                        horizontalArrangement = Arrangement.End
+                                    ) {
+                                        Text(
+                                            text = "通知",
+                                            fontSize = 13.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        Switch(
+                                            checked = notifyOn.value,
+                                            onCheckedChange = {
+                                                notifyOn.value = it
+                                                WebDownloader.setNotifyEnabled(context, s.url, it)
+                                            },
+                                            modifier = Modifier.scale(0.7f)
+                                        )
+                                    }
                                 }
                             }
                         }

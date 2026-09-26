@@ -46,13 +46,15 @@ import java.util.concurrent.ConcurrentHashMap
 object WebDownloader {
 
     private const val PREFS = "dl_resume"
+    //每个下载的通知开关(默认关): url->bool, 确认弹窗与下载页面都能改
+    private const val NOTIFY_PREFS = "web_download_notify"
     private val activeJobs = ConcurrentHashMap<String, Job>()
     //用户主动暂停/取消请求: 协程被cancel后由catch收尾分支消费, 区别于网络中断
     private val pausedRequests: MutableSet<String> = ConcurrentHashMap.newKeySet()
     private val cancelRequests: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
     //下载任务状态: 下载页面数据源(StateFlow驱动UI, 状态迁移落库, 进度只驻内存)
-    enum class Status { RUNNING, PAUSED, INTERRUPTED, FAILED, DONE }
+    enum class Status { RUNNING, PAUSED, INTERRUPTED, FAILED, DONE, CANCELED }
 
     data class DownloadState(
         val url: String,
@@ -69,6 +71,9 @@ object WebDownloader {
 
     private val _states = MutableStateFlow<List<DownloadState>>(emptyList())
     val states: kotlinx.coroutines.flow.StateFlow<List<DownloadState>> = _states
+
+    //打开下载页面触发器: 确认下载时自增, WebBrowser观察它弹页(纯对象传递免改层层参数)
+    val openTick = androidx.compose.runtime.mutableIntStateOf(0)
 
     //状态迁移: 更新内存列表(最新在前)并落库; 加锁避免并发下载互相覆盖
     private fun updateState(context: Context, s: DownloadState) {
@@ -141,6 +146,14 @@ object WebDownloader {
 
     //任务通知id: 毫秒时间戳生成, 不随进程重启重置, 避免新任务顶掉通知栏残留的旧任务通知
     private fun newNotifyId(): Int = (System.currentTimeMillis() and 0x7FFFFFFF).toInt()
+
+    //该下载是否发通知: 默认关, 确认弹窗/下载页面按url单独开启
+    fun isNotifyEnabled(context: Context, url: String): Boolean =
+        context.getSharedPreferences(NOTIFY_PREFS, Context.MODE_PRIVATE).getBoolean(url, false)
+
+    fun setNotifyEnabled(context: Context, url: String, enabled: Boolean) {
+        context.getSharedPreferences(NOTIFY_PREFS, Context.MODE_PRIVATE).edit().putBoolean(url, enabled).apply()
+    }
 
     fun download(context: Context, base: Task) {
         //同链接防并行: 已有任务在下载时忽略重复触发, 避免新任务覆盖/互踩未完成的下载
@@ -356,6 +369,17 @@ object WebDownloader {
                 val doneUri = pendingUri ?: FileProvider.getUriForFile(
                     context, context.applicationContext.packageName + ".fileProvider", targetFile!!
                 )
+                //本地完整性复核: 按文件实际大小复核(预期=总长, 未知时须大于0), 不符按失败处理
+                var actualSize = -1L
+                runCatching {
+                    context.contentResolver.openFileDescriptor(doneUri, "r")?.use { pfd ->
+                        actualSize = android.system.Os.lseek(pfd.fileDescriptor, 0, android.system.OsConstants.SEEK_END)
+                    }
+                }
+                val expectedSize = if (totalLen > 0) totalLen else offset
+                if (actualSize < 0 || actualSize != expectedSize) {
+                    throw IOException("完整性校验失败: 实际${actualSize}字节 预期${expectedSize}字节")
+                }
                 Log.i(TAG, "download: 下载完成 $finalName")
                 //完成态落列表(打开入口在下载页面条目上)
                 updateState(
@@ -370,17 +394,21 @@ object WebDownloader {
                     .setSmallIcon(android.R.drawable.stat_sys_download_done)
                     .setProgress(0, 0, false)
                     .setAutoCancel(true)
-                notifySafely()
+                //通知默认关: 仅用户在确认弹窗/下载页面单独开启才发
+                if (isNotifyEnabled(context, base.url)) notifySafely()
             } catch (e: Exception) {
                 Log.i(TAG, "download: 失败收尾 offset=$offset serverSupportsRange=$serverSupportsRange totalLen=$totalLen")
                 when {
-                    //用户取消: 清断点与半截文件, 移除列表条目(无通知)
+                    //用户取消: 保留断点与半截文件(可继续/可重新下载/可删除), 条目标记已取消
                     cancelRequests.remove(base.url) -> {
-                        resumePrefs.edit().remove(base.url).apply()
-                        pendingUri?.let { context.contentResolver.delete(it, null, null) }
-                        targetFile?.delete()
-                        removeState(context, base.url)
-                        Log.i(TAG, "download: 用户取消 $name")
+                        updateState(
+                            context,
+                            DownloadState(
+                                url = base.url, name = name, status = Status.CANCELED,
+                                offset = offset, total = totalLen, mime = mime, notifyId = notifyId
+                            )
+                        )
+                        Log.i(TAG, "download: 用户取消 $name offset=$offset")
                     }
                     //用户暂停: 保留断点(无通知, 状态在下载页面)
                     pausedRequests.remove(base.url) -> {
@@ -410,7 +438,7 @@ object WebDownloader {
                         pendingUri?.let { context.contentResolver.delete(it, null, null) }
                         targetFile?.delete()
                         builder.setContentTitle("下载失败: $name").setContentText(e.message).setSmallIcon(android.R.drawable.stat_notify_error).setAutoCancel(true)
-                        notifySafely()
+                        if (isNotifyEnabled(context, base.url)) notifySafely()
                         updateState(
                             context,
                             DownloadState(
@@ -461,28 +489,67 @@ object WebDownloader {
         job.cancel()
     }
 
-    //用户主动取消(下载页面): 任务在跑则cancel后由catch分支清理; 已结束(如已暂停)则清半截文件/断点/通知/条目
+    //用户主动取消(下载页面): 任务在跑则cancel后由catch分支记CANCELED; 已结束(如暂停)直接置CANCELED
+    //现场(断点+半截文件)都保留, 供继续/重新下载/删除
     fun cancelDownload(context: Context, url: String, notifyId: Int) {
         val job = activeJobs[url]
         if (job != null && job.isActive) {
             cancelRequests.add(url)
             job.cancel()
         } else {
-            val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            //半截文件: 断点快照里的pending记录(API28-直写场景无快照, 文件路径拿不到, 略)
-            prefs.getString(url, null)?.let { json ->
-                runCatching {
-                    context.contentResolver.delete(
-                        Uri.parse(org.json.JSONObject(json).getString("pendingUri")), null, null
-                    )
-                }
-            }
-            prefs.edit().remove(url).apply()
             if (notifyId > 0) {
                 (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(notifyId)
             }
-            removeState(context, url)
+            synchronized(_states) {
+                _states.value = _states.value.map {
+                    if (it.url == url) it.copy(status = Status.CANCELED) else it
+                }
+            }
+            DownloadStore.load(context).firstOrNull { it.url == url }?.let { r ->
+                DownloadStore.upsert(context, r.copy(status = Status.CANCELED.name))
+            }
         }
+    }
+
+    //重新下载(下载页面): 清断点快照与旧文件(半截/已完成都算), 从0全新开始; 通知开关沿用url已存设置不重置
+    fun redownload(context: Context, url: String) {
+        //同链接在跑时忽略(防重复点击)
+        if (activeJobs[url]?.isActive == true) return
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        prefs.getString(url, null)?.let { json ->
+            runCatching {
+                context.contentResolver.delete(
+                    Uri.parse(org.json.JSONObject(json).getString("pendingUri")), null, null
+                )
+            }
+        }
+        prefs.edit().remove(url).apply()
+        //已完成文件的旧产物: 按记录里的fileUri删, 避免重下后目录堆积(n)副本
+        DownloadStore.load(context).firstOrNull { it.url == url }?.fileUri?.let { uriStr ->
+            runCatching { context.contentResolver.delete(Uri.parse(uriStr), null, null) }
+        }
+        //从库里的记录恢复下载会话信息(ua/cookie等), 没有记录则仅带url下载
+        DownloadStore.load(context).firstOrNull { it.url == url }?.let { r ->
+            download(context, Task(url = url, userAgent = "", referer = null, cookie = null, contentDisposition = null, mimetype = r.mime))
+        } ?: download(context, Task(url = url, userAgent = "", referer = null, cookie = null, contentDisposition = null, mimetype = null))
+    }
+
+    //删除记录(下载页面): 清断点与半截文件, 从列表与库中移除条目
+    fun deleteRecord(context: Context, url: String, notifyId: Int) {
+        if (activeJobs[url]?.isActive == true) return  //在跑的任务先取消再删
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        prefs.getString(url, null)?.let { json ->
+            runCatching {
+                context.contentResolver.delete(
+                    Uri.parse(org.json.JSONObject(json).getString("pendingUri")), null, null
+                )
+            }
+        }
+        prefs.edit().remove(url).apply()
+        if (notifyId > 0) {
+            (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(notifyId)
+        }
+        removeState(context, url)
     }
 
     //通知点击统一跳下载页面: 拉起WebActivity并带标记

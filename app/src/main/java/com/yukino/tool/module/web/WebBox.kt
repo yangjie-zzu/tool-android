@@ -123,6 +123,10 @@ val WebBox: WebBoxFunc = { initUrl, onNew, onShowList, webLength, webIndex, acti
     var urlInput by remember {
         mutableStateOf("")
     }
+    //输入框模式: false=编辑当前box地址(确认后当前页加载), true=新标签模式(确认后onNew开新box)
+    var urlEditForNewTab by remember {
+        mutableStateOf(false)
+    }
 
     //浏览历史: 持久化存储, 设置菜单里查看/清空
     val historyContext = LocalContext.current
@@ -148,11 +152,16 @@ val WebBox: WebBoxFunc = { initUrl, onNew, onShowList, webLength, webIndex, acti
             t.isNotEmpty() && !t.contains(" ") && t.contains(".") -> "https://$t"
             else -> "https://www.google.com/search?q=$t"
         }
-        navUrl = url
-        navKey++   // 触发 Web 组件加载
-        //新导航开始: 清掉上一页标题与图标, 避免加载中新页面favicon未到货时顶栏残留旧站图标
-        title = null
-        icon = null
+        if (urlEditForNewTab) {
+            //新标签模式: 交给浏览器层开新box, 当前页不动
+            onNew?.invoke(url)
+        } else {
+            navUrl = url
+            navKey++   // 触发 Web 组件加载
+            //新导航开始: 清掉上一页标题与图标, 避免加载中新页面favicon未到货时顶栏残留旧站图标
+            title = null
+            icon = null
+        }
         showUrlEdit = false
     }
 
@@ -183,7 +192,10 @@ val WebBox: WebBoxFunc = { initUrl, onNew, onShowList, webLength, webIndex, acti
                     )
                 }
                 Text(
-                    text = if (title == null && progress < 1f) "加载中..." else title.text("无标题"),
+                    //标题: 网页标题优先, 未取到(加载中/无标题页)显示网址
+                    text = if (!title.isNullOrBlank()) title!!
+                        else if (progress < 1f) "加载中..."
+                        else url,
                     color = Color(0xFF333333),
                     textAlign = TextAlign.Center,
                 )
@@ -260,6 +272,7 @@ val WebBox: WebBoxFunc = { initUrl, onNew, onShowList, webLength, webIndex, acti
                     .weight(1f)
                     .clickable {
                         urlInput = url
+                        urlEditForNewTab = false
                         //刷新一次历史, 供输入时候选下拉用最新数据
                         historyItems = WebHistoryStore.load(historyContext)
                         showUrlEdit = true
@@ -267,9 +280,11 @@ val WebBox: WebBoxFunc = { initUrl, onNew, onShowList, webLength, webIndex, acti
             )
             Icon(
                 modifier = Modifier.clickable {
-                    if (onNew != null) {
-                        onNew("https://www.google.com/ncr")
-                    }
+                    //新标签模式弹空输入框: 确认后开新box而非当前页跳转
+                    urlInput = ""
+                    urlEditForNewTab = true
+                    historyItems = WebHistoryStore.load(historyContext)
+                    showUrlEdit = true
                 },
                 imageVector = Icons.Default.Add,
                 contentDescription = "新标签",
