@@ -20,8 +20,8 @@ android {
         applicationId = "com.yukino.tool"
         minSdk = 24
         targetSdk = 34
-        versionCode = 8
-        versionName = "1.0.8"
+        versionCode = 9
+        versionName = "1.0.9"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -34,6 +34,9 @@ android {
         // 不会被 Kotlin 内联进调用处,避免增量编译残留旧时间
         val buildTime = SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(Date())
         resValue("string", "build_time", "\"$buildTime\"")
+        // 版本号同样走 resValue: BuildConfig.VERSION_NAME 是编译期常量,
+        // 会被 Kotlin 内联,增量编译下版本升级不重编显示方就残留旧值
+        resValue("string", "version_name", "\"${defaultConfig.versionName}\"")
     }
 
     buildFeatures {

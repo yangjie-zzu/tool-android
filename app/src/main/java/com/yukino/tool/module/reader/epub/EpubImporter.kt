@@ -136,7 +136,8 @@ object EpubImporter {
                 // 目录键与 NCX/Nav 条目同一约定: 相对 zip 根的解码路径
                 val key = resolveHref(opfDir, percentDecode(stripFragment(item.href).first))
                 val fallbackTitle = docFile.nameWithoutExtension.ifBlank { "未命名" }
-                val title = (tocMap[key] ?: fallbackTitle).take(MAX_TITLE_LEN)
+                val title = (tocMap[key] ?: HtmlTextExtractor.firstHeading(docFile) ?: fallbackTitle)
+                    .take(MAX_TITLE_LEN)
                 val body = dedupeLeadingTitle(paragraphs, title).joinToString("\n")
 
                 val f = chapterFile(context, id, chapters.size)

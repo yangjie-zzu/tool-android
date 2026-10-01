@@ -32,6 +32,17 @@ object HtmlTextExtractor {
 
     fun extract(file: File): List<String> = extract(Jsoup.parse(file, "UTF-8").body())
 
+    // 文档内首个标题(h1..h6,按序),供章节名兜底;无标题返回 null
+    fun firstHeading(file: File): String? {
+        val body = Jsoup.parse(file, "UTF-8").body()
+        for (tag in listOf("h1", "h2", "h3", "h4", "h5", "h6")) {
+            val e = body.selectFirst(tag) ?: continue
+            val s = e.text().trim()
+            if (s.isNotEmpty()) return s
+        }
+        return null
+    }
+
     fun extract(body: Element): List<String> {
         val out = ArrayList<String>()
         val sb = StringBuilder()

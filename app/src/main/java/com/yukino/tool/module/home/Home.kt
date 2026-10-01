@@ -25,7 +25,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.yukino.tool.BuildConfig
 import com.yukino.tool.R
 import com.yukino.tool.components.MenuCard
 import com.yukino.tool.module.bluetooth.BluetoothActivity
@@ -58,7 +57,7 @@ fun Home() {
             ) {
                 Text(text = "个人工具集")
                 Text(
-                    text = stringResource(R.string.build_time).let { "v${BuildConfig.VERSION_NAME} · 构建于 $it" },
+                    text = "v" + stringResource(R.string.version_name) + " · 构建于 " + stringResource(R.string.build_time),
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

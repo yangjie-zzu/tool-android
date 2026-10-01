@@ -80,7 +80,10 @@ internal fun resolveHref(baseDir: String, href: String): String {
 }
 
 // ---------- 通用 XML 遍历 ----------
-// 限定名遍历(未开命名空间处理,name 可能形如 "dc:title");attrs 键为无前缀属性名
+// 限定名遍历(name 可能带前缀,如 "opf:package"/"dc:title");attrs 键为无前缀属性名。
+// 一律按本地名(去前缀)匹配,真实世界的 EPUB 常见前缀化 OPF
+private fun localName(name: String): String = name.substringAfterLast(':')
+
 private class XmlWalk(xml: String) {
     val parser: XmlPullParser = Xml.newPullParser().apply {
         setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES, false)
@@ -95,7 +98,7 @@ private class XmlWalk(xml: String) {
         return event
     }
 
-    val name: String get() = parser.name
+    val name: String get() = localName(parser.name)
     val depth: Int get() = parser.depth
 
     fun attr(key: String): String? = parser.getAttributeValue(null, key)
@@ -145,8 +148,8 @@ internal fun parseOpf(xml: String, opfDir: String): EpubPackage {
                 val n = w.name
                 stack.addLast(n)
                 when {
-                    (n == "title" || n.endsWith(":title")) && capture == null -> { capture = "title"; w.text.setLength(0) }
-                    (n == "creator" || n.endsWith(":creator")) && capture == null -> { capture = "creator"; w.text.setLength(0) }
+                    n == "title" && capture == null -> { capture = "title"; w.text.setLength(0) }
+                    n == "creator" && capture == null -> { capture = "creator"; w.text.setLength(0) }
                     n == "item" && stack.contains("manifest") -> {
                         val id = w.attr("id")
                         val href = w.attr("href")
@@ -164,11 +167,11 @@ internal fun parseOpf(xml: String, opfDir: String): EpubPackage {
             XmlPullParser.TEXT -> if (capture != null) w.text.append(w.parser.text)
             XmlPullParser.END_TAG -> {
                 val n = w.name
-                if (capture == "title" && (n == "title" || n.endsWith(":title"))) {
+                if (capture == "title" && n == "title") {
                     val t = w.text.toString().trim()
                     if (t.isNotEmpty() && title == null) title = t
                     capture = null
-                } else if (capture == "creator" && (n == "creator" || n.endsWith(":creator"))) {
+                } else if (capture == "creator" && n == "creator") {
                     val a = w.text.toString().trim()
                     if (a.isNotEmpty() && author == null) author = a
                     capture = null
@@ -213,10 +216,12 @@ internal fun parseNcx(xml: String, ncxDir: String): List<TocEntry> {
                     "content" -> {}   // src 已在 START_TAG 取到
                     "navPoint" -> {
                         val src = pendingSrc
-                        if (src != null) {
+                        // 空标题的条目丢弃(不少粗制 EPUB 的 NCX 全空)——
+                        // 交给导入侧用文档内标题/文件名兜底,避免章名退化成路径
+                        if (src != null && pendingTitle != null) {
                             val (path, frag) = stripFragment(src)
                             if (path.isNotBlank()) {
-                                out += TocEntry(resolveHref(ncxDir, percentDecode(path)), frag, pendingTitle ?: path)
+                                out += TocEntry(resolveHref(ncxDir, percentDecode(path)), frag, pendingTitle)
                             }
                         }
                         pendingTitle = null
