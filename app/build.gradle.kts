@@ -20,8 +20,8 @@ android {
         applicationId = "com.yukino.tool"
         minSdk = 24
         targetSdk = 34
-        versionCode = 7
-        versionName = "1.0.7"
+        versionCode = 8
+        versionName = "1.0.8"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -151,6 +151,9 @@ dependencies {
 
     // 阅读器: TXT编码自动检测(GBK/UTF-8/UTF-16等)
     implementation("com.github.albfernandez:juniversalchardet:2.5.0")
+
+    // 阅读器: EPUB内XHTML解析为纯文本(容错HTML解析)
+    implementation("org.jsoup:jsoup:1.18.3")
 
     implementation("com.github.omicronapps:7-Zip-JBinding-4Android:Release-16.02-2.02")
 

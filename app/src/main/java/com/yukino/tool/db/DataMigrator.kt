@@ -3,10 +3,10 @@ package com.yukino.tool.db
 import android.content.Context
 import android.util.Log
 import com.yukino.tool.TAG
-import com.yukino.tool.module.reader.ChapterIndex
-import com.yukino.tool.module.reader.PageSpec
-import com.yukino.tool.module.reader.Progress
-import com.yukino.tool.module.reader.ReaderSettings
+import com.yukino.tool.module.reader.common.ChapterIndex
+import com.yukino.tool.module.reader.common.PageSpec
+import com.yukino.tool.module.reader.common.Progress
+import com.yukino.tool.module.reader.common.ReaderSettings
 import com.yukino.tool.module.reader.ReaderStore
 import com.yukino.tool.module.note.NoteCrypto
 import com.yukino.tool.module.scan.ScanItem

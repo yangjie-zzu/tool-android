@@ -1,4 +1,4 @@
-package com.yukino.tool.module.reader
+package com.yukino.tool.module.reader.common
 
 import kotlin.math.ceil
 

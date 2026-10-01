@@ -1,5 +1,6 @@
 package com.yukino.tool.module.reader
 
+import com.yukino.tool.module.reader.common.*
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -204,7 +205,7 @@ class SelectionGeometryTest {
             addedAt = 0, lastReadAt = 0
         )
         val text = "甲乙丙丁戊己庚辛壬癸"
-        val out = selectionText(book, text, ReaderSelection(3, 7, anchorIsStart = false))
+        val out = selectionText(TxtBookContent(book, text), ReaderSelection(3, 7, anchorIsStart = false))
         assertEquals("丁戊\n己庚", out)
     }
 }

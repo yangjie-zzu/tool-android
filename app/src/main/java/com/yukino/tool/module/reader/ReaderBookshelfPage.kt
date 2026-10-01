@@ -34,6 +34,8 @@ import androidx.compose.ui.unit.dp
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import com.yukino.tool.module.reader.common.*
+import com.yukino.tool.module.reader.common.BookFormat
 
 // 书架: 按第一次导入时间倒序(最新导入置顶),显示进度百分比;删除时连带清理缓存
 @Composable
@@ -56,7 +58,7 @@ fun ReaderBookshelfPage(
             if (sorted.isEmpty()) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text(
-                        if (importing) "正在导入..." else "书架空空，点击右下角导入 TXT",
+                        if (importing) "正在导入..." else "书架空空，点击右下角导入书籍",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -79,7 +81,7 @@ fun ReaderBookshelfPage(
         ) {
             Icon(Icons.Rounded.Add, contentDescription = null)
             Spacer(Modifier.height(0.dp))
-            Text("导入 TXT")
+            Text("导入书籍")
         }
 
         if (importing) {
@@ -124,6 +126,7 @@ private fun BookItem(
             )
             val percent = (book.progress.percent * 100).toInt()
             val subtitle = buildString {
+                if (book.format == BookFormat.EPUB) append("EPUB · ")
                 if (book.fileSize > 0) {
                     append(
                         when {

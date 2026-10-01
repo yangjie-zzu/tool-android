@@ -3,6 +3,9 @@ package com.yukino.tool.module.reader
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
+import com.yukino.tool.module.reader.common.ImportResult
+import com.yukino.tool.module.reader.common.Progress
+import com.yukino.tool.module.reader.common.ReaderBook
 import java.io.File
 import java.nio.charset.Charset
 import java.util.UUID
@@ -10,17 +13,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.mozilla.universalchardet.UniversalDetector
 
-// 导入: SAF uri → 编码检测 → 规范化(CRLF/BOM) → UTF-8 转存缓存 → 章节索引 → books.json
+// 导入: SAF uri → 编码检测 → 规范化(CRLF/BOM) → UTF-8 转存缓存 → 章节索引 → SQLite
 // 之后所有读取只碰缓存文件,原始 uri 仅留作缓存被清时的重新转存
 object TxtImporter {
 
     private const val MAX_BYTES = 100L * 1024 * 1024
     private const val DETECT_BUF = 8 * 1024
-
-    sealed interface ImportResult {
-        data class Success(val book: ReaderBook) : ImportResult
-        data class Failed(val reason: String) : ImportResult
-    }
 
     suspend fun import(context: Context, uri: Uri): ImportResult = withContext(Dispatchers.IO) {
         runCatching { doImport(context, uri) }.getOrElse {

@@ -1,5 +1,7 @@
 package com.yukino.tool.module.reader
 
+import com.yukino.tool.module.reader.common.*
+
 import kotlin.math.abs
 
 // 文字选择的几何层: 命中测试 / 选词 / 选区可视化。纯函数,measure 注入,本地单测覆盖。

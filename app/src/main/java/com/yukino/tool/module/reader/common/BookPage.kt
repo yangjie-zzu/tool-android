@@ -1,5 +1,4 @@
-package com.yukino.tool.module.reader
-
+package com.yukino.tool.module.reader.common
 import android.graphics.Paint
 import android.graphics.Typeface
 import android.text.SpannableStringBuilder
@@ -161,16 +160,17 @@ object ChapterComposer {
         paraStart < sb.length && (sb[paraStart] == '　' || sb[paraStart] == ' ' || sb[paraStart] == '\n' || sb[paraStart] == '\t')
 }
 
-// 分页器: 全书文本+版式 → 全量页目录;页目录+章行模型(带缓存) → 可渲染页。
+// 分页器: 内容源+版式 → 全量页目录;页目录+章行模型(带缓存) → 可渲染页。
 //
 // 网格排版: 断行(StaticLayout,含系统禁则)与行布局(行模型)分离——
 // 整章只断行一次,行高/段前距量化到网格,页高与版心高的零头天然小于一个网格,
 // 页底视觉铺满;行高与段前距全章恒定,相邻页的行位天然对齐,匀齐分摊不再需要
 object BookPager {
 
-    // 章行模型缓存: 物化同章页(翻页/邻页预物化)免重复断行。版式变化整体失效,
+    // 章行模型缓存: 物化同章页(翻页/邻页预物化)免重复断行。版式/书变化整体失效,
     // 小 LRU 控内存。物化并发(Default 线程)经 synchronized 串行化,首建后命中
     private var cacheTypo: ResolvedTypography? = null
+    private var cacheContent: BookContent? = null
     private val lineCache = object : LinkedHashMap<Int, ChapterLines>(8, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Int, ChapterLines>) = size > 4
     }
@@ -180,50 +180,38 @@ object BookPager {
     // 断行是大计算,必须在 Default 调度器上——留在主线程(调用方 LaunchedEffect 的调度器)
     // 时,连续改版式触发的重排会积压输入事件导致 ANR。
     // 信号量限流控制同时驻留内存的章断行布局数;awaitAll 按发起顺序取结果,与串行结果一致
-    suspend fun buildSpecs(book: ReaderBook, fullText: String, typo: ResolvedTypography): List<PageSpec> =
+    suspend fun buildSpecs(content: BookContent, typo: ResolvedTypography): List<PageSpec> =
         coroutineScope {
             val specs = ArrayList<PageSpec>()
             specs += PageSpec(PageKind.COVER, -1, 0, 1, 0L, "")
-            if (book.chapters.isEmpty()) {
-                // 无章节书: 整本为单章,书名作章名
-                val cl = withContext(Dispatchers.Default) {
-                    buildChapterLines(book, fullText, typo, book.title, 0L, 0)
-                }
-                specs += specsOf(putLines(0, cl, typo), 0, 0L, book.title, typo)
-            } else {
-                val parallelism = Runtime.getRuntime().availableProcessors().coerceAtLeast(1)
-                val permits = Semaphore(parallelism)
-                val perChapter = book.chapters.indices.map { c ->
-                    async(Dispatchers.Default) {
-                        permits.withPermit {
-                            ensureActive()
-                            val ch = book.chapters[c]
-                            val cl = putLines(
-                                c, buildChapterLines(book, fullText, typo, ch.title, ch.startChar, c), typo
-                            )
-                            specsOf(cl, c, ch.startChar, ch.title, typo)
-                        }
+            val parallelism = Runtime.getRuntime().availableProcessors().coerceAtLeast(1)
+            val permits = Semaphore(parallelism)
+            val perChapter = (0 until content.chapterCount).map { c ->
+                async(Dispatchers.Default) {
+                    permits.withPermit {
+                        ensureActive()
+                        val cl = putLines(
+                            content, c, buildChapterLines(content, c, typo), typo
+                        )
+                        specsOf(cl, c, content.chapterStart(c), content.chapterTitle(c), typo)
                     }
                 }
-                perChapter.awaitAll().forEach { specs += it }   // 发起顺序 = 章序,结果确定性不变
             }
-            specs += PageSpec(PageKind.BACK, book.chapters.size, 0, 1, book.totalChars, "")
+            perChapter.awaitAll().forEach { specs += it }   // 发起顺序 = 章序,结果确定性不变
+            specs += PageSpec(PageKind.BACK, content.chapterCount, 0, 1, content.totalChars, "")
             specs
         }
 
     // 章 → 行模型。断行度量来自固定字体度量,与传入 layout 的行序结合生成行高。
     // 仅在此处构建 StaticLayout,断行结果入缓存后 layout 即弃
     private fun buildChapterLines(
-        book: ReaderBook,
-        fullText: String,
-        typo: ResolvedTypography,
-        title: String,
-        chapterStartGlobal: Long,
-        chapterIndex: Int
+        content: BookContent,
+        chapterIndex: Int,
+        typo: ResolvedTypography
     ): ChapterLines {
-        val (body, stripped) = ChapterComposer.stripLeadingTitle(
-            chapterText(fullText, book, chapterIndex), title
-        )
+        val doc = content.chapterDoc(chapterIndex)
+        val title = content.chapterTitle(chapterIndex)
+        val (body, stripped) = ChapterComposer.stripLeadingTitle(doc.bodyText, title)
         val composed = ChapterComposer.compose(title, body, typo)
         val bodyStart = ChapterComposer.bodyStart(title.length)
         val measure = Typography.buildLayout(composed, typo)
@@ -267,7 +255,7 @@ object BookPager {
             }
             lines += TextLine(s, e, kind, isParaStart, pitch, if (isParaStart) paraAbove else 0, ascentAbs)
         }
-        return ChapterLines(composed, bodyStart, chapterStartGlobal + stripped, lines)
+        return ChapterLines(composed, bodyStart, content.chapterStart(chapterIndex) + stripped, lines)
     }
 
     // 行分类: 全空白行(含标题块后的空行)→ BLANK;正文区之前的非空行 → TITLE;其余 → BODY
@@ -314,27 +302,22 @@ object BookPager {
     // 基线/缩进/两端对齐拉伸在物化时一次算好,绘制零计算。
     // 拖拽预览与落账共用物化结果,保证看到的==翻到的
     fun materialize(
-        book: ReaderBook,
-        fullText: String,
+        content: BookContent,
         spec: PageSpec,
         typo: ResolvedTypography
     ): BookPage {
         if (spec.kind != PageKind.CONTENT) {
-            val text = if (spec.kind == PageKind.COVER) book.title else "最后一页了"
+            val text = if (spec.kind == PageKind.COVER) content.bookTitle else "最后一页了"
             return BookPage(spec, "", "", virtualLayout = Typography.buildVirtualLayout(text, typo))
         }
-        val chapter = book.chapters.getOrNull(spec.chapterIndex)   // 无章节书: 单章约定
-        val cl = chapterLines(
-            book, fullText, typo, spec.chapterIndex,
-            chapter?.title ?: book.title.takeIf { book.chapters.isEmpty() } ?: "",
-            chapter?.startChar ?: 0L
-        )
+        val idx = spec.chapterIndex.coerceIn(0, content.chapterCount - 1)
+        val cl = chapterLines(content, idx, typo)
         val windows = paginate(cl, typo)
         val slice = windows[spec.chapterPageIndex.coerceIn(0, windows.lastIndex)]
-        val percent = percentOf(book, spec)
+        val percent = percentOf(content, spec)
         val label = "${spec.chapterPageIndex + 1}/${spec.chapterPageCount} ${(percent * 100).roundToInt()}%"
         val paint = TextPaint(TextPaint.ANTI_ALIAS_FLAG).apply { textSize = typo.fontPx }
-        val chapterStartGlobal = chapter?.startChar ?: 0L
+        val chapterStartGlobal = content.chapterStart(idx)
         return BookPage(
             spec, spec.chapterTitle, label,
             drawLines(cl, slice, typo, measure = { paint.measureText(it) }, chapterStartGlobal = chapterStartGlobal)
@@ -379,34 +362,34 @@ object BookPager {
         return out
     }
 
-    // 章 → 行模型(带缓存)。title/chapterStart 由调用方给出(无章节书的单章约定)
+    // 章 → 行模型(带缓存)。版式或书(内容源)变化整体失效——缓存按章下标索引,
+    // 换书不清会串书
     private fun chapterLines(
-        book: ReaderBook,
-        fullText: String,
-        typo: ResolvedTypography,
+        content: BookContent,
         chapterIndex: Int,
-        title: String,
-        chapterStartGlobal: Long
+        typo: ResolvedTypography
     ): ChapterLines = synchronized(this) {
-        if (cacheTypo != typo) {   // data class 相等: 版式变化整体失效
-            lineCache.clear()
-            cacheTypo = typo
-        }
+        resetCacheIfStale(content, typo)
         lineCache.getOrPut(chapterIndex) {
-            buildChapterLines(book, fullText, typo, title, chapterStartGlobal, chapterIndex)
+            buildChapterLines(content, chapterIndex, typo)
         }
     }
 
     // buildSpecs 的并行断行结果入缓存: 首次物化即命中,不重复断行
-    private fun putLines(chapterIndex: Int, cl: ChapterLines, typo: ResolvedTypography): ChapterLines {
+    private fun putLines(content: BookContent, chapterIndex: Int, cl: ChapterLines, typo: ResolvedTypography): ChapterLines {
         synchronized(this) {
-            if (cacheTypo != typo) {
-                lineCache.clear()
-                cacheTypo = typo
-            }
+            resetCacheIfStale(content, typo)
             lineCache[chapterIndex] = cl
         }
         return cl
+    }
+
+    private fun resetCacheIfStale(content: BookContent, typo: ResolvedTypography) {
+        if (cacheTypo != typo || cacheContent !== content) {   // data class 相等: 版式变化整体失效
+            lineCache.clear()
+            cacheTypo = typo
+            cacheContent = content
+        }
     }
 
     // 页首全书偏移 → 全局页号: 二分找最后一个页首偏移 <= 目标的页
@@ -421,22 +404,9 @@ object BookPager {
     }
 
     // 页首全书偏移 → 百分比
-    fun percentOf(book: ReaderBook, spec: PageSpec): Double = when (spec.kind) {
+    fun percentOf(content: BookContent, spec: PageSpec): Double = when (spec.kind) {
         PageKind.COVER -> 0.0
         PageKind.BACK -> 1.0
-        PageKind.CONTENT -> (spec.globalCharOffset / book.totalChars.toDouble()).coerceIn(0.0, 1.0)
+        PageKind.CONTENT -> (spec.globalCharOffset / content.totalChars.toDouble()).coerceIn(0.0, 1.0)
     }
-}
-
-// 章节正文(全书文本按章表区间裁切;无章节的书整本为单章)
-internal fun chapterText(fullText: String?, book: ReaderBook, chapterIndex: Int): String {
-    if (fullText == null) return ""
-    val chapters = book.chapters
-    if (chapters.isEmpty()) return fullText
-    val idx = chapterIndex.coerceIn(0, chapters.lastIndex)
-    val start = chapters[idx].startChar.toInt().coerceIn(0, fullText.length)
-    val end = if (idx + 1 < chapters.size) {
-        chapters[idx + 1].startChar.toInt().coerceIn(start, fullText.length)
-    } else fullText.length
-    return fullText.substring(start, end)
 }

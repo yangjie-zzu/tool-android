@@ -1,8 +1,11 @@
 package com.yukino.tool.module.reader
 
+import com.yukino.tool.module.reader.common.*
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.provider.OpenableColumns
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -26,6 +29,8 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.yukino.tool.ui.theme.ToolTheme
+import com.yukino.tool.module.reader.common.ImportResult
+import com.yukino.tool.module.reader.epub.EpubImporter
 import com.yukino.tool.util.FilePicker
 import java.io.File
 import kotlinx.coroutines.Dispatchers
@@ -145,18 +150,34 @@ fun ReaderApp(
         booksVersion.intValue++
     }
 
+    // 按扩展名/类型路由到对应格式的导入主流程(txt/epub 互不感知)
+    fun isEpub(context: Context, uri: Uri): Boolean {
+        val name = runCatching {
+            context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+                ?.use { c ->
+                    val idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (idx >= 0 && c.moveToFirst()) c.getString(idx) else null
+                }
+        }.getOrNull() ?: uri.lastPathSegment
+        val lower = name?.lowercase() ?: ""
+        return lower.endsWith(".epub") || context.contentResolver.getType(uri) == "application/epub+zip"
+    }
+
+    suspend fun importDispatched(context: Context, uri: Uri): ImportResult =
+        if (isEpub(context, uri)) EpubImporter.import(context, uri) else TxtImporter.import(context, uri)
+
     fun importBook() {
         scope.launch {
-            val uri = filePicker.open(arrayOf("text/*", "application/octet-stream")) ?: return@launch
+            val uri = filePicker.open(arrayOf("text/*", "application/octet-stream", "application/epub+zip")) ?: return@launch
             importing = true
-            val result = TxtImporter.import(context, uri)
+            val result = importDispatched(context, uri)
             importing = false
             when (result) {
-                is TxtImporter.ImportResult.Success -> {
+                is ImportResult.Success -> {
                     books = ReaderStore.loadBooks(context)
                     booksVersion.intValue++
                 }
-                is TxtImporter.ImportResult.Failed -> Toast.makeText(context, result.reason, Toast.LENGTH_SHORT).show()
+                is ImportResult.Failed -> Toast.makeText(context, result.reason, Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -165,15 +186,15 @@ fun ReaderApp(
     fun importFromUri(uri: Uri) {
         scope.launch {
             importing = true
-            val result = TxtImporter.import(context, uri)
+            val result = importDispatched(context, uri)
             importing = false
             when (result) {
-                is TxtImporter.ImportResult.Success -> {
+                is ImportResult.Success -> {
                     books = ReaderStore.loadBooks(context)
                     booksVersion.intValue++
                     readingId = result.book.id
                 }
-                is TxtImporter.ImportResult.Failed -> Toast.makeText(context, result.reason, Toast.LENGTH_SHORT).show()
+                is ImportResult.Failed -> Toast.makeText(context, result.reason, Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -190,7 +211,7 @@ fun ReaderApp(
         books = books.filterNot { it.id == book.id }
         booksVersion.intValue++
         scope.launch(Dispatchers.IO) {
-            File(book.cachePath).delete()
+            File(book.cachePath).deleteRecursively()   // txt 缓存文件 / epub 章节目录
             ReaderStore.deleteSpecs(context, book.id)
             ReaderStore.saveBooks(context, books)
         }

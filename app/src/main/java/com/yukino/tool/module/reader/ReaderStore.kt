@@ -3,6 +3,13 @@ package com.yukino.tool.module.reader
 import android.content.Context
 import androidx.core.database.getStringOrNull
 import com.yukino.tool.db.AppDb
+import com.yukino.tool.module.reader.common.BookFormat
+import com.yukino.tool.module.reader.common.ChapterIndex
+import com.yukino.tool.module.reader.common.PageSpec
+import com.yukino.tool.module.reader.common.Progress
+import com.yukino.tool.module.reader.common.ReaderBook
+import com.yukino.tool.module.reader.common.ReaderSettings
+import com.yukino.tool.module.reader.common.ReaderTheme
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
@@ -20,7 +27,8 @@ object ReaderStore {
         val out = mutableListOf<ReaderBook>()
         AppDb.get(context).rawQuery(
             "SELECT id, title, source_uri, cache_path, encoding, total_chars, chapters, " +
-                "added_at, last_read_at, progress_offset, progress_percent, file_size FROM reader_book",
+                "added_at, last_read_at, progress_offset, progress_percent, file_size, " +
+                "format, author, cover_path FROM reader_book",
             null
         ).use { c ->
             while (c.moveToNext()) {
@@ -41,7 +49,10 @@ object ReaderStore {
                             globalCharOffset = c.getLong(9),
                             percent = c.getDouble(10)
                         ),
-                        fileSize = c.getLong(11)
+                        fileSize = c.getLong(11),
+                        format = if (c.isNull(12)) BookFormat.TXT else c.getString(12),
+                        author = if (c.isNull(13)) null else c.getString(13),
+                        coverPath = if (c.isNull(14)) null else c.getString(14)
                     )
                 )
             }
@@ -58,8 +69,9 @@ object ReaderStore {
             books.forEach { b ->
                 val st = db.compileStatement(
                     "INSERT INTO reader_book(id, title, source_uri, cache_path, encoding, total_chars, " +
-                        "chapters, added_at, last_read_at, progress_offset, progress_percent, file_size) " +
-                        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)"
+                        "chapters, added_at, last_read_at, progress_offset, progress_percent, file_size, " +
+                        "format, author, cover_path) " +
+                        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
                 )
                 st.bindString(1, b.id)
                 st.bindString(2, b.title)
@@ -73,6 +85,9 @@ object ReaderStore {
                 st.bindLong(10, b.progress.globalCharOffset)
                 st.bindDouble(11, b.progress.percent)
                 st.bindLong(12, b.fileSize)
+                st.bindString(13, b.format)
+                if (b.author != null) st.bindString(14, b.author) else st.bindNull(14)
+                if (b.coverPath != null) st.bindString(15, b.coverPath) else st.bindNull(15)
                 st.executeInsert()
             }
             db.setTransactionSuccessful()

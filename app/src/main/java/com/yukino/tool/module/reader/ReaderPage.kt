@@ -77,6 +77,16 @@ import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.systemBars
 import androidx.core.view.WindowCompat
 import com.yukino.tool.R
+import com.yukino.tool.module.reader.common.BookContent
+import com.yukino.tool.module.reader.common.BookPage
+import com.yukino.tool.module.reader.common.BookPager
+import com.yukino.tool.module.reader.common.ChapterComposer
+import com.yukino.tool.module.reader.common.PageKind
+import com.yukino.tool.module.reader.common.PageSpec
+import com.yukino.tool.module.reader.common.ReaderBook
+import com.yukino.tool.module.reader.common.ReaderSettings
+import com.yukino.tool.module.reader.common.ReaderPageView
+import com.yukino.tool.module.reader.common.Typography
 import com.yukino.tool.util.findActivity
 import java.io.File
 import kotlin.math.abs
@@ -135,7 +145,8 @@ fun ReaderScreen(
     val density = LocalDensity.current
     val view = LocalView.current
 
-    var fullText by remember(book.id) { mutableStateOf<String?>(null) }
+    // 内容源(txt 全文 / epub 章节文件): null=加载中或缓存缺失
+    var content by remember(book.id) { mutableStateOf<BookContent?>(null) }
     var cacheMissing by remember(book.id) { mutableStateOf(false) }
     // 全书页目录: null=构建中(loading 遮盖)。版式变化整本重建,锚点重定位不漂移
     var specs by remember(book.id) { mutableStateOf<List<PageSpec>?>(null) }
@@ -170,19 +181,11 @@ fun ReaderScreen(
         }
     }
 
-    // 加载缓存文本;缺失则用 sourceUri 重新转存
+    // 加载内容源(按格式分派到各自主流程);txt 缓存缺失则用 sourceUri 重新转存
     LaunchedEffect(book.id) {
-        val text = withContext(Dispatchers.IO) {
-            val f = File(book.cachePath)
-            if (f.exists() && f.length() > 0) {
-                f.readText()
-            } else {
-                val refreshed = TxtImporter.ensureCache(context, book)
-                File(refreshed.cachePath).takeIf { it.exists() && it.length() > 0 }?.readText()
-            }
-        }
-        cacheMissing = text == null
-        fullText = text
+        val c = BookContents.load(context, book)
+        cacheMissing = c == null
+        content = c
     }
 
     val typo = viewport?.let {
@@ -199,7 +202,7 @@ fun ReaderScreen(
 
     // 手势闭包防过期: 拖拽中读最新状态
     val liveBook by rememberUpdatedState(book)
-    val liveText by rememberUpdatedState(fullText)
+    val liveContent by rememberUpdatedState(content)
     val liveTypo by rememberUpdatedState(typo)
     val liveSpecs by rememberUpdatedState(specs)
     val livePageIndex by rememberUpdatedState(pageIndex)
@@ -207,8 +210,8 @@ fun ReaderScreen(
 
     // 全书页目录: 文本/视口/版式任一变化 → 后台整本重算,按锚点重定位(打开书时锚点=持久化进度)。
     // 分页结果持久化缓存(ReaderStore.specs): 同一本书版式未变时二次进入直接命中,免整本重排
-    LaunchedEffect(fullText, typoKey) {
-        val text = fullText ?: return@LaunchedEffect
+    LaunchedEffect(content, typoKey) {
+        val cnt = content ?: return@LaunchedEffect
         val t = typo ?: return@LaunchedEffect
         val key = typoKey ?: return@LaunchedEffect
         if (specs != null && specsTypoKey == key) return@LaunchedEffect   // 已是当前版式,不重排
@@ -224,7 +227,7 @@ fun ReaderScreen(
             pageIndex = BookPager.locatePage(cached, anchor)
             return@LaunchedEffect
         }
-        val result = BookPager.buildSpecs(book, text, t)
+        val result = BookPager.buildSpecs(cnt, t)
         specsTypoKey = key
         specs = result
         pageIndex = BookPager.locatePage(result, anchor)
@@ -235,11 +238,11 @@ fun ReaderScreen(
     LaunchedEffect(specs, pageIndex, typoKey) {
         val sp = specs ?: return@LaunchedEffect
         val t = typo ?: return@LaunchedEffect
-        val text = fullText ?: return@LaunchedEffect
+        val cnt = content ?: return@LaunchedEffect
         if (sp.isEmpty()) return@LaunchedEffect
         val idx = pageIndex.coerceIn(0, sp.lastIndex)
         currentBookPage = withContext(Dispatchers.Default) {
-            BookPager.materialize(book, text, sp[idx], t)
+            BookPager.materialize(cnt, sp[idx], t)
         }
     }
 
@@ -252,14 +255,14 @@ fun ReaderScreen(
     LaunchedEffect(specs, pageIndex, typoKey) {
         val sp = specs ?: return@LaunchedEffect
         val t = typo ?: return@LaunchedEffect
-        val text = fullText ?: return@LaunchedEffect
+        val cnt = content ?: return@LaunchedEffect
         if (sp.isEmpty()) return@LaunchedEffect
         kotlinx.coroutines.coroutineScope {
             for (off in intArrayOf(1, -1)) {
                 val i = pageIndex + off
                 if (i !in sp.indices || neighborCache.containsKey(i)) continue
                 launch(Dispatchers.Default) {
-                    neighborCache[i] = BookPager.materialize(book, text, sp[i], t)
+                    neighborCache[i] = BookPager.materialize(cnt, sp[i], t)
                 }
             }
         }
@@ -269,7 +272,7 @@ fun ReaderScreen(
     LaunchedEffect(specs, pageIndex) {
         val sp = specs ?: return@LaunchedEffect
         val spec = sp.getOrNull(pageIndex) ?: return@LaunchedEffect
-        onProgress(spec.globalCharOffset, BookPager.percentOf(book, spec))
+        onProgress(spec.globalCharOffset, BookPager.percentOf(content ?: return@LaunchedEffect, spec))
     }
 
     // 进度条跳转: 全书百分比 → 全局偏移 → 二分定位
@@ -288,7 +291,7 @@ fun ReaderScreen(
     val secondary = fgColor.copy(alpha = 0.55f)
     // 菜单浮层配色: 跟随阅读器底色/前景色(加深 6% 做层次),不用主题 surface(浅色主题下是白块)
     val menuBg = lerp(bgColor, Color.Black, 0.06f)
-    val percent = currentPercent(book, specs, pageIndex)
+    val percent = currentPercent(content, specs, pageIndex)
 
     // 系统栏 inset(px): 页面内容(页眉/正文/页脚)在系统栏下方避让,视图本身全屏
     val sysPad = WindowInsets.systemBars.asPaddingValues()
@@ -370,11 +373,11 @@ fun ReaderScreen(
 
             override fun onActionItemClicked(mode: ActionMode, item: MenuItem): Boolean {
                 val sel = selection ?: return false
-                val text = liveText ?: return false
+                val cnt = liveContent ?: return false
                 return when (item.itemId) {
                     1 -> {   // 复制
                         val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        cm.setPrimaryClip(ClipData.newPlainText("text", selectionText(liveBook, text, sel)))
+                        cm.setPrimaryClip(ClipData.newPlainText("text", selectionText(cnt, sel)))
                         Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show()
                         mode.finish()
                         selection = null
@@ -395,7 +398,7 @@ fun ReaderScreen(
                     3 -> {   // 分享
                         val send = Intent(Intent.ACTION_SEND).apply {
                             type = "text/plain"
-                            putExtra(Intent.EXTRA_TEXT, selectionText(liveBook, text, sel))
+                            putExtra(Intent.EXTRA_TEXT, selectionText(cnt, sel))
                         }
                         context.startActivity(Intent.createChooser(send, "分享选中文字"))
                         mode.finish()
@@ -461,11 +464,11 @@ fun ReaderScreen(
     fun flipForSelection(dir: Int) {
         val sp = liveSpecs ?: return
         val t = liveTypo ?: return
-        val text = liveText ?: return
+        val cnt = liveContent ?: return
         val target = livePageIndex + dir
         if (target !in sp.indices) return
         val neighbor = neighborCache.getOrPut(target) {
-            BookPager.materialize(liveBook, text, sp[target], t)
+            BookPager.materialize(cnt, sp[target], t)
         }
         // 与手势翻页同一套动画: 摆好拖拽层后提交收尾,整页顺势滑入/滑出
         pageViewRef.value?.let { v ->
@@ -698,14 +701,14 @@ fun ReaderScreen(
                     val sp = liveSpecs ?: return null
                     val t = liveTypo ?: return null
                     val cur = livePage ?: return null
-                    val text = liveText ?: return null
+                    val cnt = liveContent ?: return null
                     if (sp.isEmpty()) return null
                     val idx = livePageIndex.coerceIn(0, sp.lastIndex)
                     val target = if (dir > 0) idx + 1 else idx - 1
                     if (target !in sp.indices) return null
                     // 命中预物化缓存则零成本定向;未命中(理论上仅冷启动首拖)才同步兜底
                     val neighbor = neighborCache.getOrPut(target) {
-                        BookPager.materialize(liveBook, text, sp[target], t)
+                        BookPager.materialize(cnt, sp[target], t)
                     }
                     return DragSession(dir, target, cur, neighbor)
                 }
@@ -826,7 +829,7 @@ fun ReaderScreen(
 
         // loading 延迟显示: 内容就绪通常只需几十 ms(分页缓存命中),spinner 闪一下反而晃眼;
         // 超过 350ms 未就绪(冷缓存整本重排/大文件)才出现
-        val contentReady = fullText != null && specs != null && currentBookPage != null
+        val contentReady = content != null && specs != null && currentBookPage != null
         var showLoading by remember(book.id) { mutableStateOf(false) }
         LaunchedEffect(contentReady) {
             if (contentReady) {
@@ -985,10 +988,12 @@ fun ReaderScreen(
 
 // 当前页对应的全书百分比(供页脚与进度条)
 private fun currentPercent(
-    book: ReaderBook,
+    content: BookContent?,
     specs: List<PageSpec>?,
     pageIndex: Int
-): Double = specs?.getOrNull(pageIndex)?.let { BookPager.percentOf(book, it) } ?: 0.0
+): Double = content?.let { c ->
+    specs?.getOrNull(pageIndex)?.let { BookPager.percentOf(c, it) }
+} ?: 0.0
 
 
 // 选择双柄: 左右倾斜水滴图标挂在各自锚点下方(参考系统选区柄样式),

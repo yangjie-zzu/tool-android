@@ -1,5 +1,7 @@
 package com.yukino.tool.module.reader
 
+import com.yukino.tool.module.reader.common.*
+
 // 章节识别: 逐行匹配标题正则,行超长不误判;命中数越界降级为整本单章
 object ChapterSplitter {
 

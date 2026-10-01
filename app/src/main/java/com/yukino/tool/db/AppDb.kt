@@ -16,7 +16,7 @@ import android.database.sqlite.SQLiteOpenHelper
 object AppDb {
 
     private const val NAME = "tool.db"
-    private const val VERSION = 2
+    private const val VERSION = 3
 
     @Volatile
     private var helper: SQLiteOpenHelper? = null
@@ -32,6 +32,12 @@ object AppDb {
                     // 首版无历史版本; 后续 schema 变更在这里按 oldVersion 逐级 ALTER
                     if (oldVersion < 2) {
                         db.execSQL(Schema.WEB_DOWNLOAD)
+                    }
+                    // v3: reader_book 支持多格式(EPUB),加格式/作者/封面列
+                    if (oldVersion < 3) {
+                        db.execSQL("ALTER TABLE reader_book ADD COLUMN format TEXT NOT NULL DEFAULT 'txt'")
+                        db.execSQL("ALTER TABLE reader_book ADD COLUMN author TEXT")
+                        db.execSQL("ALTER TABLE reader_book ADD COLUMN cover_path TEXT")
                     }
                 }
             }
@@ -82,7 +88,10 @@ object AppDb {
                     "last_read_at INTEGER NOT NULL, " +
                     "progress_offset INTEGER NOT NULL DEFAULT 0, " +
                     "progress_percent REAL NOT NULL DEFAULT 0, " +
-                    "file_size INTEGER NOT NULL DEFAULT 0)"
+                    "file_size INTEGER NOT NULL DEFAULT 0, " +
+                    "format TEXT NOT NULL DEFAULT 'txt', " +  // txt/epub
+                    "author TEXT, " +                          // epub 元数据
+                    "cover_path TEXT)"                         // 封面图路径(二期启用)
             )
             db.execSQL("CREATE INDEX idx_book_last_read ON reader_book(last_read_at DESC)")
             // 阅读设置: 恒单行

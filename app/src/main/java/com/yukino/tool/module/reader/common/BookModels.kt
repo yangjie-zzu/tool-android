@@ -1,6 +1,11 @@
-package com.yukino.tool.module.reader
-
+package com.yukino.tool.module.reader.common
 import kotlinx.serialization.Serializable
+
+// 书籍格式标识(ReaderBook.format 存储值)
+object BookFormat {
+    const val TXT = "txt"
+    const val EPUB = "epub"
+}
 
 // 章节: 标题 + 全书字符起始偏移
 @Serializable
@@ -19,14 +24,17 @@ data class ReaderBook(
     val id: String,
     val title: String,
     val sourceUri: String,   // SAF uri(已 takePersistableUriPermission),缓存丢失时重新转存
-    val cachePath: String,   // 导入时转存的 UTF-8 文本
+    val cachePath: String,   // txt: 转存的 UTF-8 文本;epub: 章节文件目录
     val encoding: String,    // 检测出的原始编码,仅展示
     val totalChars: Long,    // 全书字符数(算百分比)
     val chapters: List<ChapterIndex>,
     val addedAt: Long,
     val lastReadAt: Long,
     val progress: Progress = Progress(),
-    val fileSize: Long = 0L    // 缓存文件字节数(书架展示);旧数据缺省 0 不显示
+    val fileSize: Long = 0L,  // 缓存文件字节数(书架展示);旧数据缺省 0 不显示
+    val format: String = BookFormat.TXT,  // txt/epub;旧数据缺省 txt
+    val author: String? = null,           // epub 元数据,仅展示;txt 无
+    val coverPath: String? = null         // 封面图路径(二期启用);一期恒空
 )
 
 enum class ReaderTheme { PAPER, SEPIA, GREEN, NIGHT, CUSTOM }
