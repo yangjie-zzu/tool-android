@@ -76,5 +76,6 @@ class TxtBookContent(private val book: ReaderBook, private val fullText: String)
 // 导入结果: 两条导入主流程共用(原 TxtImporter.ImportResult 上提)
 sealed interface ImportResult {
     data class Success(val book: ReaderBook) : ImportResult
+    data class FolderImported(val groupCount: Int, val bookCount: Int) : ImportResult
     data class Failed(val reason: String) : ImportResult
 }

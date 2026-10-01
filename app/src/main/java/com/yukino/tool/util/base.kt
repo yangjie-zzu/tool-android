@@ -75,13 +75,22 @@ class ValueRef<T>(var value: T)
 
 class FilePicker(activity: ComponentActivity) {
     private var filePickerLauncher: ActivityResultLauncher<Array<String>> = registerLauncher(activity)
+    private var folderPickerLauncher: ActivityResultLauncher<Uri?> = registerFolderLauncher(activity)
 
     private var onFilePicker: ((uri: Uri?) -> Unit)? = null
+    private var onFolderPicker: ((uri: Uri?) -> Unit)? = null
 
     private fun registerLauncher(activity: ComponentActivity): ActivityResultLauncher<Array<String>> {
         return activity.registerForActivityResult(ActivityResultContracts.OpenDocument()) {
             onFilePicker?.invoke(it)
             onFilePicker = null
+        }
+    }
+
+    private fun registerFolderLauncher(activity: ComponentActivity): ActivityResultLauncher<Uri?> {
+        return activity.registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) {
+            onFolderPicker?.invoke(it)
+            onFolderPicker = null
         }
     }
 
@@ -91,6 +100,16 @@ class FilePicker(activity: ComponentActivity) {
                 it.resumeWith(Result.success(uri))
             }
             filePickerLauncher.launch(mimeTypes)
+        }
+    }
+
+    // 文件夹选择(SAF tree): 返回所选目录的 tree uri
+    suspend fun openFolder(initialUri: Uri? = null): Uri? {
+        return suspendCoroutine {
+            onFolderPicker = { uri ->
+                it.resumeWith(Result.success(uri))
+            }
+            folderPickerLauncher.launch(initialUri)
         }
     }
 

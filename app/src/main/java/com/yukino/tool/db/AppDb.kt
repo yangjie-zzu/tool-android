@@ -16,7 +16,7 @@ import android.database.sqlite.SQLiteOpenHelper
 object AppDb {
 
     private const val NAME = "tool.db"
-    private const val VERSION = 3
+    private const val VERSION = 4
 
     @Volatile
     private var helper: SQLiteOpenHelper? = null
@@ -27,6 +27,11 @@ object AppDb {
             helper?.let { return it.writableDatabase }
             val app = context.applicationContext
             val h = object : SQLiteOpenHelper(app, NAME, null, VERSION) {
+                override fun onConfigure(db: SQLiteDatabase) {
+                    // 每个连接都要开外键(reader_specs 级联删除依赖它);onCreate 里的 PRAGMA 只对当次连接有效
+                    db.setForeignKeyConstraintsEnabled(true)
+                }
+
                 override fun onCreate(db: SQLiteDatabase) = Schema.create(db)
                 override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
                     // 首版无历史版本; 后续 schema 变更在这里按 oldVersion 逐级 ALTER
@@ -38,6 +43,12 @@ object AppDb {
                         db.execSQL("ALTER TABLE reader_book ADD COLUMN format TEXT NOT NULL DEFAULT 'txt'")
                         db.execSQL("ALTER TABLE reader_book ADD COLUMN author TEXT")
                         db.execSQL("ALTER TABLE reader_book ADD COLUMN cover_path TEXT")
+                    }
+                    // v4: 书架分组 + 登记式导入(老书内容已落盘, ready=1)
+                    if (oldVersion < 4) {
+                        db.execSQL(Schema.READER_GROUP)
+                        db.execSQL("ALTER TABLE reader_book ADD COLUMN group_id TEXT")
+                        db.execSQL("ALTER TABLE reader_book ADD COLUMN ready INTEGER NOT NULL DEFAULT 1")
                     }
                 }
             }
@@ -91,9 +102,13 @@ object AppDb {
                     "file_size INTEGER NOT NULL DEFAULT 0, " +
                     "format TEXT NOT NULL DEFAULT 'txt', " +  // txt/epub
                     "author TEXT, " +                          // epub 元数据
-                    "cover_path TEXT)"                         // 封面图路径(二期启用)
+                    "cover_path TEXT, " +                      // 封面图路径(二期启用)
+                    "group_id TEXT, " +                        // 所属分组;NULL=未分组
+                    "ready INTEGER NOT NULL DEFAULT 0)"        // 0=登记态(内容未落盘/章节未解析)
             )
             db.execSQL("CREATE INDEX idx_book_last_read ON reader_book(last_read_at DESC)")
+            // 书架分组(可嵌套)
+            db.execSQL(Schema.READER_GROUP)
             // 阅读设置: 恒单行
             db.execSQL(
                 "CREATE TABLE reader_settings (" +
@@ -144,6 +159,14 @@ object AppDb {
                     "done_at INTEGER NOT NULL)"
             )
         }
+
+        // v4: 书架分组(可嵌套, parent_id 指向另一组)
+        const val READER_GROUP =
+            "CREATE TABLE reader_group (" +
+                "id TEXT PRIMARY KEY NOT NULL, " +
+                "name TEXT NOT NULL, " +
+                "parent_id TEXT, " +
+                "added_at INTEGER NOT NULL)"
 
         // v2: web下载任务列表(下载页面数据源)
         const val WEB_DOWNLOAD =

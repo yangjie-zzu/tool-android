@@ -2,37 +2,54 @@ package com.yukino.tool.module.reader
 
 import android.content.Context
 import android.net.Uri
-import android.provider.OpenableColumns
-import com.yukino.tool.module.reader.common.ImportResult
-import com.yukino.tool.module.reader.common.Progress
 import com.yukino.tool.module.reader.common.ReaderBook
 import java.io.File
 import java.nio.charset.Charset
-import java.util.UUID
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.mozilla.universalchardet.UniversalDetector
 
-// 导入: SAF uri → 编码检测 → 规范化(CRLF/BOM) → UTF-8 转存缓存 → 章节索引 → SQLite
-// 之后所有读取只碰缓存文件,原始 uri 仅留作缓存被清时的重新转存
+// TXT 懒初始化: 登记态的书(ready=false)在首次打开时执行
+//   内容落盘(编码检测 → 规范化 CRLF/BOM → UTF-8 转存缓存) + 章节解析 + 回填落库。
+// 缓存被系统清理时同一函数重新转存(进度保留)。
 object TxtImporter {
 
     private const val MAX_BYTES = 100L * 1024 * 1024
     private const val DETECT_BUF = 8 * 1024
 
-    suspend fun import(context: Context, uri: Uri): ImportResult = withContext(Dispatchers.IO) {
-        runCatching { doImport(context, uri) }.getOrElse {
-            ImportResult.Failed(it.message ?: "导入失败")
+    fun cacheFile(context: Context, bookId: String): File =
+        File(File(context.cacheDir, "reader/books"), "$bookId.txt")
+
+    // 初始化到可读状态。返回更新后的书;失败抛 BookInitException(由 BookContents 收敛为文案)
+    suspend fun ensureReady(
+        context: Context,
+        book: ReaderBook,
+        onStage: (String) -> Unit = {}
+    ): ReaderBook = withContext(Dispatchers.IO) {
+        val cache = File(book.cachePath)
+        val cacheOk = cache.exists() && cache.length() > 0
+        if (book.ready && cacheOk) return@withContext book
+        if (!cacheOk) {
+            onStage("准备内容中…")
+            transcode(context, Uri.parse(book.sourceUri), cache)
         }
+        onStage("解析章节中…")
+        val text = withContext(Dispatchers.Default) { cache.readText() }
+        val chapters = withContext(Dispatchers.Default) { ChapterSplitter.split(text, book.title) }
+        val updated = book.copy(
+            chapters = chapters,
+            totalChars = text.length.toLong(),
+            ready = true
+        )
+        ReaderStore.upsertBook(context, updated)
+        updated
     }
 
-    private suspend fun doImport(context: Context, uri: Uri): ImportResult {
+    // 读源文件: 边读边探测编码,转存规范化后的 UTF-8 文本,返回检测到的编码名
+    private fun transcode(context: Context, uri: Uri, dest: File): String {
         val resolver = context.contentResolver
-        // 保住 uri 重访权(缓存被清后重新转存用)
-        runCatching { resolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) }
-
-        // 1. 读字节 + 边读边探测编码
-        val (data, encodingName) = resolver.openInputStream(uri)?.use { input ->
+        dest.parentFile?.mkdirs()
+        resolver.openInputStream(uri)?.use { input ->
             val detector = UniversalDetector(null)
             val buf = ByteArray(DETECT_BUF)
             val out = ArrayList<ByteArray>()
@@ -42,7 +59,7 @@ object TxtImporter {
                 val n = input.read(buf)
                 if (n < 0) break
                 total += n
-                if (total > MAX_BYTES) return ImportResult.Failed("文件超过 100MB 上限")
+                if (total > MAX_BYTES) throw BookInitException("文件超过 100MB 上限")
                 out.add(buf.copyOf(n))
                 if (detected == null) {
                     detector.handleData(buf, 0, n)
@@ -52,61 +69,17 @@ object TxtImporter {
             }
             detector.dataEnd()
             detector.reset()
-            Pair(mergeChunks(out, total), detected ?: "UTF-8")
-        } ?: return ImportResult.Failed("无法读取文件")
 
-        // 2. 解码 + 规范化: 剥 BOM、CRLF/CR → LF(偏移与章节索引都基于规范化后的文本)
-        val charset = runCatching { Charset.forName(encodingName) }.getOrElse { Charsets.UTF_8 }
-        val text = String(data, charset)
-            .removePrefix("\uFEFF")
-            .replace("\r\n", "\n")
-            .replace('\r', '\n')
-        if (text.isBlank()) return ImportResult.Failed("文件为空或无法解码")
-
-        val title = resolveTitle(context, uri)
-        val now = System.currentTimeMillis()
-
-        // 3. 去重: 同 sourceUri 视为同一本书,刷新缓存/章节,进度保留
-        val books = ReaderStore.loadBooks(context)
-        val existing = books.firstOrNull { it.sourceUri == uri.toString() }
-        val id = existing?.id ?: UUID.randomUUID().toString()
-        val cacheFile = cacheFile(context, id).apply { parentFile?.mkdirs() }
-        cacheFile.writeText(text)
-
-        // 章节切分是纯 CPU 活(逐行正则),挪到 Default,不占 IO 工作线程
-        val chapters = withContext(Dispatchers.Default) { ChapterSplitter.split(text, title) }
-        val book = ReaderBook(
-            id = id,
-            title = title,
-            sourceUri = uri.toString(),
-            cachePath = cacheFile.absolutePath,
-            encoding = encodingName,
-            totalChars = text.length.toLong(),
-            chapters = chapters,
-            addedAt = existing?.addedAt ?: now,
-            lastReadAt = existing?.lastReadAt ?: now,
-            progress = existing?.progress ?: Progress(),
-            fileSize = cacheFile.length()
-        )
-        books.removeAll { it.id == id }
-        books.add(book)
-        ReaderStore.saveBooks(context, books)
-        return ImportResult.Success(book)
-    }
-
-    fun cacheFile(context: Context, bookId: String): File =
-        File(File(context.cacheDir, "reader/books"), "$bookId.txt")
-
-    // 缓存被系统清理后,用 sourceUri 重新转存(重新做编码检测),进度保留
-    suspend fun ensureCache(context: Context, book: ReaderBook): ReaderBook = withContext(Dispatchers.IO) {
-        val f = File(book.cachePath)
-        if (f.exists() && f.length() > 0) return@withContext book
-        val fresh = cacheFile(context, book.id)
-        if (fresh.exists() && fresh.length() > 0 && fresh.absolutePath == book.cachePath) {
-            return@withContext book
-        }
-        val result = import(context, Uri.parse(book.sourceUri))
-        if (result is ImportResult.Success) result.book else book // 重转存失败则原样返回,由调用方报错
+            val charset = runCatching { Charset.forName(detected ?: "UTF-8") }.getOrElse { Charsets.UTF_8 }
+            val all = mergeChunks(out, total)
+            val text = String(all, charset)
+                .removePrefix("\uFEFF")
+                .replace("\r\n", "\n")
+                .replace('\r', '\n')
+            if (text.isBlank()) throw BookInitException("文件为空或无法解码")
+            dest.writeText(text)
+            return detected ?: "UTF-8"
+        } ?: throw BookInitException("无法读取文件")
     }
 
     private fun mergeChunks(chunks: List<ByteArray>, total: Long): ByteArray {
@@ -114,16 +87,5 @@ object TxtImporter {
         var pos = 0
         chunks.forEach { c -> c.copyInto(all, pos); pos += c.size }
         return all
-    }
-
-    private fun resolveTitle(context: Context, uri: Uri): String {
-        val name = runCatching {
-            context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
-                ?.use { cursor ->
-                    val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                    if (idx >= 0 && cursor.moveToFirst()) cursor.getString(idx) else null
-                }
-        }.getOrNull() ?: uri.lastPathSegment ?: "未命名"
-        return name.substringBeforeLast('.').ifBlank { "未命名" }
     }
 }

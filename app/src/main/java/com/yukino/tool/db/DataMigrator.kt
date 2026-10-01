@@ -326,8 +326,8 @@ object DataMigrator {
                 books.forEachIndexed { i, b ->
                     val st = db.compileStatement(
                         "INSERT INTO reader_book(id, title, source_uri, cache_path, encoding, total_chars, " +
-                            "chapters, added_at, last_read_at, progress_offset, progress_percent, file_size) " +
-                            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)"
+                            "chapters, added_at, last_read_at, progress_offset, progress_percent, file_size, " +
+                            "format, ready) VALUES(?,?,?,?,?,?,?,?,?,?,?,?, 'txt', 1)"
                     )
                     st.bindString(1, b.id)
                     st.bindString(2, b.title)

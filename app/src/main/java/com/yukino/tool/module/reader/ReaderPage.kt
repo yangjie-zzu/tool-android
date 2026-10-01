@@ -139,15 +139,17 @@ fun ReaderScreen(
     settings: ReaderSettings,
     onSettingsChange: (ReaderSettings) -> Unit,
     onProgress: (globalCharOffset: Long, percent: Double) -> Unit,
+    onInitComplete: (ReaderBook) -> Unit,
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
     val density = LocalDensity.current
     val view = LocalView.current
 
-    // 内容源(txt 全文 / epub 章节文件): null=加载中或缓存缺失
+    // 内容源(txt 全文 / epub 章节文件): null=加载中(登记态初始化/缓存重建)
     var content by remember(book.id) { mutableStateOf<BookContent?>(null) }
-    var cacheMissing by remember(book.id) { mutableStateOf(false) }
+    var initStage by remember(book.id) { mutableStateOf<String?>(null) }
+    var loadError by remember(book.id) { mutableStateOf<String?>(null) }
     // 全书页目录: null=构建中(loading 遮盖)。版式变化整本重建,锚点重定位不漂移
     var specs by remember(book.id) { mutableStateOf<List<PageSpec>?>(null) }
     // specs 对应的版式指纹: 与 typoKey 一致才可信(区别于"旧版式的遗留结果")
@@ -181,11 +183,21 @@ fun ReaderScreen(
         }
     }
 
-    // 加载内容源(按格式分派到各自主流程);txt 缓存缺失则用 sourceUri 重新转存
+    // 加载内容源(按格式分派到各自主流程);登记态书在此完成懒初始化(转码/解压+章节解析)
     LaunchedEffect(book.id) {
-        val c = BookContents.load(context, book)
-        cacheMissing = c == null
-        content = c
+        loadError = null
+        content = try {
+            val (c, refreshed) = BookContents.load(context, book) { initStage = it }
+            if (refreshed != book) onInitComplete(refreshed)   // 同步回上层内存态, 防进度落盘覆盖初始化结果
+            c
+        } catch (e: BookInitException) {
+            loadError = e.message ?: "打开失败"
+            null
+        } catch (e: Exception) {
+            loadError = "打开失败: ${e.message ?: "未知错误"}"
+            null
+        }
+        initStage = null
     }
 
     val typo = viewport?.let {
@@ -840,14 +852,23 @@ fun ReaderScreen(
             }
         }
         if (!contentReady && showLoading) {
-            if (cacheMissing) {
-                Text(
-                    "缓存缺失且重新转存失败，请删除后重新导入",
-                    color = secondary,
-                    modifier = Modifier.align(Alignment.Center)
-                )
-            } else {
-                CircularProgressIndicator(color = fgColor, modifier = Modifier.align(Alignment.Center))
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier.align(Alignment.Center)
+            ) {
+                if (loadError != null) {
+                    Text(
+                        loadError + "，请返回书架删除后重新导入",
+                        color = secondary,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                } else {
+                    CircularProgressIndicator(color = fgColor)
+                    initStage?.let {
+                        Spacer(Modifier.height(12.dp))
+                        Text(it, color = secondary, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
             }
         }
 
