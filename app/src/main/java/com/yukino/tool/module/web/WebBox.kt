@@ -103,9 +103,9 @@ val WebBox: WebBoxFunc = { initUrl, onNew, onShowList, webLength, webIndex, acti
         mutableStateOf(initUrl)
     }
 
-    //加载进度
+    //加载进度: 1f表示无加载(进度条隐藏), 由onPageStarted重置为0起步
     var progress by remember {
-        mutableFloatStateOf(0f)
+        mutableFloatStateOf(1f)
     }
 
     var title by remember {

@@ -90,6 +90,17 @@ open class CustomWebView(context: Context) : WebView(context), WebInterface {
     // 首个页面(含重定向链)是否已完成加载: 完成前的跳转在当前webview原地加载，避免新开空白box
     var firstLoadDone = false
 
+    // 加载会话: 仅导航真正被放行(onPageStarted)后成立, 进度回调只在会话内生效,
+    // 被同站拦截等取消的导航补发的进度事件(先10%后终止补100%)全部丢弃, 进度条不闪现
+    private var loadingSession = false
+
+    // 会话开启: 导航确定在本webview发生时调用(shouldOverrideUrlLoading放行/原地跳转),
+    // 不等握手完成, 点击链接后进度条立即从0出现
+    fun beginLoadingSession() {
+        loadingSession = true
+        onProgressChange(0f)
+    }
+
     private var isTop = true
 
     private var isRefreshing = false
@@ -101,10 +112,13 @@ open class CustomWebView(context: Context) : WebView(context), WebInterface {
     init {
         this.webChromeClient = object : WebChromeClient() {
 
-            //加载进度条处理
+            //加载进度条处理: 会话外的进度事件(被拦截导航的补发)不上报
             override fun onProgressChanged(view: WebView?, newProgress: Int) {
-                val progress = (newProgress * 1.0 / 100).toFloat()
-                onProgressChange(progress)
+                if (loadingSession) {
+                    val progress = (newProgress * 1.0 / 100).toFloat()
+                    onProgressChange(progress)
+                    if (progress >= 1f) loadingSession = false
+                }
                 super.onProgressChanged(view, newProgress)
             }
 
@@ -248,6 +262,12 @@ open class CustomWebView(context: Context) : WebView(context), WebInterface {
                 favicon: Bitmap?
             ) {
                 onUrlChange(urlParam ?: "")
+                //兜底开启会话: 地址栏loadUrl/刷新/后退等不经shouldOverrideUrlLoading的导航;
+                //链接点击已在放行时开会话, 这里不再重置进度, 避免已出现的进度条被拉回0
+                if (!loadingSession) {
+                    loadingSession = true
+                    onProgressChange(0f)
+                }
                 super.onPageStarted(view, urlParam, favicon)
                 Log.i(TAG, "onPageStarted: ${view?.url}")
             }
@@ -267,6 +287,9 @@ open class CustomWebView(context: Context) : WebView(context), WebInterface {
             //加载完成处理
             override fun onPageFinished(view: WebView?, url: String?) {
                 firstLoadDone = true
+                //会话收尾: 关闭并强制进度到100%, 防个别页面不发100%导致进度条滞留
+                loadingSession = false
+                onProgressChange(1f)
                 super.onPageFinished(view, url)
                 Log.i(TAG, "onPageFinished: ${view?.url}")
             }
@@ -310,7 +333,10 @@ open class CustomWebView(context: Context) : WebView(context), WebInterface {
                 val onlyOpenSameSite = isOnlyOpenSameSite()
                 Log.i(TAG, "shouldOverrideUrlLoading: target=$targetHost current=$currentHost sameSite=$sameSite onlyOpenSameSite=$onlyOpenSameSite")
                 if (sameSite || !onlyOpenSameSite) {
-                    return openUrl(requestUrl.toString())
+                    val handled = openUrl(requestUrl.toString())
+                    // WebView自行加载: 放行瞬间开启会话, 进度条即时出现(不等onPageStarted)
+                    if (!handled) beginLoadingSession()
+                    return handled
                 }
                 Log.i(TAG, "shouldOverrideUrlLoading: 跨站已拦截")
                 return true

@@ -132,6 +132,8 @@ fun Web(
                     if (url != null && !firstLoadDone) {
                         //首个页面尚未加载完成(通常是重定向中转页)，在当前webview原地跳转，避免留下空白的无标题中转box
                         Log.i(TAG, "openUrl: 首页加载中原地跳转 $url")
+                        //本box确定要导航: 会话提前开启, 进度条即时出现
+                        beginLoadingSession()
                         loadUrl(url)
                         return true
                     }
