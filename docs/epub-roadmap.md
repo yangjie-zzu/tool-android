@@ -1,6 +1,7 @@
 # EPUB 原生支持 · 总体方案与剩余期数规划
 
-> 状态基线:2026-10(v1.1.0)。一期与二期均已上线,本文档记录已完成架构与三/四期的实施方案。
+> 状态基线:2026-10(v1.2.0)。一/二/三期(锚点+脚注)与四期(CSS 子集+SVG+h2 拆章+出版信息页+段距开关)均已完成;
+> 书签与全文搜索未做(方案保留在三期章节)。本文档记录已完成架构与剩余项实施方案。
 
 ## 一、已完成(一期,随 v1.0.8~v1.0.10 发布)
 
@@ -160,59 +161,92 @@ data class Run(val start: Int, val end: Int, val style: Int)  // style 位标记
 
 ---
 
-## 三期 · 阅读功能(与格式无关,TXT 同步受益)
+## 三期 · 阅读功能(部分完成:锚点跳转+脚注弹层随 v1.1.1;书签/搜索未做)
 
-### 书签
+### 章内锚点跳转(已完成)
 
-- 存储:`reader_bookmark` 表(book_id, chapter_index, global_offset, excerpt, created_at);独立表,不进书表写路径。
-- 入口:阅读菜单"添加书签"(当前页页首偏移+当页首行摘录);目录抽屉加"书签"列表,点击 `BookPager.locatePage` 跳转;书签可删。
-- 重排不漂移:与进度同机制(全书字符偏移)。
+- 导入时 XHTML `id` 记为段落 anchor(`Paragraph.anchor`;容器 id 指向其首个产出段落,
+  `openAnchors` 栈最早优先消费);目录条目 fragment 经 `tocMap` 存入 `ChapterIndex.anchorId`
+  (同文档多条目录仍取首条,一期同约定)。
+- 目录点击: `EpubBookContent.anchorOffset` 扫段落定位章内偏移 → `chapterStart + off` →
+  `locatePage` 落**锚点所在页**(页粒度;异常落点防御退章首);TXT 无锚点退章首。
+- 章文件 JSON 段落字段 `a`。
 
-### 全文搜索
+### 脚注弹层(已完成)
 
-- 按章对 `ChapterDocument` 纯文本投影线性扫描(Default 线程并发,信号量限流);大书(数百章)先出部分结果流式追加。
-- 结果:章名 + 命中行上下文(关键词高亮);点击 → 定位章 + 章内偏移(`locatePage` + 章内翻页)。
-- 入口:阅读菜单"搜索";大小写不敏感,支持中文。
+- 识别(保守): noteref = `epub:type`/`class` 含 noteref 的**同文档** a(跨文档降级普通文本,
+  不误伤普通内链);脚注容器 = `epub:type=footnote` / class 含 footnote|note / id 被 noteref
+  引用——三者任一即从正文流剔除,文本提入章级 `footnotes` 表(不参与排版与偏移)。
+- 角标: noteref 文本保留进投影(偏移轴含角标),套二期 SUP 样式自动小字上标;
+  区间记 `NoteAnchor`(段内坐标)随章文件 JSON(`n` 字段)持久化;章文件顶层升级为
+  `{p:[...], notes:{id:text}}` 对象(读兼容二期数组/一期纯文本)。
+- 交互: tap → 复用 `SelectionGeometry.hit/globalAt` 得全书偏移 → `footnoteAt` 查章脚注表
+  → ModalBottomSheet 显示,关闭即回原位(不改页面状态);菜单打开时不检测角标。
+- 样本书 `sample_测试书_v3.epub`(目录带 fragment/EPUB3 aside 脚注/class 风格脚注/普通内链)
+  已入库;验证:锚点落页正确、两类脚注弹层内容正确、内链不误判、TXT 回归无差异、零崩溃。
 
-### 章内锚点跳转
+### 书签 / 全文搜索(未做,按用户指示跳过;方案保留如下)
 
-- `ChapterIndex` 扩展 `anchorId`(目录项 fragment);`Paragraph` 增加 `anchor` 字段(XHTML id)。
-- 目录点击带 fragment 时:定位章后翻到 anchor 段落所在页(段落号 → 章内偏移 → `locatePage`)。
-- EPUB3 nav/EPUB2 ncx 的 fragment 解析一期已预留(`TocEntry.fragment`)。
+- 书签: `reader_bookmark` 表(book_id, chapter_index, global_offset, excerpt, created_at);
+  阅读菜单"添加书签"+目录抽屉书签列表;偏移锚定不漂移。
+- 搜索: 按章扫描投影(并发限流,流式出结果),章名+命中行上下文,点击定位。
 
-### 脚注弹层
+### 验收(三期已做部分)
 
-- `FootnoteResolver`(epub/xhtml):EPUB3 `epub:type="noteref"/"footnote"` 标准配对;EPUB2 按 class 约定(note/footnote)宽容识别,识别不了的当普通文本。
-- 正文:`<a noteref>` 渲染为上标角标 Run(二期 Run 模型复用)+ 可点击区域。
-- 交互:点击角标 → 底部 ModalBottomSheet 显示脚注内容(纯文本+基本样式),点外部关闭回原位。
-- 脚注内容默认不进正文阅读流(标准做法);`linear="no"` 的脚注文档一期已排除。
-
-### 验收
-
-1. TXT/EPUB 双格式书签/搜索行为一致;
-2. 改字号/行距重排后,书签与搜索定位不漂移(偏移锚点机制);
-3. 龙魔传说(358 章)级大书搜索响应可接受(流式出结果);
-4. 含脚注样本书:角标可点、弹层内容正确、关闭回原位。
+1. 含脚注+锚点样本书:角标可点、弹层内容正确、关闭回原位 ✓;
+2. 目录带 fragment 点击落锚点所在页 ✓;
+3. TXT 回归无差异 ✓。
 
 ---
 
-## 四期 · 增强(锦上添花,可按需挑选)
+## 四期 · 增强(已完成:CSS 子集+SVG 栅格化+三个实验项,随 v1.2.0)
 
-### CSS 子集
+### CSS 子集(已完成)
 
-- 解析段落级 `text-align`(center/right)、`text-indent`、块级 margin(上下间距);诗词、署名场景受益。
-- 其余 CSS(字体/颜色/背景/定位)继续忽略——全局阅读设置不被书内样式干扰是产品原则。
+- **来源**:`<style>` 块单类名选择器(`parseStyleBlock`,从整个文档收集——style 通常在 head)+
+  元素 style 属性(style 优先);复杂选择器/继承链/px·百分比单位忽略。
+- **text-align(center/right)**:段落级 `align` → compose 用 `AlignmentSpan` 参与断行度量
+  (右对齐 = ALIGN_OPPOSITE,LTR 即右)→ 物化按行自然宽算起点 x,跳过两端对齐拉伸;
+  图片行同样随段对齐。
+- **text-indent**:段级 `indentEm` 覆盖全局缩进(0 = 显式顶格;对齐段不做缩进);
+  段首自带空格的检查保留。
+- **块级 margin**:段级 `spaceAboveEm/belowEm`,排版时叠加进段首行段前距(前段 below+自身
+  above,不折叠;网格化)——受"段距跟随书内"设置开关取舍(默认开;关=纯全局段距,
+  ReaderSettings.bookSpacing,AppDb v6)。
 
-### SVG 栅格化
+### SVG 栅格化(已完成)
 
-- 引入 `androidsvg`(约 500KB):SVG 图片(含 SVG 封面)首次显示时按屏幕分辨率栅格化为 Bitmap 并缓存到章目录;
-- 二期图片管线的 `imageRef` 扩展一种来源类型即可,渲染层无感。
+- 新依赖 `com.caverock:androidsvg:1.4`(roadmap 预告的唯一新依赖;注意 1.4 无 getFromFile,
+  用 getFromInputStream)。
+- `SvgDecoder`(common):bounds(文档尺寸,排版占位)/decode(按目标尺寸栅格化,渲染 LRU/
+  书架缩略图共用);EpubBookContent.imageBounds 与 ReaderPageView.imageFor 按扩展名分派,
+  渲染层无感。覆盖:img 引用的 .svg 插图、SVG 封面(封面页+书架缩略图)。
+- 不做:HTML 内嵌 `<svg>` 元素、独立 SVG spine 文档。
 
-### 可选实验项(按反馈决定)
+### h2 小节二次拆章(实验项,已完成)
 
-- 章节内 `<h2>` 小节二次拆章(目录两级展示);
-- EPUB 出版信息页(元数据页)入口;
-- 段落间距按书内 CSS 微调开关(尊重书 vs 强制全局)。
+- 解析侧 h1..h6 段落记 `heading`;`EpubImporter.splitSections` 按 heading==2(非首段)切分,
+  首小节用目录名(level 0),后续小节用 h2 文本(level 1,anchor = h2 id,目录锚点跳转衔接);
+  脚注表按文档全量随每小节落盘。章文件 v4 版本字段(`ChapterDto.v`)驱动旧书自动升级。
+- 目录两级展示:`ChapterIndex.level`,TocSheet 小节缩进小字;书籍信息弹层统计"N 章 · N 小节"。
+
+### 出版信息页(实验项,已完成)
+
+- 阅读菜单顶栏"信息"入口 → ModalBottomSheet:书名/作者/格式/大小/章·小节统计/全书字数/
+  当前进度(章名)/添加/最近阅读时间。
+
+### 段距跟随书内开关(实验项,已完成)
+
+- 设置面板"段距跟随书内"开关(默认开);关闭后书内 margin 全部忽略,纯全局段距;
+  对齐/缩进不受该开关影响(书内意图明确)。typoKey 含 bookSpacing,切换即整本重排。
+
+### 验收(四期,2026-10-03 模拟器)
+
+1. v4 样本书 `sample_测试书_v4.epub`(入库):居中诗整体居中无缩进/indent:0 顶格覆盖全局/
+   margin 3em 间距加大且开关可关/右对齐署名 ✓;
+2. SVG 插图与 SVG 封面(封面页+书架 48dp 缩略图)栅格化清晰 ✓;
+3. h2 拆章:一章拆 3 目录条目(两级缩进),书籍信息"2 章 · 2 小节" ✓;
+4. TXT 回归:book3 排版/缩进与既有一致 ✓;单测 128 个全通过;logcat 零崩溃。
 
 ---
 

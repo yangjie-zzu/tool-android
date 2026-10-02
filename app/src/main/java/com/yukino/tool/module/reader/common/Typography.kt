@@ -17,14 +17,15 @@ data class ResolvedTypography(
     val textHeight: Int,      // viewport 高 - 页眉区 - 页脚区
     val fgColor: Int,
     val bgColor: Int,
-    val justify: Boolean
+    val justify: Boolean,
+    val bookSpacing: Boolean = true   // 段距跟随书内 CSS(四期): false = 忽略书内 margin
 )
 
 object Typography {
 
     // 断行/排版算法版本: 算法变化(如断行策略切换、行高贴合版心、页首豁免段前距)时 +1,使旧分页缓存失效
-    // v10: 二期富文本(Run span 度量/图片行占位)进入断行与分页,旧缓存全部失效重算
-    const val BREAK_STRATEGY_VERSION = 10
+    // v11: 四期书内 CSS 进入断行与分页(对齐 span/段级缩进/margin 段前距),旧缓存全部失效重算
+    const val BREAK_STRATEGY_VERSION = 11
 
     // 行高/段前距取整粒度(px): 向上取整到它的整数倍,取整只增不减,字形不被裁
     const val GRID_PX = 1
@@ -58,7 +59,8 @@ object Typography {
             textHeight = (viewportHeight - verticalChrome).coerceAtLeast(fontPx.toInt() * 2),
             fgColor = s.effectiveFg.toInt(),
             bgColor = s.effectiveBg.toInt(),
-            justify = s.justify
+            justify = s.justify,
+            bookSpacing = s.bookSpacing
         )
     }
 

@@ -24,6 +24,9 @@ import java.io.File
 class EpubRichContentTest {
 
     private fun extractHtml(html: String, docDir: String = "") =
+        HtmlTextExtractor.extract(Jsoup.parseBodyFragment(html).body(), docDir).paragraphs
+
+    private fun extractFull(html: String, docDir: String = "") =
         HtmlTextExtractor.extract(Jsoup.parseBodyFragment(html).body(), docDir)
 
     // ---- 投影不变性(与一期纯文本形态逐字符一致) ----
@@ -176,7 +179,8 @@ class EpubRichContentTest {
             Paragraph(HtmlTextExtractor.IMAGE_PLACEHOLDER, emptyList(), ParaKind.IMAGE, "images/1.jpg")
         )
         ChapterFileCodec.write(f, paras)
-        val read = ChapterFileCodec.read(f)
+        val (read, notes1) = ChapterFileCodec.read(f)
+        assertEquals(0, notes1.size)
         assertEquals(3, read.size)
         assertEquals("普通段", read[0].text)
         assertTrue(read[0].runs.isEmpty())
@@ -190,7 +194,8 @@ class EpubRichContentTest {
     fun `一期纯文本章文件自动回退`() {
         val f = File.createTempFile("ch_legacy", ".txt")
         f.writeText("第一段\n第二段\n\n第四段")
-        val read = ChapterFileCodec.read(f)
+        val (read, notes2) = ChapterFileCodec.read(f)
+        assertEquals(0, notes2.size)
         assertEquals(listOf("第一段", "第二段", "", "第四段"), read.map { it.text })
         assertTrue(read.all { it.runs.isEmpty() && it.kind == ParaKind.TEXT })
         f.delete()
@@ -265,6 +270,103 @@ class EpubRichContentTest {
     // LineStyle 无 equals(普通 class),测试用三元组对比
     private data class LineStyleAssert(val start: Int, val end: Int, val style: Int)
 
+    // ---- 四期: CSS 子集 / h2 拆章 / 排版属性 ----
+
+    @Test
+    fun `class样式表解析_仅认单类名选择器`() {
+        val css = """
+            /* 注释 .fake { text-align: right } */
+            .center { text-align: center; color: red }
+            div.note, .indent-2 { text-indent: 2em }
+            #id-sel { text-align: right }
+        """.trimIndent()
+        val rules = HtmlTextExtractor.parseStyleBlock(css)
+        assertEquals(setOf("center", "indent-2"), rules.keys)
+        assertEquals("center", rules["center"]!!["text-align"])
+        assertEquals("2em", rules["indent-2"]!!["text-indent"])
+    }
+
+    @Test
+    fun `排版属性提取_align_indent_margin`() {
+        val l1 = HtmlTextExtractor.parseParaLayout(mapOf("text-align" to "center"))
+        assertEquals(1, l1!!.align)
+        val l2 = HtmlTextExtractor.parseParaLayout(mapOf("text-align" to "right", "text-indent" to "0"))
+        assertEquals(2, l2!!.align)
+        assertEquals(0f, l2.indentEm)
+        val l3 = HtmlTextExtractor.parseParaLayout(mapOf("margin-top" to "1.5em", "margin-bottom" to "2em"))
+        assertEquals(1.5f, l3!!.aboveEm)
+        assertEquals(2f, l3.belowEm)
+        val l4 = HtmlTextExtractor.parseParaLayout(mapOf("margin" to "1em"))
+        assertEquals(1f, l4!!.aboveEm)
+        assertEquals(1f, l4.belowEm)
+        // px/百分比单位忽略;left/justify 对齐忽略
+        assertNull(HtmlTextExtractor.parseParaLayout(mapOf("text-indent" to "20px")))
+        assertNull(HtmlTextExtractor.parseParaLayout(mapOf("text-align" to "left")))
+    }
+
+    @Test
+    fun `style与class合并且style优先_子未设用父`() {
+        val html = """
+            <style>.poem { text-align: center; text-indent: 0 }</style>
+            <div style="margin-top: 1em">
+              <p class="poem">居中诗行</p>
+              <p style="text-align: right">右对齐覆盖</p>
+              <p>普通段继承 margin</p>
+            </div>
+        """.trimIndent()
+        val paras = extractHtml(html)
+        assertEquals(1, paras[0].align)
+        assertEquals(0f, paras[0].indentEm)
+        assertEquals(2, paras[1].align)              // style 覆盖 class
+        assertEquals(1f, paras[2].spaceAboveEm)      // 继承容器的 margin-top
+    }
+
+    @Test
+    fun `heading记录与h2拆章`() {
+        val paras = extractHtml(
+            "<h1>第一章</h1><p>开头内容</p><h2>第一节</h2><p>内容一</p><h2>第二节</h2><p>内容二</p>"
+        )
+        assertEquals(1, paras[0].heading)
+        assertEquals(0, paras[1].heading)
+        assertEquals(2, paras[2].heading)
+        val sections = com.yukino.tool.module.reader.epub.EpubImporter.splitSections(paras)
+        assertEquals(3, sections.size)
+        assertTrue(sections[0].first)
+        assertNull(sections[0].h2Text)
+        assertEquals("第一节", sections[1].h2Text)
+        assertEquals(1, sections.size - 1 - sections.count { it.first })  // 两个 h2 小节
+        val all = sections.flatMap { it.paras }
+        assertEquals(paras, all)   // 拆分不丢段落
+    }
+
+    @Test
+    fun `无h2文档单章`() {
+        val paras = extractHtml("<h1>标题</h1><p>正文</p><h3>小标题</h3><p>更多</p>")
+        val sections = com.yukino.tool.module.reader.epub.EpubImporter.splitSections(paras)
+        assertEquals(1, sections.size)
+        assertTrue(sections[0].first)
+    }
+
+    @Test
+    fun `四期排版属性章文件往返`() {
+        val f = File.createTempFile("ch_v4", ".txt")
+        val paras = listOf(
+            Paragraph("居中诗", align = 1),
+            Paragraph("缩进段", indentEm = 0f),
+            Paragraph("标题段", heading = 2, spaceAboveEm = 1.5f, spaceBelowEm = 2f)
+        )
+        ChapterFileCodec.write(f, paras)
+        val (read, _) = ChapterFileCodec.read(f)
+        assertEquals(1, read[0].align)
+        assertEquals(0f, read[1].indentEm)
+        assertEquals(2, read[2].heading)
+        assertEquals(1.5f, read[2].spaceAboveEm)
+        assertEquals(2f, read[2].spaceBelowEm)
+        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(f))
+        f.delete()
+    }
+
+
     // ---- 老书升级: 进度迁移 ----
 
     // 旧书 3 章: 偏移 0/100/300(各章长 99/199/... 含虚拟换行),total = 600
@@ -319,14 +421,20 @@ class EpubRichContentTest {
     }
 
     @Test
-    fun `老格式检测_纯文本与JSON`() {
+    fun `升级检测_纯文本与旧JSON需升级_三期对象豁免`() {
         val legacy = File.createTempFile("legacy", ".txt")
         legacy.writeText("第一章 风起\n正文")
-        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.isLegacyFormat(legacy))
-        val modern = File.createTempFile("modern", ".txt")
-        modern.writeText("""[{"t":"第一段"},{"t":"第二段"}]""")
-        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.isLegacyFormat(modern))
-        legacy.delete(); modern.delete()
+        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(legacy))
+        val v2 = File.createTempFile("v2ch", ".txt")
+        v2.writeText("""[{"t":"第一段"},{"t":"第二段"}]""")
+        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v2))   // 二期缺锚点/脚注
+        val v3 = File.createTempFile("v3ch", ".txt")
+        v3.writeText("""{"p":[{"t":"第一段"}],"notes":{}}""")
+        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v3))   // 三期缺排版属性/heading
+        val v4 = File.createTempFile("v4ch", ".txt")
+        v4.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":4}""")
+        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v4))
+        legacy.delete(); v2.delete(); v3.delete(); v4.delete()
     }
 
     // ---- 老书升级: 章号映射(顺序保持的标题匹配) ----
@@ -374,5 +482,103 @@ class EpubRichContentTest {
         val new = listOf(ch("一", 0), ch("二", 100), ch("插图", 300), ch("三", 320))
         val m = com.yukino.tool.module.reader.epub.EpubImporter.migrateProgress(old, 600, 300, new, 1200)
         assertEquals(320L, m)
+    }
+
+    // ---- 三期: 锚点与脚注 ----
+
+    @Test
+    fun `元素id记为段落anchor_容器id指向首段`() {
+        val paras = extractHtml("<div id=\"sec1\"><p>第一段</p><p>第二段</p></div><p id=\"p3\">第三段</p>")
+        assertEquals("sec1", paras[0].anchor)
+        assertNull(paras[1].anchor)   // 容器 id 只指向首段
+        assertEquals("p3", paras[2].anchor)
+    }
+
+    @Test
+    fun `noteref角标保留进投影带上标与脚注锚点`() {
+        val r = extractFull(
+            "<p>正文一段<sup><a epub:type=\"noteref\" href=\"#fn1\">[1]</a></sup>继续。</p>" +
+                "<aside id=\"fn1\" epub:type=\"footnote\">这是第一条脚注的内容。</aside>"
+        )
+        assertEquals(1, r.paragraphs.size)
+        val p = r.paragraphs[0]
+        assertTrue(p.text.contains("[1]"))
+        assertEquals(1, p.notes.size)
+        assertEquals("[1]".length, p.notes[0].end - p.notes[0].start)
+        assertEquals("fn1", p.notes[0].noteId)
+        // 角标区间套上标 Run
+        val supRun = p.runs.firstOrNull { it.start == p.notes[0].start && it.end == p.notes[0].end }
+        assertEquals(com.yukino.tool.module.reader.common.RunStyle.SUP, supRun?.style)
+        // 脚注内容入表且不进正文流
+        assertEquals(mapOf("fn1" to "这是第一条脚注的内容。"), r.footnotes)
+        assertEquals(1, r.paragraphs.size)
+    }
+
+    @Test
+    fun `class标记的脚注容器被识别`() {
+        val r = extractFull(
+            "<p>正文<a class=\"noteref\" href=\"#n1\">1</a>。</p>" +
+                "<div class=\"footnote\" id=\"n1\"><p>类标记脚注</p></div>"
+        )
+        assertEquals("类标记脚注", r.footnotes["n1"])
+        assertEquals(1, r.paragraphs[0].notes.size)
+    }
+
+    @Test
+    fun `跨文档noteref降级为普通文本`() {
+        val r = extractFull(
+            "<p>正文<a epub:type=\"noteref\" href=\"notes.xhtml#n9\">[9]</a>。</p>"
+        )
+        assertEquals(0, r.paragraphs[0].notes.size)
+        assertTrue(r.footnotes.isEmpty())
+        assertTrue(r.paragraphs[0].text.contains("[9]"))
+    }
+
+    @Test
+    fun `普通内链不误判为角标`() {
+        val r = extractFull("<p>见<a href=\"#other\">第2节</a>。</p>")
+        assertEquals(0, r.paragraphs[0].notes.size)
+        assertTrue(r.paragraphs[0].text.contains("第2节"))
+    }
+
+    @Test
+    fun `三期章文件含锚点脚注读写`() {
+        val f = File.createTempFile("ch_v3", ".txt")
+        val paras = listOf(
+            Paragraph("带锚段落", anchor = "sec-1"),
+            Paragraph("角标段[1]", notes = listOf(
+                com.yukino.tool.module.reader.common.NoteAnchor(3, 6, "fn1")
+            ))
+        )
+        ChapterFileCodec.write(f, paras, mapOf("fn1" to "脚注内容"))
+        val (read, notes) = ChapterFileCodec.read(f)
+        assertEquals("sec-1", read[0].anchor)
+        assertEquals(1, read[1].notes.size)
+        assertEquals("fn1", read[1].notes[0].noteId)
+        assertEquals(mapOf("fn1" to "脚注内容"), notes)
+        f.delete()
+    }
+
+    @Test
+    fun `anchorOffset按段落定位`() {
+        val book = com.yukino.tool.module.reader.common.ReaderBook(
+            id = "t", title = "t", sourceUri = "", cachePath = "", encoding = "",
+            totalChars = 0, chapters = emptyList(), addedAt = 0, lastReadAt = 0
+        )
+        val content = com.yukino.tool.module.reader.epub.EpubBookContent(book, java.io.File("."))
+        // 章内段落: [0,3)锚a1 / [4,7) / [8,11)锚a3 → 偏移 0 / 8(投影累计逻辑,与
+        // EpubBookContent.anchorOffset 同构)
+        val paras = listOf(
+            Paragraph("AAA", anchor = "a1"), Paragraph("BBB"), Paragraph("CCC", anchor = "a3")
+        )
+        var off = 0L
+        val found = LinkedHashMap<String, Long>()
+        for (p in paras) {
+            if (p.anchor != null) found[p.anchor!!] = off
+            off += p.text.length + 1L
+        }
+        assertEquals(0L, found["a1"])
+        assertEquals(8L, found["a3"])
+        assertNull(content.anchorOffset(99, "a1"))   // 章越界
     }
 }

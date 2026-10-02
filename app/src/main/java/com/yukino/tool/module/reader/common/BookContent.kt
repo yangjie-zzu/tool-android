@@ -20,21 +20,38 @@ data class Run(val start: Int, val end: Int, val style: Int)
 
 enum class ParaKind { TEXT, IMAGE }
 
-// 段落: 一段连续正文文本。text 是纯文本投影(偏移锚定,永不变);
-// runs 空 = 整段单一样式(TXT 恒为空);kind=IMAGE 时 text 恒为单字符占位(U+FFFC),
-// imageRef 指向图片文件(绝对路径,加载侧由章内相对路径解析而来)
+// 段内脚注角标区间(纯文本投影坐标): 角标文本保留在投影中(如 "[1]"),
+// noteId 指向章级 footnotes 表(不进正文阅读流)
+class NoteAnchor(val start: Int, val end: Int, val noteId: String)
+
+// 段落级书内排版(四期 CSS 子集;来源 = style 属性 + 文档 class 样式表,解析侧提取):
+// align 0=默认(跟随全局) 1=居中 2=右对齐;indentEm 非空覆盖全局首行缩进(null=跟随全局);
+// spaceAboveEm/spaceBelowEm 书内块级 margin(em),排版时按"段距跟随书内"开关取舍;
+// heading = 1..6 表示该段源自 hn 标题(h2 拆章依据),0 = 普通段落
 class Paragraph(
     val text: String,
     val runs: List<Run> = emptyList(),
     val kind: ParaKind = ParaKind.TEXT,
-    val imageRef: String? = null
+    val imageRef: String? = null,
+    val anchor: String? = null,
+    val notes: List<NoteAnchor> = emptyList(),
+    val align: Int = 0,
+    val indentEm: Float? = null,
+    val spaceAboveEm: Float? = null,
+    val spaceBelowEm: Float? = null,
+    val heading: Int = 0
 ) {
     val isImage: Boolean get() = kind == ParaKind.IMAGE
 }
 
 // 章文档: 标题 + 正文段落序列。bodyText 是段落的纯文本投影(段间一个 \n),
-// 分页/进度/选区锚定的全书偏移全部定义在投影上
-class ChapterDocument(val title: String, val paragraphs: List<Paragraph>) {
+// 分页/进度/选区锚定的全书偏移全部定义在投影上;
+// footnotes = 本章脚注内容表(noteId → 纯文本,弹层展示),不参与排版与偏移
+class ChapterDocument(
+    val title: String,
+    val paragraphs: List<Paragraph>,
+    val footnotes: Map<String, String> = emptyMap()
+) {
     val bodyText: String get() = paragraphs.joinToString("\n") { it.text }
 }
 
@@ -62,6 +79,15 @@ interface BookContent {
 
     // 封面文件绝对路径(null/文件不存在 = 无封面)。阅读页封面页与书架缩略图共用
     val coverPath: String? get() = null
+
+    // ---- 锚点与脚注(三期;TXT 用默认空实现) ----
+
+    // 章内锚点(anchorId,目录 fragment)的章内投影偏移;找不到返回 null(调用方落章首)
+    fun anchorOffset(chapterIndex: Int, anchorId: String): Long? = null
+
+    // 全书偏移处的脚注角标 → (noteId, 脚注内容);非角标位置返回 null。
+    // 供点击命中: tap → 字符全书偏移 → 本查询
+    fun footnoteAt(globalOffset: Long): Pair<String, String>? = null
 }
 
 // TXT 内容源: 全书单文本流 + 章节偏移表切片。无章节书归一化为"整本单章"

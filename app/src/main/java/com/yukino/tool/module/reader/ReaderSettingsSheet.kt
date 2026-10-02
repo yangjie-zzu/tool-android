@@ -83,6 +83,7 @@ fun ReaderSettingsSheet(
             }
             SwitchRow("首行缩进", settings.indent) { onChange(settings.copy(indent = it)) }
             SwitchRow("两端对齐", settings.justify) { onChange(settings.copy(justify = it)) }
+            SwitchRow("段距跟随书内", settings.bookSpacing) { onChange(settings.copy(bookSpacing = it)) }
             SwitchRow("屏幕常亮", settings.keepScreenOn) { onChange(settings.copy(keepScreenOn = it)) }
         }
     }

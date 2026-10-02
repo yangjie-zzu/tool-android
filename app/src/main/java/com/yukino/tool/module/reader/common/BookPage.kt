@@ -1,10 +1,12 @@
 package com.yukino.tool.module.reader.common
 import android.graphics.Paint
 import android.graphics.Typeface
+import android.text.Layout
 import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.StaticLayout
 import android.text.TextPaint
+import android.text.style.AlignmentSpan
 import android.text.style.LeadingMarginSpan
 import android.text.style.RelativeSizeSpan
 import android.text.style.StrikethroughSpan
@@ -124,22 +126,45 @@ object ChapterComposer {
     fun bodyStart(titleLength: Int): Int = titleLength + 2
 
     // 二期: 接收段落序列(带 Run),Run 转字符样式 span 参与断行度量。
+    // 四期: 段级对齐(AlignmentSpan,center/right)与段级首行缩进(书内 indentEm 覆盖全局)。
     // 投影文本与一期 compose(title, body) 逐字符一致(段落 = joinToString("\n") 的切分)
     fun compose(title: String, paras: List<Paragraph>, typo: ResolvedTypography): Spanned {
         val sb = SpannableStringBuilder(title).append("\n\n")
         var pos = title.length + 2
         paras.forEachIndexed { i, p ->
             if (i > 0) { sb.append('\n'); pos++ }
+            val paraStart = pos
             sb.append(p.text)
             for (run in p.runs) {
                 if (run.end > run.start) applyRunSpan(sb, pos + run.start, pos + run.end, run.style)
             }
             pos += p.text.length
+            // 段级对齐: 度量与断行由 StaticLayout 按 span 处理;对齐段不做首行缩进。
+            // ALIGN_OPPOSITE 在 LTR 文档下即右对齐
+            val alignment = when (p.align) {
+                1 -> Layout.Alignment.ALIGN_CENTER
+                2 -> Layout.Alignment.ALIGN_OPPOSITE
+                else -> null
+            }
+            if (alignment != null) {
+                sb.setSpan(AlignmentSpan.Standard(alignment), paraStart, pos, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            } else {
+                val indentPx = paraIndentPx(p, typo)
+                if (indentPx > 0f && p.text.isNotEmpty() && !leadingIndented(sb, paraStart)) {
+                    sb.setSpan(LeadingMarginSpan.Standard(indentPx.toInt(), 0), paraStart, pos, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                }
+            }
         }
         sb.setSpan(RelativeSizeSpan(TITLE_SCALE), 0, title.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         sb.setSpan(StyleSpan(Typeface.BOLD), 0, title.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-        applyIndent(sb, bodyStart(title.length), sb.length, typo.indentPx)
         return sb
+    }
+
+    // 段首缩进: 书内 indentEm 覆盖全局设置(null = 全局;em 非负,0 = 显式不缩进)
+    internal fun paraIndentPx(p: Paragraph?, typo: ResolvedTypography): Float = when {
+        p?.indentEm != null -> p.indentEm * typo.fontPx
+        typo.indentPx > 0f -> typo.indentPx
+        else -> 0f
     }
 
     // 一期纯投影入口保留(TXT 路径/既有测试使用;与段落版投影逐字符一致)
@@ -202,27 +227,6 @@ object ChapterComposer {
         var stripped = 0
         for (i in 0 until e) stripped += paras[i].text.length + 1
         return paras.drop(e) to stripped
-    }
-
-    // 首行缩进 span: 只给 [from, to) 内的非空白段;
-    // 段首已带全角/半角空格缩进的段落视为自带缩进,不再叠加(避免双重缩进)。
-    // 源文本的空格字符原样保留(不能删,删了会破坏字符偏移映射)
-    private fun applyIndent(sb: SpannableStringBuilder, from: Int, to: Int, indentPx: Float) {
-        if (indentPx <= 0f) return
-        var paraStart = from
-        var i = from
-        while (i <= to) {
-            if (i == to || sb[i] == '\n') {
-                if ((paraStart until i).any { !sb[it].isWhitespace() } && !leadingIndented(sb, paraStart)) {
-                    sb.setSpan(
-                        LeadingMarginSpan.Standard(indentPx.toInt(), 0),
-                        paraStart, i, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
-                    )
-                }
-                paraStart = i + 1
-            }
-            i++
-        }
     }
 
     // 段首字符是全角/半角空格或制表符 → 源文本自带首行缩进
@@ -309,32 +313,50 @@ object BookPager {
         val titlePitch = LineGrid.linePitch(titleNatural, typo.lineExtraPx, Typography.GRID_PX)
         val bodyShift = LineGrid.centerShift(bodyPitch, bodyNatural)
         val titleShift = LineGrid.centerShift(titlePitch, titleNatural)
+        // 段落区间表(正文区,不含段间换行;与 paras 对齐,空段为空区间)
+        // + 段前额外距: 书内 margin(段自身 above + 前段 below,不折叠简单叠加;开关关闭全零)
+        val paraRanges = ArrayList<IntRange>(paras.size)
+        val extraAbove = FloatArray(paras.size)
+        run {
+            var p = bodyStart
+            var prevBelowEm = 0f
+            for ((i, para) in paras.withIndex()) {
+                paraRanges += p until (p + para.text.length)
+                var extra = 0f
+                if (typo.bookSpacing) {
+                    if (prevBelowEm != 0f) extra += prevBelowEm
+                    para.spaceAboveEm?.let { if (it != 0f) extra += it }
+                }
+                extraAbove[i] = extra * typo.fontPx
+                prevBelowEm = if (typo.bookSpacing) (para.spaceBelowEm ?: 0f) else 0f
+                p += para.text.length + 1
+            }
+        }
+
         val lines = ArrayList<TextLine>(measure.lineCount)
+        var rangeCursor = 0
         for (i in 0 until measure.lineCount) {
             var s = measure.getLineStart(i)
             var e = measure.getLineEnd(i)
             if (e > s && composed[e - 1] == '\n') e--
             val kind = lineKind(composed, s, e, bodyStart)
             val isParaStart = kind == LineKind.BODY && paraStart(composed, s, bodyStart)
+            // 段首行: 叠加书内 margin 折算的段前额外距(网格化)
+            if (isParaStart) {
+                while (rangeCursor < paraRanges.size && paraRanges[rangeCursor].first != s) rangeCursor++
+            }
+            val bookExtra = if (isParaStart && rangeCursor < extraAbove.size) extraAbove[rangeCursor] else 0f
             val (pitch, ascentAbs) = when (kind) {
                 LineKind.BLANK -> LineGrid.blankPitch(Typography.GRID_PX) to bodyAscentAbs
                 LineKind.TITLE -> titlePitch to (titleAscentAbs + titleShift)
                 LineKind.BODY -> {
-                    val above = if (isParaStart) paraAbove else 0
+                    val above = if (isParaStart) {
+                        paraAbove + PaginationEngine.gridCeil(bookExtra, Typography.GRID_PX)
+                    } else 0
                     above + bodyPitch to (bodyAscentAbs + bodyShift)
                 }
             }
-            lines += TextLine(s, e, kind, isParaStart, pitch, if (isParaStart) paraAbove else 0, ascentAbs)
-        }
-
-        // 段落区间表(正文区,不含段间换行;与 paras 对齐,空段为空区间)
-        val paraRanges = ArrayList<IntRange>(paras.size)
-        run {
-            var p = bodyStart
-            for (para in paras) {
-                paraRanges += p until (p + para.text.length)
-                p += para.text.length + 1
-            }
+            lines += TextLine(s, e, kind, isParaStart, pitch, if (isParaStart) paraAbove + PaginationEngine.gridCeil(bookExtra, Typography.GRID_PX) else 0, ascentAbs)
         }
 
         // 图片行占位: 按 U+FFFC 单字符定位该段的行,按版心宽等比换算显示尺寸,
@@ -360,8 +382,9 @@ object BookPager {
             }
             imageSizes[pi] = size
             val old = lines[li]
-            val imgPitch = old.paraAbove + PaginationEngine.gridCeil(size.height.toFloat(), Typography.GRID_PX)
-            lines[li] = TextLine(old.start, old.end, old.kind, old.isParaStart, imgPitch, old.paraAbove, 0)
+            val bookExtraGrid = PaginationEngine.gridCeil(extraAbove[pi], Typography.GRID_PX)
+            val imgPitch = old.paraAbove + bookExtraGrid + PaginationEngine.gridCeil(size.height.toFloat(), Typography.GRID_PX)
+            lines[li] = TextLine(old.start, old.end, old.kind, old.isParaStart, imgPitch, old.paraAbove + bookExtraGrid, 0)
         }
 
         return ChapterLines(
@@ -476,23 +499,40 @@ object BookPager {
                 val para = if (pi >= 0) cl.paras[pi] else null
                 if (para?.isImage == true) {
                     val sz = cl.imageDrawSizes[pi] ?: ImageSize(0, 0)
+                    // 四期: 图片行随段级对齐(居中/右对齐;默认贴左)
+                    val imgX = when (para.align) {
+                        1 -> (typo.textWidth - sz.width) / 2f
+                        2 -> (typo.textWidth - sz.width).toFloat()
+                        else -> 0f
+                    }.coerceAtLeast(0f)
                     out += DrawLine(
-                        "", 0f, (y + above).toFloat(), false, global,
+                        "", imgX, (y + above).toFloat(), false, global,
                         imageRef = para.imageRef,
                         imageWidth = sz.width.toFloat(),
                         imageHeight = sz.height.toFloat()
                     )
                 } else {
                     val text = cl.composed.substring(ln.start, ln.end)
-                    val indented = ln.isParaStart && typo.indentPx > 0f &&
-                        !ChapterComposer.leadingIndented(cl.composed, ln.start)
-                    val x = if (indented) typo.indentPx else 0f
-                    val midPara = ln.kind == LineKind.BODY &&
-                        ln.end < cl.composed.length && cl.composed[ln.end] != '\n'
-                    val segs = if (typo.justify && midPara) {
-                        PaginationEngine.justifySegments(text, typo.textWidth - x, typo.fontPx, measure)
-                            ?.map { LineSeg(it.first, it.second) }
-                    } else null
+                    val align = para?.align ?: 0
+                    val x: Float
+                    val segs: List<LineSeg>?
+                    if (align != 0) {
+                        // 四期: 居中/右对齐行 — 行起点按自然宽计算,不做两端对齐拉伸
+                        val w = measure(text)
+                        x = (if (align == 1) (typo.textWidth - w) / 2f else (typo.textWidth - w)).coerceAtLeast(0f)
+                        segs = null
+                    } else {
+                        val indentPx = ChapterComposer.paraIndentPx(para, typo)
+                        val indented = ln.isParaStart && indentPx > 0f &&
+                            !ChapterComposer.leadingIndented(cl.composed, ln.start)
+                        x = if (indented) indentPx else 0f
+                        val midPara = ln.kind == LineKind.BODY &&
+                            ln.end < cl.composed.length && cl.composed[ln.end] != '\n'
+                        segs = if (typo.justify && midPara) {
+                            PaginationEngine.justifySegments(text, typo.textWidth - x, typo.fontPx, measure)
+                                ?.map { LineSeg(it.first, it.second) }
+                        } else null
+                    }
                     out += DrawLine(
                         text, x, (y + above + ln.ascentAbs).toFloat(), ln.kind == LineKind.TITLE,
                         global, segs, lineStyles(cl, ln, pi)

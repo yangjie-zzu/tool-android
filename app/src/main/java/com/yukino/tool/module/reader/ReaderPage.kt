@@ -12,6 +12,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -20,6 +21,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.systemGestureExclusion
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -30,10 +32,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.List
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
@@ -78,6 +82,7 @@ import androidx.compose.foundation.layout.systemBars
 import androidx.core.view.WindowCompat
 import com.yukino.tool.R
 import com.yukino.tool.module.reader.common.BookContent
+import com.yukino.tool.module.reader.common.BookFormat
 import com.yukino.tool.module.reader.common.BookPage
 import com.yukino.tool.module.reader.common.BookPager
 import com.yukino.tool.module.reader.common.ChapterComposer
@@ -208,7 +213,7 @@ fun ReaderScreen(
     val typoKey = typo?.let {
         listOf(
             it.fontPx, it.lineExtraPx, it.paraExtraPx, it.indentPx, it.marginPx,
-            it.textWidth, it.textHeight, it.justify, it.fgColor,
+            it.textWidth, it.textHeight, it.justify, it.fgColor, it.bookSpacing,
             Typography.BREAK_STRATEGY_VERSION   // 断行算法升级时使旧缓存失效
         ).hashCode()
     }
@@ -324,6 +329,12 @@ fun ReaderScreen(
         actionMode?.finish()
     }
 
+    // 脚注弹层: (noteId, 内容)。角标点击命中后弹出,关闭即回原位(不改变页面状态)
+    var footnoteShow by remember(book.id) { mutableStateOf<Pair<String, String>?>(null) }
+
+    // 出版信息页(四期实验项): 书籍元数据弹层,菜单顶栏"信息"入口
+    var showBookInfo by remember(book.id) { mutableStateOf(false) }
+
     // 版式变化 → 整本重排,行模型全部失效,选区清除
     LaunchedEffect(typoKey) { if (selection != null) selection = null }
     // 菜单浮层弹出时收起文本工具栏(浮层盖在选区上,工具栏留着无意义)
@@ -364,6 +375,18 @@ fun ReaderScreen(
     // 事件回调里读最新值,防闭包过期
     val selVisualRef = remember { mutableStateOf(selectionVisual) }
     selVisualRef.value = selectionVisual
+
+    // tap → 角标命中: 版心坐标 → (行,字符) → 全书偏移 → 章脚注表;未命中返回 null
+    fun footnoteHitAt(offset: Offset): Pair<String, String>? {
+        val bp = livePage ?: return null
+        val t = liveTypo ?: return null
+        val cnt = liveContent ?: return null
+        val m = selMetrics ?: return null
+        if (bp.spec.kind != PageKind.CONTENT) return null
+        val hit = SelectionGeometry.hit(bp, offset.x - t.marginPx, offset.y - contentTopPx, m) ?: return null
+        val global = SelectionGeometry.globalAt(bp, hit.first, hit.second)
+        return cnt.footnoteAt(global)
+    }
 
     // 工具栏延迟弹出: 长按建选区后不能同步 startActionMode——选区坐标要等重组后才算好,
     // 同步弹时 onGetContentRect 拿不到矩形,系统会把工具栏放到屏幕顶部。
@@ -683,7 +706,9 @@ fun ReaderScreen(
                 detectTapGestures(
                     onTap = { offset ->
                         if (selection == null) {
-                            menuVisible = !menuVisible
+                            // 角标点击优先于菜单开关(仅菜单收起时检测;弹层自身拦截后续触摸)
+                            val note = if (!menuVisible) footnoteHitAt(offset) else null
+                            if (note != null) footnoteShow = note else menuVisible = !menuVisible
                         } else {
                             val sv = selVisualRef.value
                             val t = liveTypo
@@ -906,6 +931,9 @@ fun ReaderScreen(
                 IconButton(onClick = { showToc = true }) {
                     Icon(Icons.AutoMirrored.Rounded.List, "目录", tint = fgColor)
                 }
+                IconButton(onClick = { showBookInfo = true }) {
+                    Icon(Icons.Rounded.Info, "书籍信息", tint = fgColor)
+                }
             }
         }
 
@@ -991,12 +1019,84 @@ fun ReaderScreen(
             book = book,
             currentChapter = specs?.getOrNull(pageIndex)?.chapterIndex ?: 0,
             onChapterClick = { idx ->
-                val target = specs?.indexOfFirst { it.chapterIndex == idx } ?: -1
-                if (target >= 0) pageIndex = target
                 showToc = false
+                val sp = specs
+                if (sp != null && idx in book.chapters.indices) {
+                    // 目录锚点: 章带 fragment 时落锚点所在段落(章文档可能未缓存,后台读)
+                    val anchorId = book.chapters[idx].anchorId
+                    scope.launch {
+                        val target = withContext(Dispatchers.Default) {
+                            val byAnchor = if (anchorId != null) {
+                                liveContent?.anchorOffset(idx, anchorId)?.let { off ->
+                                    val global = (liveContent?.chapterStart(idx) ?: 0L) + off
+                                    BookPager.locatePage(sp, global)
+                                        .takeIf { sp[it].chapterIndex == idx }   // 防御: 异常落点退章首
+                                }
+                            } else null
+                            byAnchor ?: sp.indexOfFirst { it.chapterIndex == idx }
+                        }
+                        if (target >= 0) pageIndex = target
+                    }
+                }
             },
             onDismiss = { showToc = false }
         )
+    }
+
+    if (showBookInfo) {
+        ModalBottomSheet(onDismissRequest = { showBookInfo = false }) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 20.dp, end = 20.dp)
+                    .padding(bottom = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    "书籍信息",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                val dateFmt = remember { java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault()) }
+                val sizeText = when {
+                    book.fileSize >= 1 shl 20 -> "%.1f MB".format(book.fileSize / 1048576.0)
+                    book.fileSize >= 1024 -> "${book.fileSize / 1024} KB"
+                    else -> "${book.fileSize} B"
+                }
+                val curChapter = specs?.getOrNull(pageIndex)?.chapterIndex ?: 0
+                InfoRow("书名", book.title)
+                book.author?.let { InfoRow("作者", it) }
+                InfoRow("格式", if (book.format == BookFormat.EPUB) "EPUB" else "TXT")
+                InfoRow("文件大小", sizeText)
+                InfoRow("章节", "${book.chapters.count { it.level == 0 }} 章 · ${book.chapters.count { it.level > 0 }} 小节")
+                InfoRow("全书字数", "%,d".format(book.totalChars))
+                InfoRow("当前进度", "${(percent * 100).roundToInt()}% · ${
+                    book.chapters.getOrNull(curChapter)?.title ?: ""
+                }")
+                InfoRow("添加时间", dateFmt.format(java.util.Date(book.addedAt)))
+                InfoRow("最近阅读", dateFmt.format(java.util.Date(book.lastReadAt)))
+            }
+        }
+    }
+
+    footnoteShow?.let { note ->
+        ModalBottomSheet(onDismissRequest = { footnoteShow = null }) {
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp).padding(bottom = 24.dp)
+            ) {
+                Text(
+                    "脚注",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    note.second,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
+        }
     }
 
     if (showSettings) {
@@ -1112,6 +1212,25 @@ private fun SelectionHandles(
             contentDescription = null,
             colorFilter = ColorFilter.tint(color),
             modifier = handleModifier(endX, endY - effTop, -45f)
+        )
+    }
+}
+
+// 书籍信息弹层的键值行
+@Composable
+private fun InfoRow(label: String, value: String) {
+    Row {
+        Text(
+            label,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.width(72.dp)
+        )
+        Text(
+            value,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.weight(1f)
         )
     }
 }

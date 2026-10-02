@@ -7,9 +7,16 @@ object BookFormat {
     const val EPUB = "epub"
 }
 
-// 章节: 标题 + 全书字符起始偏移
+// 章节: 标题 + 全书字符起始偏移。anchorId = 目录条目指向的文档内锚点
+// (EPUB 目录 fragment,点击目录落该锚点所在段落而非章首;旧数据/无锚点为 null);
+// level = 目录层级(0 = 章/spine 文档, 1 = 文档内 h2 拆出的小节,目录缩进展示)
 @Serializable
-data class ChapterIndex(val title: String, val startChar: Long)
+data class ChapterIndex(
+    val title: String,
+    val startChar: Long,
+    val anchorId: String? = null,
+    val level: Int = 0
+)
 
 // 进度: 全书字符偏移(换字号重分页后位置不漂移), percent 仅展示用。
 // 旧版本(chapterIndex+charOffset)数据不做迁移,落到默认值回到书首
@@ -73,7 +80,8 @@ data class ReaderSettings(
     val marginDp: Int = 16,            // 8..32,步进 4
     val indent: Boolean = true,        // 首行缩进 2 字符
     val justify: Boolean = true,       // 两端对齐
-    val keepScreenOn: Boolean = true
+    val keepScreenOn: Boolean = true,
+    val bookSpacing: Boolean = true    // 段距跟随书内 CSS(四期): 关=忽略书内 margin 纯用全局段距
 ) {
     val effectiveBg: Long get() = if (theme == ReaderTheme.CUSTOM) customBg ?: theme.colors.first else theme.colors.first
     val effectiveFg: Long get() = if (theme == ReaderTheme.CUSTOM) customFg ?: theme.colors.second else theme.colors.second

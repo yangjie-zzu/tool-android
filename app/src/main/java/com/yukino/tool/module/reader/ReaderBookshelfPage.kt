@@ -227,18 +227,22 @@ private fun BookItem(
     onDelete: (ReaderBook) -> Unit
 ) {
     val dateFmt = remember(book.addedAt) { SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()) }
-    // 封面缩略图: 后台解码 ~96px 小图(48dp 行首);无封面/解码失败回退图标
+    // 封面缩略图: 后台解码 ~96px 小图(48dp 行首);SVG 封面栅格化;无封面/解码失败回退图标
     val cover by produceState<android.graphics.Bitmap?>(initialValue = null, book.coverPath) {
         val path = book.coverPath ?: return@produceState
         value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             runCatching {
-                val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                android.graphics.BitmapFactory.decodeFile(path, opts)
-                var sample = 1
-                while (opts.outWidth / (sample * 2) >= 96) sample *= 2
-                opts.inSampleSize = sample
-                opts.inJustDecodeBounds = false
-                android.graphics.BitmapFactory.decodeFile(path, opts)
+                if (com.yukino.tool.module.reader.common.SvgDecoder.isSvg(path)) {
+                    com.yukino.tool.module.reader.common.SvgDecoder.decode(path, 96, 144)
+                } else {
+                    val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    android.graphics.BitmapFactory.decodeFile(path, opts)
+                    var sample = 1
+                    while (opts.outWidth / (sample * 2) >= 96) sample *= 2
+                    opts.inSampleSize = sample
+                    opts.inJustDecodeBounds = false
+                    android.graphics.BitmapFactory.decodeFile(path, opts)
+                }
             }.getOrNull()
         }
     }

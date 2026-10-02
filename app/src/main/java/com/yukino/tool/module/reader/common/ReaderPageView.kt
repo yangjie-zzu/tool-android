@@ -466,7 +466,7 @@ class ReaderPageView(context: Context) : View(context) {
         val w = ln.imageWidth
         val h = ln.imageHeight
         if (w <= 0f || h <= 0f) return
-        val bmp = imageFor(ln.imageRef ?: return)
+        val bmp = imageFor(ln.imageRef ?: return, w.toInt(), h.toInt())
         if (bmp != null) {
             canvas.drawBitmap(bmp, null, android.graphics.RectF(0f, ln.baseline, w, ln.baseline + h), imagePaint)
         } else {
@@ -476,7 +476,7 @@ class ReaderPageView(context: Context) : View(context) {
 
     // 封面/图片共用的按矩形绘制(缓存未命中画占位框)
     private fun drawBitmapFit(canvas: Canvas, ref: String, x: Float, y: Float, w: Float, h: Float) {
-        val bmp = imageFor(ref)
+        val bmp = imageFor(ref, w.toInt(), h.toInt())
         if (bmp != null) {
             canvas.drawBitmap(bmp, null, android.graphics.RectF(x, y, x + w, y + h), imagePaint)
         } else {
@@ -494,12 +494,15 @@ class ReaderPageView(context: Context) : View(context) {
     }
 
     // 取图片 Bitmap: 命中即回;未命中提交后台解码(单线程,重复请求去重)后重绘。
-    // 抖动防护: 同一帧内多行/拖拽双层引用同一图片只解码一次
-    private fun imageFor(ref: String): android.graphics.Bitmap? {
+    // SVG 按目标尺寸栅格化(四期),位图直接解码
+    private fun imageFor(ref: String, targetW: Int, targetH: Int): android.graphics.Bitmap? {
         synchronized(imageCache) { imageCache[ref]?.let { return it } }
         if (pendingDecodes.add(ref)) {
             imageDecoder.execute {
-                val bmp = runCatching { android.graphics.BitmapFactory.decodeFile(ref) }.getOrNull()
+                val bmp = runCatching {
+                    if (SvgDecoder.isSvg(ref)) SvgDecoder.decode(ref, targetW.coerceAtLeast(1), targetH.coerceAtLeast(1))
+                    else android.graphics.BitmapFactory.decodeFile(ref)
+                }.getOrNull()
                 if (bmp != null) {
                     synchronized(imageCache) { imageCache[ref] = bmp }
                 }

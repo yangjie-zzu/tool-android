@@ -32,23 +32,64 @@ class EpubBookContent(
     override fun chapterDoc(index: Int): ChapterDocument = synchronized(this) {
         docCache.getOrPut(index) {
             val f = java.io.File(chapterDir, "chapters/ch_%04d.txt".format(index))
-            val paras = ChapterFileCodec.read(f)
+            val (paras, footnotes) = ChapterFileCodec.read(f)
             // 图片相对路径 → 绝对路径(一次转换,排版/渲染零路径解析)
             val resolved = if (paras.any { it.isImage }) {
                 paras.map { p ->
                     if (p.isImage && p.imageRef?.startsWith("/") != true) {
                         com.yukino.tool.module.reader.common.Paragraph(
-                            p.text, p.runs, p.kind, java.io.File(chapterDir, p.imageRef!!).absolutePath
+                            p.text, p.runs, p.kind, java.io.File(chapterDir, p.imageRef!!).absolutePath,
+                            p.anchor, p.notes
                         )
                     } else p
                 }
             } else paras
-            ChapterDocument(chapters[index].title, resolved)
+            ChapterDocument(chapters[index].title, resolved, footnotes)
         }
     }
 
-    // 图片像素尺寸: 只读文件头(decodeBounds),排版断行时按版心宽换算占位高
+    // 章内锚点 → 投影偏移: 扫段落 anchor 匹配,偏移 = 前序段长累计(与 bodyText 同构)
+    override fun anchorOffset(chapterIndex: Int, anchorId: String): Long? {
+        if (chapterIndex !in chapters.indices) return null
+        val paras = chapterDoc(chapterIndex).paragraphs
+        var off = 0L
+        for (p in paras) {
+            if (p.anchor == anchorId) return off
+            off += p.text.length + 1L   // 段间一个换行
+        }
+        return null
+    }
+
+    // 全书偏移 → 角标脚注: 二分章 → 章内偏移 → 段区间 → 段内角标区间匹配
+    override fun footnoteAt(globalOffset: Long): Pair<String, String>? {
+        var lo = 0
+        var hi = chapters.lastIndex
+        if (hi < 0) return null
+        while (lo < hi) {
+            val mid = (lo + hi + 1) / 2
+            if (chapters[mid].startChar <= globalOffset) lo = mid else hi = mid - 1
+        }
+        val inPara = (globalOffset - chapters[lo].startChar).coerceAtLeast(0L)
+        var segStart = 0L
+        for (p in chapterDoc(lo).paragraphs) {
+            val segEnd = segStart + p.text.length
+            if (inPara in segStart until segEnd) {
+                val local = (inPara - segStart).toInt()
+                val hit = p.notes.firstOrNull { local >= it.start && local < it.end } ?: return null
+                val text = chapterDoc(lo).footnotes[hit.noteId] ?: return null
+                return hit.noteId to text
+            }
+            segStart = segEnd + 1L   // 段间换行
+        }
+        return null
+    }
+
+    // 图片像素尺寸: 位图只读文件头(decodeBounds),SVG 解析矢量尺寸;
+    // 排版断行时按版心宽换算占位高
     override fun imageBounds(imageRef: String): android.graphics.Rect? = runCatching {
+        if (com.yukino.tool.module.reader.common.SvgDecoder.isSvg(imageRef)) {
+            return@runCatching com.yukino.tool.module.reader.common.SvgDecoder.bounds(imageRef)
+        }
         val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
         android.graphics.BitmapFactory.decodeFile(imageRef, opts)
         if (opts.outWidth > 0 && opts.outHeight > 0) {

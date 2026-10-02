@@ -16,7 +16,7 @@ import android.database.sqlite.SQLiteOpenHelper
 object AppDb {
 
     private const val NAME = "tool.db"
-    private const val VERSION = 5
+    private const val VERSION = 6
 
     @Volatile
     private var helper: SQLiteOpenHelper? = null
@@ -53,6 +53,10 @@ object AppDb {
                     // v5: 分组记录来源文件夹 uri(重复导入去重)
                     if (oldVersion < 5) {
                         db.execSQL("ALTER TABLE reader_group ADD COLUMN source_uri TEXT")
+                    }
+                    // v6: 段距跟随书内 CSS 开关(四期)
+                    if (oldVersion < 6) {
+                        db.execSQL("ALTER TABLE reader_settings ADD COLUMN book_spacing INTEGER NOT NULL DEFAULT 1")
                     }
                 }
             }
@@ -126,7 +130,8 @@ object AppDb {
                     "margin_dp INTEGER NOT NULL, " +
                     "indent INTEGER NOT NULL, " +
                     "justify INTEGER NOT NULL, " +
-                    "keep_screen_on INTEGER NOT NULL)"
+                    "keep_screen_on INTEGER NOT NULL, " +
+                    "book_spacing INTEGER NOT NULL DEFAULT 1)"
             )
             // 分页缓存: 派生数据, 版式/内容变化由 typo_key/total_chars 失效
             db.execSQL(

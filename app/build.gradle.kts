@@ -20,8 +20,8 @@ android {
         applicationId = "com.yukino.tool"
         minSdk = 24
         targetSdk = 34
-        versionCode = 11
-        versionName = "1.1.0"
+        versionCode = 13
+        versionName = "1.2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -118,6 +118,8 @@ android {
 dependencies {
 
     implementation("androidx.core:core-ktx:1.9.0")
+    // 四期: EPUB 内 SVG 图片/封面栅格化(roadmap 预告的唯一新依赖)
+    implementation("com.caverock:androidsvg:1.4")
     // 1.1.0在API 30+有认证成功后CryptoObject为null的bug；1.4.0要求compileSdk 36+AGP 8.9.1，暂用1.2.0
     implementation("androidx.biometric:biometric:1.2.0-alpha05")
     implementation("androidx.fragment:fragment-ktx:1.5.7")

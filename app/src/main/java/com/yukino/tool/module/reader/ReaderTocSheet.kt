@@ -51,13 +51,18 @@ fun ReaderTocSheet(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable { onChapterClick(idx) }
-                            .padding(horizontal = 20.dp, vertical = 12.dp)
+                            .padding(
+                                start = if (chapter.level > 0) 44.dp else 20.dp,
+                                end = 20.dp,
+                                top = if (chapter.level > 0) 8.dp else 12.dp,
+                                bottom = if (chapter.level > 0) 8.dp else 12.dp
+                            )
                     ) {
                         Text(
                             text = chapter.title,
-                            style = MaterialTheme.typography.bodyMedium,
+                            style = if (chapter.level > 0) MaterialTheme.typography.bodySmall else MaterialTheme.typography.bodyMedium,
                             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = if (chapter.level > 0) 0.8f else 1f),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f)

@@ -45,7 +45,7 @@ object EpubImporter {
             chapterFile(context, book.id, 0).let { it.exists() && it.length() > 0 } &&
             chapterFile(context, book.id, n - 1).let { it.exists() && it.length() > 0 }
         if (book.ready && filesOk) {
-            if (!ChapterFileCodec.isLegacyFormat(chapterFile(context, book.id, 0))) return@withContext book
+            if (!ChapterFileCodec.needsUpgrade(chapterFile(context, book.id, 0))) return@withContext book
             onStage("升级书籍内容中…")
             return@withContext upgrade(context, book, dir, onStage)
         }
@@ -232,16 +232,17 @@ object EpubImporter {
                 val opfDir = opfPath.substringBeforeLast('/', "")
                 val pkg = parseOpf(opfFile.readText(), opfDir)
 
-                // 4. 目录: NCX(EPUB2)优先,缺则 Nav Doc(EPUB3);路径 → 标题
+                // 4. 目录: NCX(EPUB2)优先,缺则 Nav Doc(EPUB3);路径 → (标题, 锚点fragment)。
+                // 同文档多条目录取首条(一期同约定),fragment 作章 anchorId(点击目录落锚点段落)
                 onStage("解析章节中…")
-                val tocMap = HashMap<String, String>()
+                val tocMap = HashMap<String, Pair<String, String?>>()
                 val ncxHref = pkg.ncxId?.let { pkg.items[it]?.href }
                     ?: pkg.items.values.firstOrNull { it.mediaType == MEDIA_TYPE_NCX }?.href
                 if (ncxHref != null) {
                     val ncxFile = File(outDir, resolveHref(opfDir, percentDecode(stripFragment(ncxHref).first)))
                     if (ncxFile.exists()) {
                         parseNcx(ncxFile.readText(), dirOf(ncxFile, outDir))
-                            .forEach { e -> tocMap.putIfAbsent(e.path, e.title) }
+                            .forEach { e -> tocMap.putIfAbsent(e.path, e.title to e.fragment) }
                     }
                 }
                 if (tocMap.isEmpty()) {
@@ -250,7 +251,7 @@ object EpubImporter {
                         val navFile = File(outDir, resolveHref(opfDir, percentDecode(stripFragment(navItem.href).first)))
                         if (navFile.exists()) {
                             parseNav(navFile.readText(), dirOf(navFile, outDir))
-                                .forEach { e -> tocMap.putIfAbsent(e.path, e.title) }
+                                .forEach { e -> tocMap.putIfAbsent(e.path, e.title to e.fragment) }
                         }
                     }
                 }
@@ -268,12 +269,14 @@ object EpubImporter {
                     val docFile = File(outDir, resolveHref(opfDir, percentDecode(stripFragment(item.href).first)))
                     if (!docFile.exists()) continue
                     val key = resolveHref(opfDir, percentDecode(stripFragment(item.href).first))
-                    val paragraphs = HtmlTextExtractor.extract(docFile, key.substringBeforeLast('/', ""))
+                    val extracted = HtmlTextExtractor.extract(docFile, key.substringBeforeLast('/', ""))
+                    val paragraphs = extracted.paragraphs
                     if (paragraphs.isEmpty()) continue
 
                     // 目录键与 NCX/Nav 条目同一约定: 相对 zip 根的解码路径
                     val fallbackTitle = docFile.nameWithoutExtension.ifBlank { "未命名" }
-                    val title = (tocMap[key] ?: HtmlTextExtractor.firstHeading(docFile) ?: fallbackTitle)
+                    val toc = tocMap[key]
+                    val title = (toc?.first ?: HtmlTextExtractor.firstHeading(docFile) ?: fallbackTitle)
                         .take(MAX_TITLE_LEN)
                     val paras = dedupeLeadingTitle(paragraphs, title)
                     // 纯图片页的目录标题常是文件名(如 "0.jpg"),显示为"插图"
@@ -281,13 +284,23 @@ object EpubImporter {
                         Regex("\\.(jpe?g|png|gif|webp)\\s*$", RegexOption.IGNORE_CASE).containsMatchIn(title)
                     ) "插图" else title
 
-                    val f = chapterOutFile(chapters.size)
-                    f.parentFile?.mkdirs()
-                    ChapterFileCodec.write(f, paras)
-                    // 投影长度 = 各段 text 之和 + 段间换行(与 bodyText joinToString 同构)
-                    val bodyLen = paras.sumOf { it.text.length.toLong() } + (paras.size - 1)
-                    chapters += ChapterIndex(displayTitle, offset)
-                    offset += bodyLen + 1L   // 章间一个虚拟换行偏移(章区间连续拼接)
+                    // 四期: h2 小节二次拆章——文档内 h2 段落起点切分,首小节用目录名(level 0),
+                    // 后续小节用 h2 文本(level 1,anchor = h2 id);无 h2 维持单章
+                    for (section in splitSections(paras)) {
+                        val f = chapterOutFile(chapters.size)
+                        f.parentFile?.mkdirs()
+                        // 脚注表按文档全量随每小节落盘(noteId 全文档唯一,角标可能跨小节)
+                        ChapterFileCodec.write(f, section.paras, extracted.footnotes)
+                        // 投影长度 = 各段 text 之和 + 段间换行(与 bodyText joinToString 同构)
+                        val bodyLen = section.paras.sumOf { it.text.length.toLong() } + (section.paras.size - 1)
+                        val secTitle = (section.h2Text ?: displayTitle).take(MAX_TITLE_LEN)
+                        chapters += ChapterIndex(
+                            secTitle, offset,
+                            anchorId = section.h2Anchor ?: (if (section.first) toc?.second else null),
+                            level = if (section.first) 0 else 1
+                        )
+                        offset += bodyLen + 1L   // 章间一个虚拟换行偏移(章区间连续拼接)
+                    }
                 }
                 if (chapters.isEmpty()) throw EpubFormatException("书中没有可读的文本章节")
 
@@ -328,6 +341,37 @@ object EpubImporter {
             return paragraphs.drop(1)
         }
         return paragraphs
+    }
+
+    // 四期: h2 小节切分。heading==2 且非首段的段落为小节起点;
+    // 首小节 first=true(用目录名/目录锚点),后续小节 h2Text/h2Anchor 取自其 h2 段
+    internal class Section(
+        val paras: List<Paragraph>,
+        val h2Text: String?,
+        val h2Anchor: String?,
+        val first: Boolean
+    )
+
+    internal fun splitSections(paras: List<Paragraph>): List<Section> {
+        val bounds = ArrayList<Int>()
+        for ((i, p) in paras.withIndex()) if (p.heading == 2 && i > 0) bounds += i
+        if (bounds.isEmpty()) return listOf(Section(paras, null, null, first = true))
+        val raw = ArrayList<List<Paragraph>>()
+        var start = 0
+        for (b in bounds) {
+            raw += paras.subList(start, b)
+            start = b
+        }
+        raw += paras.subList(start, paras.size)
+        return raw.mapIndexed { k, list ->
+            if (list.isEmpty()) return@mapIndexed null
+            val firstPara = list.first()
+            if (k > 0 && firstPara.heading == 2) {
+                Section(list, firstPara.text, firstPara.anchor, first = false)
+            } else {
+                Section(list, null, null, first = k == 0)
+            }
+        }.filterNotNull()
     }
 
     // 解压目录内按文件名(不含目录)查找,首匹配
