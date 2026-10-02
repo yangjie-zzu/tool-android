@@ -270,6 +270,55 @@ class EpubRichContentTest {
     // LineStyle 无 equals(普通 class),测试用三元组对比
     private data class LineStyleAssert(val start: Int, val end: Int, val style: Int)
 
+    // ---- 五期: 行内图片(图片型脚注角标) ----
+
+    @Test
+    fun `图片型noteref投影占位并记行内图片`() {
+        val r = extractFull(
+            "<p>正文<a epub:type=\"noteref\" href=\"#n1\"><sup><img src=\"images/note.png\"/></sup></a>结尾。</p>" +
+                "<aside epub:type=\"footnote\" id=\"n1\">图片角标的脚注。</aside>"
+        )
+        assertEquals(1, r.paragraphs.size)
+        val p = r.paragraphs[0]
+        // 投影: 正文 + U+FFFC + 结尾。
+        assertEquals("正文" + HtmlTextExtractor.IMAGE_PLACEHOLDER + "结尾。", p.text)
+        assertEquals(1, p.inlineImages.size)
+        assertEquals(2, p.inlineImages[0].start)
+        assertEquals("images/note.png", p.inlineImages[0].ref)
+        // 角标区间与占位符重合,脚注可点
+        assertEquals(1, p.notes.size)
+        assertEquals("n1", p.notes[0].noteId)
+        assertEquals(p.inlineImages[0].start, p.notes[0].start)
+        // 脚注内容入表
+        assertEquals("图片角标的脚注。", r.footnotes["n1"])
+    }
+
+    @Test
+    fun `图片型noteref外部图忽略`() {
+        val r = extractFull(
+            "<p>a<a epub:type=\"noteref\" href=\"#n1\"><img src=\"https://x/n.png\"/></a>b</p>"
+        )
+        assertEquals(0, r.paragraphs[0].inlineImages.size)
+        assertEquals("ab", r.paragraphs[0].text)
+    }
+
+    @Test
+    fun `五期行内图片章文件往返`() {
+        val f = File.createTempFile("ch_v5", ".txt")
+        val paras = listOf(
+            Paragraph("角标" + HtmlTextExtractor.IMAGE_PLACEHOLDER + "尾",
+                inlineImages = listOf(com.yukino.tool.module.reader.common.InlineImg(2, "images/note.png")))
+        )
+        ChapterFileCodec.write(f, paras)
+        val (read, _) = ChapterFileCodec.read(f)
+        assertEquals(1, read[0].inlineImages.size)
+        assertEquals(2, read[0].inlineImages[0].start)
+        assertEquals("images/note.png", read[0].inlineImages[0].ref)
+        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(f))
+        f.delete()
+    }
+
+
     // ---- 四期: CSS 子集 / h2 拆章 / 排版属性 ----
 
     @Test
@@ -421,20 +470,20 @@ class EpubRichContentTest {
     }
 
     @Test
-    fun `升级检测_纯文本与旧JSON需升级_三期对象豁免`() {
+    fun `升级检测_旧格式需升级_五期对象豁免`() {
         val legacy = File.createTempFile("legacy", ".txt")
         legacy.writeText("第一章 风起\n正文")
         assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(legacy))
         val v2 = File.createTempFile("v2ch", ".txt")
         v2.writeText("""[{"t":"第一段"},{"t":"第二段"}]""")
         assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v2))   // 二期缺锚点/脚注
-        val v3 = File.createTempFile("v3ch", ".txt")
-        v3.writeText("""{"p":[{"t":"第一段"}],"notes":{}}""")
-        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v3))   // 三期缺排版属性/heading
         val v4 = File.createTempFile("v4ch", ".txt")
         v4.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":4}""")
-        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v4))
-        legacy.delete(); v2.delete(); v3.delete(); v4.delete()
+        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v4))   // 四期缺行内图片
+        val v5 = File.createTempFile("v5ch", ".txt")
+        v5.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":5}""")
+        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v5))
+        legacy.delete(); v2.delete(); v4.delete(); v5.delete()
     }
 
     // ---- 老书升级: 章号映射(顺序保持的标题匹配) ----

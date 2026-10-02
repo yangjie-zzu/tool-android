@@ -24,6 +24,10 @@ enum class ParaKind { TEXT, IMAGE }
 // noteId 指向章级 footnotes 表(不进正文阅读流)
 class NoteAnchor(val start: Int, val end: Int, val noteId: String)
 
+// 段内行内图片(五期): start 为投影中 U+FFFC 占位字符的段内偏移,
+// ref 为图片路径(章文件存相对路径,加载侧转绝对)。行内渲染,不独占行
+class InlineImg(val start: Int, val ref: String)
+
 // 段落级书内排版(四期 CSS 子集;来源 = style 属性 + 文档 class 样式表,解析侧提取):
 // align 0=默认(跟随全局) 1=居中 2=右对齐;indentEm 非空覆盖全局首行缩进(null=跟随全局);
 // spaceAboveEm/spaceBelowEm 书内块级 margin(em),排版时按"段距跟随书内"开关取舍;
@@ -39,7 +43,8 @@ class Paragraph(
     val indentEm: Float? = null,
     val spaceAboveEm: Float? = null,
     val spaceBelowEm: Float? = null,
-    val heading: Int = 0
+    val heading: Int = 0,
+    val inlineImages: List<InlineImg> = emptyList()
 ) {
     val isImage: Boolean get() = kind == ParaKind.IMAGE
 }

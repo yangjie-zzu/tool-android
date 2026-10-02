@@ -7,6 +7,7 @@ import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 import com.yukino.tool.module.reader.common.NoteAnchor
+import com.yukino.tool.module.reader.common.InlineImg
 import com.yukino.tool.module.reader.common.ParaKind
 import com.yukino.tool.module.reader.common.Paragraph
 import com.yukino.tool.module.reader.common.Run
@@ -24,6 +25,9 @@ object ChapterFileCodec {
     private data class NoteAnchorDto(val s: Int, val e: Int, val id: String)
 
     @Serializable
+    private data class InlineImgDto(val s: Int, val ref: String)
+
+    @Serializable
     private data class ParagraphDto(
         val t: String,
         val r: List<Int> = emptyList(),
@@ -34,14 +38,15 @@ object ChapterFileCodec {
         val ind: Float? = null,     // 四期: 书内首行缩进(em;null=跟随全局)
         val mt: Float? = null,      // 四期: 块级 margin-top(em)
         val mb: Float? = null,      // 四期: 块级 margin-bottom(em)
-        val h: Int? = null          // 四期: 标题级别 1..6(h2 拆章依据)
+        val h: Int? = null,         // 四期: 标题级别 1..6(h2 拆章依据)
+        val ii: List<InlineImgDto> = emptyList()   // 五期: 行内图片(段内偏移+相对路径)
     )
 
     @Serializable
     private data class ChapterDto(
         val p: List<ParagraphDto>,
         val notes: Map<String, String> = emptyMap(),
-        val v: Int = 0   // 格式版本: 4 = 四期(段级排版属性/heading,拆章依据);旧文件缺省 0
+        val v: Int = 0   // 格式版本: 5 = 五期(行内图片);旧文件缺省 0
     )
 
     private val json = Json { ignoreUnknownKeys = true }
@@ -59,15 +64,16 @@ object ChapterFileCodec {
                 ind = p.indentEm,
                 mt = p.spaceAboveEm,
                 mb = p.spaceBelowEm,
-                h = if (p.heading != 0) p.heading else null
+                h = if (p.heading != 0) p.heading else null,
+                ii = p.inlineImages.map { InlineImgDto(it.start, it.ref) }
             )
         }
         val dto = ChapterDto(p = dtos, notes = footnotes, v = FORMAT_VERSION)
         file.writeText(json.encodeToString(ChapterDto.serializer(), dto))
     }
 
-    // 四期格式版本: 段级排版属性 + heading(h2 拆章)。低版本文件打开时自动升级重提取
-    const val FORMAT_VERSION = 4
+    // 五期格式版本: 行内图片(图片型脚注角标)。低版本文件打开时自动升级重提取
+    const val FORMAT_VERSION = 5
 
     fun read(file: File): Pair<List<Paragraph>, Map<String, String>> {
         val text = file.readText()
@@ -97,6 +103,7 @@ object ChapterFileCodec {
             runs += Run(r[i], r[i + 1], r[i + 2])
             i += 3
         }
+        val inlines = ii.map { InlineImg(it.s, it.ref) }
         if (img != null) {
             return Paragraph(
                 t, emptyList(), ParaKind.IMAGE, img, a,
@@ -112,7 +119,8 @@ object ChapterFileCodec {
             indentEm = ind,
             spaceAboveEm = mt,
             spaceBelowEm = mb,
-            heading = h ?: 0
+            heading = h ?: 0,
+            inlineImages = inlines
         )
     }
 

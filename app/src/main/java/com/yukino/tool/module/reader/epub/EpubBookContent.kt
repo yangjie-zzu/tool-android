@@ -33,13 +33,28 @@ class EpubBookContent(
         docCache.getOrPut(index) {
             val f = java.io.File(chapterDir, "chapters/ch_%04d.txt".format(index))
             val (paras, footnotes) = ChapterFileCodec.read(f)
-            // 图片相对路径 → 绝对路径(一次转换,排版/渲染零路径解析)
-            val resolved = if (paras.any { it.isImage }) {
+            // 图片相对路径 → 绝对路径(一次转换,排版/渲染零路径解析;块级 imageRef 与行内 inlineImages 同规则)
+            val needResolve = paras.any { it.isImage || it.inlineImages.isNotEmpty() }
+            val resolved = if (needResolve) {
                 paras.map { p ->
+                    val inline = if (p.inlineImages.isNotEmpty()) {
+                        p.inlineImages.map { im ->
+                            val abs = if (im.ref.startsWith("/")) im.ref
+                            else java.io.File(chapterDir, im.ref).absolutePath
+                            com.yukino.tool.module.reader.common.InlineImg(im.start, abs)
+                        }
+                    } else p.inlineImages
                     if (p.isImage && p.imageRef?.startsWith("/") != true) {
                         com.yukino.tool.module.reader.common.Paragraph(
                             p.text, p.runs, p.kind, java.io.File(chapterDir, p.imageRef!!).absolutePath,
-                            p.anchor, p.notes
+                            p.anchor, p.notes, p.align, p.indentEm, p.spaceAboveEm, p.spaceBelowEm,
+                            p.heading, inline
+                        )
+                    } else if (inline !== p.inlineImages) {
+                        com.yukino.tool.module.reader.common.Paragraph(
+                            p.text, p.runs, p.kind, p.imageRef,
+                            p.anchor, p.notes, p.align, p.indentEm, p.spaceAboveEm, p.spaceBelowEm,
+                            p.heading, inline
                         )
                     } else p
                 }

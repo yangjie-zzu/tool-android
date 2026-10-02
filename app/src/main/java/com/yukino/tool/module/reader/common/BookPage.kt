@@ -1,5 +1,7 @@
 package com.yukino.tool.module.reader.common
+import android.graphics.Canvas
 import android.graphics.Paint
+import android.graphics.Rect
 import android.graphics.Typeface
 import android.text.Layout
 import android.text.SpannableStringBuilder
@@ -8,6 +10,7 @@ import android.text.StaticLayout
 import android.text.TextPaint
 import android.text.style.AlignmentSpan
 import android.text.style.LeadingMarginSpan
+import android.text.style.ReplacementSpan
 import android.text.style.RelativeSizeSpan
 import android.text.style.StrikethroughSpan
 import android.text.style.StyleSpan
@@ -61,7 +64,8 @@ class ChapterLines(
     val lines: List<TextLine>,
     val paras: List<Paragraph> = emptyList(),     // 剥标题后的段落(与 paraRanges 对齐)
     val paraRanges: List<IntRange> = emptyList(), // 各段在 composed 中的区间(正文区,不含换行)
-    val imageDrawSizes: Map<Int, ImageSize> = emptyMap() // 图片段显示尺寸(px,paraIndex → 尺寸)
+    val imageDrawSizes: Map<Int, ImageSize> = emptyMap(), // 图片段显示尺寸(px,paraIndex → 尺寸)
+    val inlineSizes: Map<String, ImageSize> = emptyMap()  // 五期: 行内图片显示尺寸(ref → 尺寸)
 )
 
 // 图片行的显示尺寸(版心坐标系;按版心宽等比缩放,超高图缩到一页内)
@@ -81,8 +85,13 @@ class DrawLine(
     val styles: List<LineStyle>? = null,   // 行内样式段(相对行文本坐标);null = 单一样式
     val imageRef: String? = null,          // 图片行: 图片文件绝对路径(非空 = 图片行,text 为空)
     val imageWidth: Float = 0f,            // 图片行显示尺寸(物化时按版心宽换算好)
-    val imageHeight: Float = 0f
+    val imageHeight: Float = 0f,
+    val inlineImages: List<DrawInline> = emptyList()   // 五期: 行内图片(字符下标+路径+显示尺寸)
 )
+
+// 行内图片标记(五期): charIdx 为行内字符下标(该字符 = 投影 U+FFFC 占位),
+// ref 为图片绝对路径,w/h 为物化好的显示尺寸
+class DrawInline(val charIdx: Int, val ref: String, val width: Int, val height: Int)
 
 class LineSeg(val text: String, val x: Float)
 
@@ -127,8 +136,14 @@ object ChapterComposer {
 
     // 二期: 接收段落序列(带 Run),Run 转字符样式 span 参与断行度量。
     // 四期: 段级对齐(AlignmentSpan,center/right)与段级首行缩进(书内 indentEm 覆盖全局)。
+    // 五期: 行内图片占位符按图片等比尺寸度量(ReplacementSpan 只管尺寸,绘制走自绘管线)。
     // 投影文本与一期 compose(title, body) 逐字符一致(段落 = joinToString("\n") 的切分)
-    fun compose(title: String, paras: List<Paragraph>, typo: ResolvedTypography): Spanned {
+    fun compose(
+        title: String,
+        paras: List<Paragraph>,
+        typo: ResolvedTypography,
+        imageBounds: ((String) -> Rect?)? = null
+    ): Spanned {
         val sb = SpannableStringBuilder(title).append("\n\n")
         var pos = title.length + 2
         paras.forEachIndexed { i, p ->
@@ -137,6 +152,17 @@ object ChapterComposer {
             sb.append(p.text)
             for (run in p.runs) {
                 if (run.end > run.start) applyRunSpan(sb, pos + run.start, pos + run.end, run.style)
+            }
+            // 五期: 行内图片占位符度量 span
+            if (p.inlineImages.isNotEmpty() && imageBounds != null) {
+                for (im in p.inlineImages) {
+                    val idx = paraStart + im.start
+                    if (idx >= pos) continue
+                    val size = inlineImageDisplaySize(imageBounds(im.ref), typo)
+                    sb.setSpan(
+                        InlineImageSpan(size.width), idx, idx + 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                    )
+                }
             }
             pos += p.text.length
             // 段级对齐: 度量与断行由 StaticLayout 按 span 处理;对齐段不做首行缩进。
@@ -165,6 +191,45 @@ object ChapterComposer {
         p?.indentEm != null -> p.indentEm * typo.fontPx
         typo.indentPx > 0f -> typo.indentPx
         else -> 0f
+    }
+
+    // 五期: 行内图片显示尺寸——高约 1.2 倍字号、宽等比;上限 1.6 倍字号/版心宽(通用行内图防撑爆);
+    // 坏图(bounds null)按一个字宽方框占位
+    internal fun inlineImageDisplaySize(bounds: Rect?, typo: ResolvedTypography): ImageSize {
+        val maxH = (typo.fontPx * 1.6f).roundToInt().coerceAtLeast(1)
+        if (bounds == null || bounds.width() <= 0 || bounds.height() <= 0) {
+            val s = typo.fontPx.roundToInt().coerceAtLeast(1)
+            return ImageSize(s, s)
+        }
+        var h = (typo.fontPx * 1.2f).roundToInt().coerceAtLeast(1)
+        var w = (h.toFloat() * bounds.width() / bounds.height()).roundToInt().coerceAtLeast(1)
+        if (h > maxH) {
+            h = maxH
+            w = (h.toFloat() * bounds.width() / bounds.height()).roundToInt().coerceAtLeast(1)
+        }
+        if (w > typo.textWidth) {
+            w = typo.textWidth
+            h = (w.toFloat() * bounds.height() / bounds.width()).roundToInt().coerceAtLeast(1)
+        }
+        return ImageSize(w, h)
+    }
+
+    // 五期: 行内图片占位符的度量 span——只向 StaticLayout 提供真实宽度参与断行,
+    // 行高跟随字号(小图标不撑行);draw 为空实现,绘制由自绘管线按占位符位置负责
+    private class InlineImageSpan(val w: Int) : ReplacementSpan() {
+        override fun getSize(paint: Paint, text: CharSequence, start: Int, end: Int, fm: Paint.FontMetricsInt?): Int {
+            if (fm != null) {
+                val f = paint.fontMetricsInt
+                fm.ascent = f.ascent
+                fm.descent = f.descent
+                fm.top = f.top
+                fm.bottom = f.bottom
+                fm.leading = 0
+            }
+            return w
+        }
+
+        override fun draw(canvas: Canvas, text: CharSequence, start: Int, end: Int, x: Float, top: Int, y: Int, bottom: Int, paint: Paint) {}
     }
 
     // 一期纯投影入口保留(TXT 路径/既有测试使用;与段落版投影逐字符一致)
@@ -287,7 +352,7 @@ object BookPager {
         val doc = content.chapterDoc(chapterIndex)
         val title = content.chapterTitle(chapterIndex)
         val (paras, stripped) = ChapterComposer.stripLeadingTitleParas(doc.paragraphs, title)
-        val composed = ChapterComposer.compose(title, paras, typo)
+        val composed = ChapterComposer.compose(title, paras, typo, imageBounds = { ref -> content.imageBounds(ref) })
         val bodyStart = ChapterComposer.bodyStart(title.length)
         val measure = Typography.buildLayout(composed, typo)
         val bodyFm = Paint.FontMetrics()
@@ -387,9 +452,21 @@ object BookPager {
             lines[li] = TextLine(old.start, old.end, old.kind, old.isParaStart, imgPitch, old.paraAbove + bookExtraGrid, 0)
         }
 
+        // 五期: 行内图片显示尺寸预取(断行时算好,物化直接查;compose 的 ReplacementSpan 同源同值)
+        val inlineSizes = HashMap<String, ImageSize>()
+        if (paras.any { it.inlineImages.isNotEmpty() }) {
+            for (p in paras) {
+                for (im in p.inlineImages) {
+                    if (im.ref !in inlineSizes) {
+                        inlineSizes[im.ref] = ChapterComposer.inlineImageDisplaySize(content.imageBounds(im.ref), typo)
+                    }
+                }
+            }
+        }
+
         return ChapterLines(
             composed, bodyStart, content.chapterStart(chapterIndex) + stripped, lines,
-            paras, paraRanges, imageSizes
+            paras, paraRanges, imageSizes, inlineSizes
         )
     }
 
@@ -533,9 +610,21 @@ object BookPager {
                                 ?.map { LineSeg(it.first, it.second) }
                         } else null
                     }
+                    // 五期: 行内图片折算(段内偏移 → 行内下标;尺寸查 ChapterLines.inlineSizes)
+                    val inlines = if (pi >= 0 && para!!.inlineImages.isNotEmpty()) {
+                        val rngFirst = cl.paraRanges[pi].first
+                        para.inlineImages.mapNotNull { im ->
+                            val abs = rngFirst + im.start
+                            if (abs in ln.start until ln.end) {
+                                val sz = cl.inlineSizes[im.ref]
+                                    ?: ImageSize(typo.fontPx.roundToInt(), typo.fontPx.roundToInt())
+                                DrawInline(abs - ln.start, im.ref, sz.width, sz.height)
+                            } else null
+                        }
+                    } else emptyList()
                     out += DrawLine(
                         text, x, (y + above + ln.ascentAbs).toFloat(), ln.kind == LineKind.TITLE,
-                        global, segs, lineStyles(cl, ln, pi)
+                        global, segs, lineStyles(cl, ln, pi), inlineImages = inlines
                     )
                 }
             }

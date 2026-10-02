@@ -337,6 +337,10 @@ class ReaderPageView(context: Context) : View(context) {
                     continue
                 }
                 val base = if (ln.title) titlePaint else bodyPaint
+                if (ln.inlineImages.isNotEmpty()) {
+                    drawInlineLine(canvas, ln, base)
+                    continue
+                }
                 if (ln.styles == null) {
                     val segs = ln.segments
                     if (segs == null) {
@@ -407,10 +411,87 @@ class ReaderPageView(context: Context) : View(context) {
         else -> 0f
     }
 
+    // 五期: 行内图片行——按占位符(U+FFFC)把行切成"文本段/图片位"逐段绘制。
+    // 字符 x 定位: 自然宽行按前缀逐字符累计;两端对齐行按 seg.x 锚点 + 段内前缀宽。
+    // 文本段的样式/基线偏移按字符所在样式段折算(与 drawStyledLine 同一 stylePaintFor 缓存);
+    // 图片底边贴基线下沉一点,近似行内小图的视觉位置。
+    // 已知限制: 该行的选区度量(selMetrics 纯文本 measure)不含图片真实宽度,角标字符处选区略有偏差
+    private fun drawInlineLine(canvas: Canvas, ln: DrawLine, base: android.text.TextPaint) {
+        val styles = ln.styles
+        val inlines = ln.inlineImages.sortedBy { it.charIdx }
+
+        fun paintAt(charIdx: Int): android.text.TextPaint {
+            if (styles != null) {
+                for (st in styles) {
+                    if (charIdx >= st.start && charIdx < st.end && st.style != 0) {
+                        return stylePaintFor(base, ln.title, st.style)
+                    }
+                }
+            }
+            return base
+        }
+
+        fun dyAt(charIdx: Int): Float {
+            if (styles != null) {
+                for (st in styles) {
+                    if (charIdx >= st.start && charIdx < st.end) return baselineShift(st.style, base.textSize)
+                }
+            }
+            return 0f
+        }
+
+        fun charX(charIdx: Int): Float {
+            val segs = ln.segments
+            if (segs == null) {
+                var acc = 0f
+                for (i in 0 until charIdx) acc += paintAt(i).measureText(ln.text[i].toString())
+                return ln.x + acc
+            }
+            var cursor = 0
+            for (seg in segs) {
+                val segLen = seg.text.length
+                if (charIdx < cursor + segLen) {
+                    var acc = 0f
+                    for (i in cursor until charIdx) acc += paintAt(i).measureText(ln.text[i].toString())
+                    return ln.x + seg.x + acc
+                }
+                cursor += segLen
+            }
+            return ln.x
+        }
+
+        fun drawTextRange(from: Int, until: Int) {
+            var i = from
+            while (i < until) {
+                val p = paintAt(i)
+                var j = i + 1
+                while (j < until && paintAt(j) === p) j++
+                canvas.drawText(ln.text.substring(i, j), charX(i), ln.baseline + dyAt(i), p)
+                i = j
+            }
+        }
+
+        var cursor = 0
+        for (inl in inlines) {
+            if (inl.charIdx > cursor) drawTextRange(cursor, inl.charIdx)
+            if (inl.width > 0 && inl.height > 0) {
+                val bmp = imageFor(inl.ref, inl.width, inl.height)
+                val left = charX(inl.charIdx)
+                val top = ln.baseline - inl.height + base.textSize * 0.18f
+                if (bmp != null) {
+                    canvas.drawBitmap(bmp, null, android.graphics.RectF(left, top, left + inl.width, top + inl.height), imagePaint)
+                } else {
+                    drawPlaceholder(canvas, left, top, inl.width.toFloat(), inl.height.toFloat())
+                }
+            }
+            cursor = inl.charIdx + 1
+        }
+        if (cursor < ln.text.length) drawTextRange(cursor, ln.text.length)
+    }
+
     // 带样式行: 逐样式段绘制;段内若有两端对齐拉伸分段,按词元字符游标裁出子段。
     // 段起点 x = 行首 x + 前缀宽度(前缀跨样式时按本段 paint 量,词元边界处精确)
-    private fun drawStyledLine(canvas: Canvas, ln: DrawLine, base: android.text.TextPaint) {
-        val styles = ln.styles ?: return
+    private fun drawStyledLine(canvas: Canvas, ln: DrawLine, base: android.text.TextPaint) {        val styles = ln.styles ?: return
         val full = ln.text
         for (st in styles) {
             val p = stylePaintFor(base, ln.title, st.style)

@@ -376,7 +376,9 @@ fun ReaderScreen(
     val selVisualRef = remember { mutableStateOf(selectionVisual) }
     selVisualRef.value = selectionVisual
 
-    // tap → 角标命中: 版心坐标 → (行,字符) → 全书偏移 → 章脚注表;未命中返回 null
+    // tap → 角标命中: 版心坐标 → (行,字符) → 全书偏移 → 章脚注表;未命中返回 null。
+    // 占位符(U+FFFC)的点击度量不含 ReplacementSpan 图标宽,字符吸附可能偏多个字符——
+    // 先做"行内角标偏移差匹配"(容差 3 字符),未中再退常规 ±1 邻域
     fun footnoteHitAt(offset: Offset): Pair<String, String>? {
         val bp = livePage ?: return null
         val t = liveTypo ?: return null
@@ -384,8 +386,22 @@ fun ReaderScreen(
         val m = selMetrics ?: return null
         if (bp.spec.kind != PageKind.CONTENT) return null
         val hit = SelectionGeometry.hit(bp, offset.x - t.marginPx, offset.y - contentTopPx, m) ?: return null
+        val line = bp.lines[hit.first]
         val global = SelectionGeometry.globalAt(bp, hit.first, hit.second)
+        if (line.inlineImages.isNotEmpty()) {
+            val nearest = line.inlineImages.minByOrNull {
+                kotlin.math.abs(global - (line.lineStartGlobal + it.charIdx))
+            }
+            if (nearest != null &&
+                kotlin.math.abs(global - (line.lineStartGlobal + nearest.charIdx)) <= 3
+            ) {
+                return cnt.footnoteAt(line.lineStartGlobal + nearest.charIdx)
+            }
+            return null   // 点击在本行但不在角标容差内,不弹菜单也不误触脚注
+        }
         return cnt.footnoteAt(global)
+            ?: cnt.footnoteAt(global - 1)
+            ?: cnt.footnoteAt(global + 1)
     }
 
     // 工具栏延迟弹出: 长按建选区后不能同步 startActionMode——选区坐标要等重组后才算好,

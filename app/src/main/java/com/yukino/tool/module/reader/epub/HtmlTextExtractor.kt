@@ -210,6 +210,7 @@ object HtmlTextExtractor {
         private var pendingSpace = false
         val openAnchors = ArrayDeque<String>()
         private val pendingNotes = ArrayList<NoteAnchor>()
+        private val pendingInline = ArrayList<com.yukino.tool.module.reader.common.InlineImg>()
         val notes = LinkedHashMap<String, String>()
 
         // 段级排版上下文(CSS 继承简化: 子元素未设用父值,设了覆盖;离开元素恢复快照)
@@ -288,13 +289,15 @@ object HtmlTextExtractor {
                     indentEm = paraIndentEm,
                     spaceAboveEm = paraAboveEm,
                     spaceBelowEm = paraBelowEm,
-                    heading = pendingHeading
+                    heading = pendingHeading,
+                    inlineImages = pendingInline.filter { it.start < sb.length }
                 )
                 if (openAnchors.isNotEmpty()) openAnchors.removeFirst()
             }
             sb.setLength(0)
             runs.clear()
             pendingNotes.clear()
+            pendingInline.clear()
             pendingSpace = false
         }
 
@@ -320,6 +323,10 @@ object HtmlTextExtractor {
 
         fun pendingNote(start: Int, end: Int, noteId: String) {
             pendingNotes += NoteAnchor(start, end, noteId)
+        }
+
+        fun pendingInline(start: Int, ref: String) {
+            pendingInline += com.yukino.tool.module.reader.common.InlineImg(start, ref)
         }
     }
 
@@ -357,16 +364,31 @@ object HtmlTextExtractor {
             return
         }
 
-        // noteref 角标: 文本保留进投影(上标样式),区间记为脚注锚点;不 walk 子节点
+        // noteref 角标: 文本保留进投影(上标样式),区间记为脚注锚点;不 walk 子节点。
+        // 五期: 角标内容为图片(Calibre/duokan 生态)时,投影落 U+FFFC 占位并记行内图片(可点)
         if (name == "a" && isNoteRef(node)) {
             val frag = stripFragment(node.attr("href")).second
+            if (frag.isNullOrBlank()) return
             val label = node.text()
-            if (!frag.isNullOrBlank() && label.isNotBlank()) {
+            if (label.isNotBlank()) {
                 val saved = b.curStyle
                 b.curStyle = saved or RunStyle.SUP
                 val (s, e) = b.appendTextTracked(label)
                 b.curStyle = saved
                 if (e > s) b.pendingNote(s, e, frag)
+            } else {
+                val img = node.selectFirst("img")
+                val src = img?.attr("src")?.trim() ?: ""
+                if (src.isNotEmpty() && !src.startsWith("http", true)) {
+                    val ref = resolveHref(b.docDir, percentDecode(src))
+                    if (ref.isNotBlank()) {
+                        val (s, e) = b.appendTextTracked(HtmlTextExtractor.IMAGE_PLACEHOLDER)
+                        if (e > s) {
+                            b.pendingNote(s, e, frag)
+                            b.pendingInline(s, ref)
+                        }
+                    }
+                }
             }
             return
         }
