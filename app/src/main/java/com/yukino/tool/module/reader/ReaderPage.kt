@@ -185,6 +185,7 @@ fun ReaderScreen(
 
     // 加载内容源(按格式分派到各自主流程);登记态书在此完成懒初始化(转码/解压+章节解析)
     LaunchedEffect(book.id) {
+        pageViewRef.value?.clearImages()   // 图片缓存不跨书复用
         loadError = null
         content = try {
             val (c, refreshed) = BookContents.load(context, book) { initStage = it }

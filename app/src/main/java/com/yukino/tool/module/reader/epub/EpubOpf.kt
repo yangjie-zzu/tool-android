@@ -30,7 +30,8 @@ class EpubPackage(
     val opfDir: String,                      // OPF 所在目录(zip 内路径,"" = 根)
     val items: Map<String, ManifestItem>,    // id → 条目
     val spine: List<SpineItemref>,
-    val ncxId: String?                       // spine@toc 指向的 NCX id
+    val ncxId: String?,                      // spine@toc 指向的 NCX id
+    val coverHref: String? = null            // 封面图片 href(相对 OPF,原始未解码;null = 未探测到)
 )
 
 // 目录条目: 文档路径(已解码,相对 zip 根,不含片段)+ 章节内锚点 + 标题
@@ -130,7 +131,8 @@ internal fun parseContainerXml(xml: String): String {
 }
 
 // ---------- OPF ----------
-// 元数据文本(title/creator)在标签闭 合时取累积文本;manifest/spine 按祖先标签判定
+// 元数据文本(title/creator)在标签闭 合时取累积文本;manifest/spine 按祖先标签判定;
+// meta name=cover(EPUB2 封面惯例)先记录,结尾与 manifest 一起定封面
 internal fun parseOpf(xml: String, opfDir: String): EpubPackage {
     val w = XmlWalk(xml)
     var title: String? = null
@@ -138,6 +140,7 @@ internal fun parseOpf(xml: String, opfDir: String): EpubPackage {
     val items = LinkedHashMap<String, ManifestItem>()
     val spine = ArrayList<SpineItemref>()
     var ncxId: String? = null
+    var metaCover: String? = null
     val stack = ArrayDeque<String>()
     var capture: String? = null   // 正在收集文本的元数据字段: "title"/"creator"
 
@@ -161,6 +164,7 @@ internal fun parseOpf(xml: String, opfDir: String): EpubPackage {
                         val idref = w.attr("idref")
                         if (idref != null) spine += SpineItemref(idref, w.attr("linear") != "no")
                     }
+                    n == "meta" && w.attr("name") == "cover" -> metaCover = w.attr("content")
                     n == "spine" -> ncxId = w.attr("toc")
                 }
             }
@@ -181,7 +185,25 @@ internal fun parseOpf(xml: String, opfDir: String): EpubPackage {
         }
         e = w.next()
     }
-    return EpubPackage(title, author, opfDir, items, spine, ncxId)
+    return EpubPackage(title, author, opfDir, items, spine, ncxId, findCover(items, spine, metaCover))
+}
+
+// 封面探测(roadmap 顺序): EPUB3 cover-image property → meta name=cover 指向的 item id
+// → manifest id 含 cover 的图片 → spine 首个图片文档;全部落空返回 null(无封面回退文字)
+internal fun findCover(
+    items: Map<String, ManifestItem>,
+    spine: List<SpineItemref>,
+    metaCover: String?
+): String? {
+    fun isImage(mt: String) = mt.startsWith("image/", ignoreCase = true)
+    items.values.firstOrNull { it.hasProperty("cover-image") && isImage(it.mediaType) }?.let { return it.href }
+    metaCover?.let { id -> items[id]?.let { if (isImage(it.mediaType)) return it.href } }
+    items.values.firstOrNull { it.id.lowercase().contains("cover") && isImage(it.mediaType) }?.let { return it.href }
+    for (ref in spine) {
+        val item = items[ref.idref] ?: continue
+        if (isImage(item.mediaType)) return item.href
+    }
+    return null
 }
 
 // ---------- NCX(EPUB2 目录 toc.ncx) ----------

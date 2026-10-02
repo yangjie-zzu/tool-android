@@ -4,9 +4,33 @@ package com.yukino.tool.module.reader.common
 // 排版层(BookPager)与渲染层(ReaderPageView)只认识 BookContent/ChapterDocument,
 // 不认识具体格式——两种格式的主流程在公共层相遇,互不感知。
 
-// 段落: 一段连续正文文本。一期纯文本;二期在此扩展 Run(内联样式)/图片引用/锚点,
-// 届时段落文本投影(用于偏移/进度/选择)与富文本信息分离的格局不变
-class Paragraph(val text: String)
+// 内联样式位标记(Run.style)。富文本只影响绘制,不参与偏移/进度/选择等一切投影机制
+object RunStyle {
+    const val BOLD = 1
+    const val ITALIC = 2
+    const val UNDERLINE = 4
+    const val STRIKE = 8
+    const val SUP = 16      // 上标: 字号缩小 + 基线上移
+    const val SUB = 32      // 下标: 字号缩小 + 基线下移
+}
+
+// 段内 [start, end) 区间(纯文本投影坐标)的样式;style 为 RunStyle 位或。
+// 段内排序不重叠、相邻同样式已合并(解析侧保证)
+data class Run(val start: Int, val end: Int, val style: Int)
+
+enum class ParaKind { TEXT, IMAGE }
+
+// 段落: 一段连续正文文本。text 是纯文本投影(偏移锚定,永不变);
+// runs 空 = 整段单一样式(TXT 恒为空);kind=IMAGE 时 text 恒为单字符占位(U+FFFC),
+// imageRef 指向图片文件(绝对路径,加载侧由章内相对路径解析而来)
+class Paragraph(
+    val text: String,
+    val runs: List<Run> = emptyList(),
+    val kind: ParaKind = ParaKind.TEXT,
+    val imageRef: String? = null
+) {
+    val isImage: Boolean get() = kind == ParaKind.IMAGE
+}
 
 // 章文档: 标题 + 正文段落序列。bodyText 是段落的纯文本投影(段间一个 \n),
 // 分页/进度/选区锚定的全书偏移全部定义在投影上
@@ -29,6 +53,15 @@ interface BookContent {
 
     // 全书偏移区间 [start, end) 的选中文本(章界处补换行)
     fun textAt(startGlobal: Long, endGlobal: Long): String
+
+    // ---- 图片支持(二期;纯文本内容源用默认空实现) ----
+
+    // 图片像素尺寸(imageRef 为图片文件绝对路径;不可解码返回 null)。
+    // 排版侧按版心宽等比换算占位高度
+    fun imageBounds(imageRef: String): android.graphics.Rect? = null
+
+    // 封面文件绝对路径(null/文件不存在 = 无封面)。阅读页封面页与书架缩略图共用
+    val coverPath: String? get() = null
 }
 
 // TXT 内容源: 全书单文本流 + 章节偏移表切片。无章节书归一化为"整本单章"

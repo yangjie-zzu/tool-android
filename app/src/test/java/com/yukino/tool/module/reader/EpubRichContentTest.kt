@@ -1,0 +1,378 @@
+package com.yukino.tool.module.reader
+
+import com.yukino.tool.module.reader.common.ChapterLines
+import com.yukino.tool.module.reader.common.ChapterComposer
+import com.yukino.tool.module.reader.common.BookPager
+import com.yukino.tool.module.reader.common.LineKind
+import com.yukino.tool.module.reader.common.ParaKind
+import com.yukino.tool.module.reader.common.Paragraph
+import com.yukino.tool.module.reader.common.Run
+import com.yukino.tool.module.reader.common.RunStyle
+import com.yukino.tool.module.reader.common.TextLine
+import com.yukino.tool.module.reader.epub.ChapterFileCodec
+import com.yukino.tool.module.reader.epub.HtmlTextExtractor
+import org.jsoup.Jsoup
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import java.io.File
+
+// 二期富文本回归: XHTML 解析(投影不变性/Run 边界/图片/列表/表格降级)、
+// 章文件 JSON 编解码(含一期纯文本回退)、段落级剥标题与字符级等价、行内样式折算。
+// 全部纯 JVM(Jsoup/序列化/纯函数),不依赖 Android 运行时
+class EpubRichContentTest {
+
+    private fun extractHtml(html: String, docDir: String = "") =
+        HtmlTextExtractor.extract(Jsoup.parseBodyFragment(html).body(), docDir)
+
+    // ---- 投影不变性(与一期纯文本形态逐字符一致) ----
+
+    @Test
+    fun `普通段落投影与一期一致且无Run`() {
+        val paras = extractHtml("<p>你好，世界</p><p>第二段</p>")
+        assertEquals(listOf("你好，世界", "第二段"), paras.map { it.text })
+        assertTrue(paras.all { it.runs.isEmpty() })
+        assertTrue(paras.all { it.kind == ParaKind.TEXT })
+    }
+
+    @Test
+    fun `空白规整与一期规则一致`() {
+        // 连续空白折叠为一;CJK 间粘连空格清除(汉/字/之均 CJK);段首尾空白丢弃
+        val paras = extractHtml("<p>  汉  字 之间   word  </p>")
+        assertEquals(1, paras.size)
+        assertEquals("汉字之间 word", paras[0].text)
+    }
+
+    // ---- Run 生成 ----
+
+    @Test
+    fun `粗体标签产出Run且边界正确`() {
+        // Run 全区间覆盖: 样式段与其余普通段(style=0)分立,绘制层按区间无缝覆盖整行
+        val paras = extractHtml("<p>前缀<b>粗体</b>后缀</p>")
+        val p = paras[0]
+        assertEquals("前缀粗体后缀", p.text)
+        assertEquals(
+            listOf(Run(0, 2, 0), Run(2, 4, RunStyle.BOLD), Run(4, 6, 0)),
+            p.runs
+        )
+    }
+
+    @Test
+    fun `内联标签不是段落边界`() {
+        val paras = extractHtml("<p>前<b>粗</b>后</p>")
+        assertEquals(1, paras.size)
+        assertEquals("前粗后", paras[0].text)
+    }
+
+    @Test
+    fun `样式切换Run不重叠且相邻同样式合并`() {
+        // <b>汉</b> <b>字</b>: 中间空格被 CJK 规则清除,两段加粗合并为同一 Run
+        val paras = extractHtml("<p><b>汉</b> <b>字</b></p>")
+        assertEquals("汉字", paras[0].text)
+        assertEquals(listOf(Run(0, 2, RunStyle.BOLD)), paras[0].runs)
+    }
+
+    @Test
+    fun `斜体接粗体分属两个Run`() {
+        val paras = extractHtml("<p><i>斜</i><b>粗</b></p>")
+        assertEquals("斜粗", paras[0].text)
+        assertEquals(
+            listOf(Run(0, 1, RunStyle.ITALIC), Run(1, 2, RunStyle.BOLD)),
+            paras[0].runs
+        )
+    }
+
+    @Test
+    fun `em与strong同为粗斜语义`() {
+        val paras = extractHtml("<p><em>强</em><strong>壮</strong></p>")
+        assertEquals(RunStyle.ITALIC, paras[0].runs[0].style)
+        assertEquals(RunStyle.BOLD, paras[0].runs[1].style)
+    }
+
+    @Test
+    fun `style属性叠加到Run`() {
+        // 样式段与普通文本段分立(普通区间显式 style=0,绘制层按区间全覆盖)
+        val paras = extractHtml("<p><span style=\"font-weight:bold\">重</span>点</p>")
+        assertEquals(
+            listOf(Run(0, 1, RunStyle.BOLD), Run(1, 2, 0)),
+            paras[0].runs
+        )
+    }
+
+    @Test
+    fun `parseStyleAttr_宽容匹配`() {
+        assertEquals(RunStyle.BOLD, HtmlTextExtractor.parseStyleAttr("font-weight: 700; color:red"))
+        assertEquals(RunStyle.ITALIC or RunStyle.UNDERLINE, HtmlTextExtractor.parseStyleAttr("font-style:italic;text-decoration: underline"))
+        assertEquals(RunStyle.STRIKE, HtmlTextExtractor.parseStyleAttr("text-decoration:line-through"))
+        assertEquals(RunStyle.SUP, HtmlTextExtractor.parseStyleAttr("vertical-align:super"))
+        assertEquals(RunStyle.SUB, HtmlTextExtractor.parseStyleAttr("vertical-align:sub"))
+        assertEquals(0, HtmlTextExtractor.parseStyleAttr("color:red;margin:0"))
+    }
+
+    // ---- 图片段 ----
+
+    @Test
+    fun `img独立成图片段且投影占位`() {
+        val paras = extractHtml("<p>文字</p><img src=\"images/1.jpg\"/><p>图后</p>")
+        assertEquals(3, paras.size)
+        val img = paras[1]
+        assertTrue(img.isImage)
+        assertEquals(ParaKind.IMAGE, img.kind)
+        assertEquals(HtmlTextExtractor.IMAGE_PLACEHOLDER, img.text)
+        assertEquals("images/1.jpg", img.imageRef)
+        assertEquals("图后", paras[2].text)
+    }
+
+    @Test
+    fun `img相对路径按文档目录解析`() {
+        val paras = extractHtml("<img src=\"../img/pic.png\"/>", docDir = "OEBPS/text")
+        assertEquals("OEBPS/img/pic.png", paras[0].imageRef)
+    }
+
+    @Test
+    fun `外部URL与dataURI的img忽略`() {
+        val paras = extractHtml("<p>a</p><img src=\"https://x/y.png\"/><img src=\"data:image/png;base64,AAAA\"/><p>b</p>")
+        assertEquals(listOf("a", "b"), paras.map { it.text })
+    }
+
+    // ---- 列表/表格降级 ----
+
+    @Test
+    fun `ol序列前缀_ul圆点前缀`() {
+        val paras = extractHtml("<ol><li>第一</li><li>第二</li></ol><ul><li>点项</li></ul>")
+        assertEquals(listOf("1. 第一", "2. 第二", "• 点项"), paras.map { it.text })
+    }
+
+    @Test
+    fun `嵌套列表计数重置`() {
+        val paras = extractHtml("<ol><li>外一<ol><li>内一</li><li>内二</li></ol></li><li>外二</li></ol>")
+        assertEquals(listOf("1. 外一", "1. 内一", "2. 内二", "2. 外二"), paras.map { it.text })
+    }
+
+    @Test
+    fun `简单表格逐行管道连接`() {
+        val paras = extractHtml("<table><tr><td>a</td><td>b</td></tr><tr><td>1</td><td>2</td></tr></table>")
+        assertEquals(listOf("a | b", "1 | 2"), paras.map { it.text })
+    }
+
+    @Test
+    fun `跨行列复杂表格出占位段`() {
+        val paras = extractHtml(
+            "<table><tr><td rowspan=\"2\">a</td><td>b</td></tr><tr><td>c</td></tr></table>"
+        )
+        assertEquals(1, paras.size)
+        assertTrue(paras[0].text.contains("表格内容"))
+    }
+
+    // ---- 章文件编解码 ----
+
+    @Test
+    fun `JSON读写含Run与图片段`() {
+        val f = File.createTempFile("ch_rich", ".txt")
+        val paras = listOf(
+            Paragraph("普通段"),
+            Paragraph("加粗斜体", listOf(Run(0, 2, RunStyle.BOLD or RunStyle.ITALIC))),
+            Paragraph(HtmlTextExtractor.IMAGE_PLACEHOLDER, emptyList(), ParaKind.IMAGE, "images/1.jpg")
+        )
+        ChapterFileCodec.write(f, paras)
+        val read = ChapterFileCodec.read(f)
+        assertEquals(3, read.size)
+        assertEquals("普通段", read[0].text)
+        assertTrue(read[0].runs.isEmpty())
+        assertEquals(listOf(Run(0, 2, RunStyle.BOLD or RunStyle.ITALIC)), read[1].runs)
+        assertTrue(read[2].isImage)
+        assertEquals("images/1.jpg", read[2].imageRef)
+        f.delete()
+    }
+
+    @Test
+    fun `一期纯文本章文件自动回退`() {
+        val f = File.createTempFile("ch_legacy", ".txt")
+        f.writeText("第一段\n第二段\n\n第四段")
+        val read = ChapterFileCodec.read(f)
+        assertEquals(listOf("第一段", "第二段", "", "第四段"), read.map { it.text })
+        assertTrue(read.all { it.runs.isEmpty() && it.kind == ParaKind.TEXT })
+        f.delete()
+    }
+
+    // ---- 剥标题: 段落级与字符级等价 ----
+
+    @Test
+    fun `段落级剥标题与字符级逐字符等价`() {
+        val cases = listOf(
+            "第一章 试炼\n正文开始\n第二行" to "第一章 试炼",
+            "\n\n第一章\n\n正文" to "第一章",
+            "前言\n第一章 内容\n正文" to "第一章 内容",
+            "不相等的标题\n正文" to "章名"
+        )
+        for ((body, title) in cases) {
+            val (b2, stripped) = ChapterComposer.stripLeadingTitle(body, title)
+            val paras = body.split('\n').map { Paragraph(it) }
+            val (p2, stripped2) = ChapterComposer.stripLeadingTitleParas(paras, title)
+            assertEquals("stripped 不等: $body", stripped, stripped2)
+            assertEquals("投影不等: $body", b2, p2.joinToString("\n") { it.text })
+        }
+    }
+
+    // ---- 行内样式折算 ----
+
+    private fun linesFor(vararg specs: TextLine, paras: List<Paragraph>, ranges: List<IntRange>, composed: String) =
+        ChapterLines(composed, 4, 0L, specs.toList(), paras, ranges, emptyMap())
+
+    @Test
+    fun `行内样式折算跨行裁剪`() {
+        val paras = listOf(Paragraph("ABCDEF", listOf(Run(0, 3, RunStyle.BOLD))))
+        val cl = linesFor(
+            TextLine(0, 2, LineKind.TITLE, false, 10, 0, 5),
+            TextLine(4, 7, LineKind.BODY, true, 10, 0, 5),
+            TextLine(7, 10, LineKind.BODY, false, 10, 0, 5),
+            paras = paras, ranges = listOf(4 until 10), composed = "标题\n\nABCDEF"
+        )
+        // 首行(段内偏移 [0,3)): 整个 Run 落在行内
+        val s1 = BookPager.lineStyles(cl, cl.lines[1], BookPager.paraIndexOf(cl, 4))
+        assertEquals(listOf(LineStyleAssert(0, 3, RunStyle.BOLD)), s1!!.map { LineStyleAssert(it.start, it.end, it.style) })
+        // 次行(段内偏移 [3,6)): Run 不再覆盖,退化为单一样式
+        val s2 = BookPager.lineStyles(cl, cl.lines[2], BookPager.paraIndexOf(cl, 7))
+        assertNull(s2)
+    }
+
+    @Test
+    fun `无Run段落行折算为null`() {
+        val paras = listOf(Paragraph("纯文本"))
+        val cl = linesFor(
+            TextLine(4, 7, LineKind.BODY, true, 10, 0, 5),
+            paras = paras, ranges = listOf(4 until 7), composed = "标题\n\n纯文本"
+        )
+        assertNull(BookPager.lineStyles(cl, cl.lines[0], BookPager.paraIndexOf(cl, 4)))
+    }
+
+    @Test
+    fun `paraIndexOf跳过空段命中相邻段`() {
+        // 段落: [4,4)空段? 不——空段 range 为空区间,二分必须跳过它命中下一段
+        val paras = listOf(Paragraph("AAA"), Paragraph(""), Paragraph("BBB"))
+        val cl = linesFor(
+            TextLine(4, 7, LineKind.BODY, true, 10, 0, 5),
+            TextLine(8, 11, LineKind.BODY, false, 10, 0, 5),
+            paras = paras, ranges = listOf(4 until 7, 7 until 7, 8 until 11),
+            composed = "标题\n\nAAA\n\nBBB"
+        )
+        assertEquals(0, BookPager.paraIndexOf(cl, 5))
+        assertEquals(2, BookPager.paraIndexOf(cl, 9))
+        assertEquals(-1, BookPager.paraIndexOf(cl, 0))   // 标题区
+    }
+
+    // LineStyle 无 equals(普通 class),测试用三元组对比
+    private data class LineStyleAssert(val start: Int, val end: Int, val style: Int)
+
+    // ---- 老书升级: 进度迁移 ----
+
+    // 旧书 3 章: 偏移 0/100/300(各章长 99/199/... 含虚拟换行),total = 600
+    private val oldChs = listOf(
+        com.yukino.tool.module.reader.common.ChapterIndex("一", 0),
+        com.yukino.tool.module.reader.common.ChapterIndex("二", 100),
+        com.yukino.tool.module.reader.common.ChapterIndex("三", 300)
+    )
+    // 新书(投影变长)同 3 章: 各章长约放大 2 倍
+    private val newChs = listOf(
+        com.yukino.tool.module.reader.common.ChapterIndex("一", 0),
+        com.yukino.tool.module.reader.common.ChapterIndex("二", 200),
+        com.yukino.tool.module.reader.common.ChapterIndex("三", 600)
+    )
+
+    @Test
+    fun `进度迁移_章内中点等比缩放`() {
+        // 旧第二章内偏移 100(章长 199)→ 新第二章长 399 → 约偏移 200
+        val m = com.yukino.tool.module.reader.epub.EpubImporter.migrateProgress(oldChs, 600, 200, newChs, 1200)
+        assertEquals(200L + 100L * 399 / 199, m)
+    }
+
+    @Test
+    fun `进度迁移_章首与书首不变`() {
+        assertEquals(0L, com.yukino.tool.module.reader.epub.EpubImporter.migrateProgress(oldChs, 600, 0, newChs, 1200))
+        assertEquals(200L, com.yukino.tool.module.reader.epub.EpubImporter.migrateProgress(oldChs, 600, 100, newChs, 1200))
+    }
+
+    @Test
+    fun `进度迁移_书末落到新书末章内`() {
+        // 旧末章内 299(章长 300)→ 新末章长 600 → 章内 598
+        val m = com.yukino.tool.module.reader.epub.EpubImporter.migrateProgress(oldChs, 600, 599, newChs, 1200)
+        assertEquals(1198L, m)
+    }
+
+    @Test
+    fun `进度迁移_新章数变少时clamp末章`() {
+        val few = listOf(
+            com.yukino.tool.module.reader.common.ChapterIndex("一", 0),
+            com.yukino.tool.module.reader.common.ChapterIndex("二", 500)
+        )
+        // 旧第三章内 50(章长 300)→ clamp 到新末章(500 起,章长 500)→ 章内 83
+        val m = com.yukino.tool.module.reader.epub.EpubImporter.migrateProgress(oldChs, 600, 350, few, 1000)
+        assertEquals(583L, m)
+    }
+
+    @Test
+    fun `进度迁移_空表与零值防御`() {
+        assertEquals(0L, com.yukino.tool.module.reader.epub.EpubImporter.migrateProgress(emptyList(), 0, 100, newChs, 1200))
+        assertEquals(0L, com.yukino.tool.module.reader.epub.EpubImporter.migrateProgress(oldChs, 600, 0, emptyList(), 0))
+        assertEquals(0L, com.yukino.tool.module.reader.epub.EpubImporter.migrateProgress(oldChs, 0, 50, newChs, 1200))
+    }
+
+    @Test
+    fun `老格式检测_纯文本与JSON`() {
+        val legacy = File.createTempFile("legacy", ".txt")
+        legacy.writeText("第一章 风起\n正文")
+        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.isLegacyFormat(legacy))
+        val modern = File.createTempFile("modern", ".txt")
+        modern.writeText("""[{"t":"第一段"},{"t":"第二段"}]""")
+        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.isLegacyFormat(modern))
+        legacy.delete(); modern.delete()
+    }
+
+    // ---- 老书升级: 章号映射(顺序保持的标题匹配) ----
+
+    private fun ch(title: String, start: Long) = com.yukino.tool.module.reader.common.ChapterIndex(title, start)
+
+    @Test
+    fun `章号映射_中间插图页使后续章序号偏移`() {
+        // 旧 3 章;新版在第二、三章之间插入图片页"插图"
+        val old = listOf(ch("一", 0), ch("二", 100), ch("三", 300))
+        val new = listOf(ch("一", 0), ch("二", 100), ch("插图", 300), ch("三", 320))
+        val map = com.yukino.tool.module.reader.epub.EpubImporter.mapChapters(old, new)
+        assertEquals(listOf(0, 1, 3), map.toList())
+    }
+
+    @Test
+    fun `章号映射_书首插图页`() {
+        val old = listOf(ch("一", 0), ch("二", 100))
+        val new = listOf(ch("插图", 0), ch("一", 2), ch("二", 100))
+        val map = com.yukino.tool.module.reader.epub.EpubImporter.mapChapters(old, new)
+        assertEquals(listOf(1, 2), map.toList())
+    }
+
+    @Test
+    fun `章号映射_未匹配章在锚点间线性插值`() {
+        // 旧章"乙"标题在新版缺失: 落在甲(0)与丙(2)之间 → 插值 1
+        val old = listOf(ch("甲", 0), ch("乙", 100), ch("丙", 300))
+        val new = listOf(ch("甲", 0), ch("插图", 100), ch("丙", 320))
+        val map = com.yukino.tool.module.reader.epub.EpubImporter.mapChapters(old, new)
+        assertEquals(listOf(0, 1, 2), map.toList())
+    }
+
+    @Test
+    fun `章号映射_全部未匹配退回序号`() {
+        val old = listOf(ch("甲", 0), ch("乙", 100))
+        val new = listOf(ch("X", 0), ch("Y", 100), ch("Z", 300))
+        val map = com.yukino.tool.module.reader.epub.EpubImporter.mapChapters(old, new)
+        assertEquals(listOf(0, 1), map.toList())
+    }
+
+    @Test
+    fun `进度迁移_章号经标题映射偏移`() {
+        // 旧读在"三"章首(300);新版"三"被插图页推到 320 → 迁移后落在 320
+        val old = listOf(ch("一", 0), ch("二", 100), ch("三", 300))
+        val new = listOf(ch("一", 0), ch("二", 100), ch("插图", 300), ch("三", 320))
+        val m = com.yukino.tool.module.reader.epub.EpubImporter.migrateProgress(old, 600, 300, new, 1200)
+        assertEquals(320L, m)
+    }
+}

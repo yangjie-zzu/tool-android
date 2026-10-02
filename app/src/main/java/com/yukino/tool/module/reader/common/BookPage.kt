@@ -7,7 +7,9 @@ import android.text.StaticLayout
 import android.text.TextPaint
 import android.text.style.LeadingMarginSpan
 import android.text.style.RelativeSizeSpan
+import android.text.style.StrikethroughSpan
 import android.text.style.StyleSpan
+import android.text.style.UnderlineSpan
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -49,22 +51,35 @@ class TextLine(
 )
 
 // 全章行模型: 物化与分页共用,断行只发生一次。composed 上的样式 span 仅供断行度量,
-// 绘制由行类别决定字号/加粗,不再依赖 span
+// 绘制由行类别与段落 runs(经 paraRanges 折算)决定
 class ChapterLines(
     val composed: CharSequence,   // 章节名 + "\n\n" + 正文
     val bodyStart: Int,           // 正文区起点(之前是标题块)
     val bodyZero: Long,           // 正文零点的全书偏移(章起点 + 剥掉的标题字符数)
-    val lines: List<TextLine>
+    val lines: List<TextLine>,
+    val paras: List<Paragraph> = emptyList(),     // 剥标题后的段落(与 paraRanges 对齐)
+    val paraRanges: List<IntRange> = emptyList(), // 各段在 composed 中的区间(正文区,不含换行)
+    val imageDrawSizes: Map<Int, ImageSize> = emptyMap() // 图片段显示尺寸(px,paraIndex → 尺寸)
 )
+
+// 图片行的显示尺寸(版心坐标系;按版心宽等比缩放,超高图缩到一页内)
+class ImageSize(val width: Int, val height: Int)
+
+// 行内样式段(相对行文本坐标)。绘制层按段切 paint;与两端对齐拉伸分段正交组合
+class LineStyle(val start: Int, val end: Int, val style: Int)
 
 // 可绘制的行(物化产物,坐标相对版心左上角)。基线布局在物化时算好,绘制层只做平移与 drawText
 class DrawLine(
     val text: String,
     val x: Float,                 // 行首 x: 段首行为首行缩进,其余 0(自带缩进的段落缩进在字符里)
-    val baseline: Float,
+    val baseline: Float,          // 图片行复用为"行顶 y"(图片从行顶绘制)
     val title: Boolean,           // true 用标题 paint(大字号加粗)
     val lineStartGlobal: Long,    // 行首字符的全书偏移(行内第 i 字符 = lineStartGlobal + i,正文区线性)
-    val segments: List<LineSeg>? = null   // 两端对齐拉伸分段(相对行首 x);null = 自然宽整行画
+    val segments: List<LineSeg>? = null,   // 两端对齐拉伸分段(相对行首 x);null = 自然宽整行画
+    val styles: List<LineStyle>? = null,   // 行内样式段(相对行文本坐标);null = 单一样式
+    val imageRef: String? = null,          // 图片行: 图片文件绝对路径(非空 = 图片行,text 为空)
+    val imageWidth: Float = 0f,            // 图片行显示尺寸(物化时按版心宽换算好)
+    val imageHeight: Float = 0f
 )
 
 class LineSeg(val text: String, val x: Float)
@@ -76,7 +91,10 @@ class BookPage(
     val headerTitle: String,      // 空串不画
     val footerLabel: String,      // 空串不画
     val lines: List<DrawLine> = emptyList(),   // 正文页的行(相对版心顶的基线坐标)
-    val virtualLayout: StaticLayout? = null    // 封面/封底: 居中布局,与 lines 二选一
+    val virtualLayout: StaticLayout? = null,   // 封面/封底: 居中布局,与 lines 二选一
+    val coverImage: String? = null,            // 封面页: 封面图路径(与 virtualLayout 二选一,优先图)
+    val coverWidth: Int = 0,                   // 封面显示尺寸(物化时按版心宽等比换算;0 = 未就绪)
+    val coverHeight: Int = 0
 )
 
 // 行网格高度计算(纯函数,本地单测覆盖): 行距增量加在行下方,段前距加在行上方
@@ -96,19 +114,56 @@ object LineGrid {
 }
 
 // 章节文本合成: 章节名(1.4倍加粗)+空行+正文。
-// 样式 span(标题字号/加粗/首行缩进)只供断行度量,绘制由行类别决定
+// 样式 span(标题字号/加粗/首行缩进/正文 Run)只供断行度量,
+// 绘制由行类别与段落 runs(经 paraRanges 折算)决定
 object ChapterComposer {
     const val TITLE_SCALE = 1.4f
+    const val SUP_SUB_SCALE = 0.65f   // 上下标字号比例
 
     // 正文在合成文本中的起点: title + "\n\n"
     fun bodyStart(titleLength: Int): Int = titleLength + 2
 
-    fun compose(title: String, body: String, typo: ResolvedTypography): Spanned {
-        val sb = SpannableStringBuilder(title).append("\n\n").append(body)
+    // 二期: 接收段落序列(带 Run),Run 转字符样式 span 参与断行度量。
+    // 投影文本与一期 compose(title, body) 逐字符一致(段落 = joinToString("\n") 的切分)
+    fun compose(title: String, paras: List<Paragraph>, typo: ResolvedTypography): Spanned {
+        val sb = SpannableStringBuilder(title).append("\n\n")
+        var pos = title.length + 2
+        paras.forEachIndexed { i, p ->
+            if (i > 0) { sb.append('\n'); pos++ }
+            sb.append(p.text)
+            for (run in p.runs) {
+                if (run.end > run.start) applyRunSpan(sb, pos + run.start, pos + run.end, run.style)
+            }
+            pos += p.text.length
+        }
         sb.setSpan(RelativeSizeSpan(TITLE_SCALE), 0, title.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         sb.setSpan(StyleSpan(Typeface.BOLD), 0, title.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         applyIndent(sb, bodyStart(title.length), sb.length, typo.indentPx)
         return sb
+    }
+
+    // 一期纯投影入口保留(TXT 路径/既有测试使用;与段落版投影逐字符一致)
+    fun compose(title: String, body: String, typo: ResolvedTypography): Spanned =
+        compose(title, body.split('\n').map { Paragraph(it) }, typo)
+
+    // Run 样式位 → 字符样式 span(度量用;基线偏移类由绘制层处理)
+    private fun applyRunSpan(sb: SpannableStringBuilder, s: Int, e: Int, style: Int) {
+        val flags = Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+        val bold = style and RunStyle.BOLD != 0
+        val italic = style and RunStyle.ITALIC != 0
+        if (bold || italic) {
+            val tf = when {
+                bold && italic -> Typeface.BOLD_ITALIC
+                bold -> Typeface.BOLD
+                else -> Typeface.ITALIC
+            }
+            sb.setSpan(StyleSpan(tf), s, e, flags)
+        }
+        if (style and RunStyle.UNDERLINE != 0) sb.setSpan(UnderlineSpan(), s, e, flags)
+        if (style and RunStyle.STRIKE != 0) sb.setSpan(StrikethroughSpan(), s, e, flags)
+        if (style and (RunStyle.SUP or RunStyle.SUB) != 0) {
+            sb.setSpan(RelativeSizeSpan(SUP_SUB_SCALE), s, e, flags)
+        }
     }
 
     // 剥掉正文原生的标题行(章表 startChar 指向标题行首,正文自带标题;
@@ -132,6 +187,21 @@ object ChapterComposer {
             i++
         }
         return body to 0
+    }
+
+    // stripLeadingTitle 的段落级等价(二期富文本入口): 剥掉"首个非空段"若等于章名,
+    // 连同其前后的空段一起剥。返回 [剥后的段落, 剥掉的投影字符数](每段贡献 len+1,
+    // 段间恰一个 \n,与字符级行为逐字符一致——剥标题前后的空白段也一并剥掉)
+    fun stripLeadingTitleParas(paras: List<Paragraph>, title: String): Pair<List<Paragraph>, Int> {
+        val t = title.trim()
+        if (t.isEmpty()) return paras to 0
+        val first = paras.indexOfFirst { it.text.isNotBlank() }
+        if (first < 0 || paras[first].text.trim() != t) return paras to 0
+        var e = first + 1
+        while (e < paras.size && paras[e].text.isBlank()) e++
+        var stripped = 0
+        for (i in 0 until e) stripped += paras[i].text.length + 1
+        return paras.drop(e) to stripped
     }
 
     // 首行缩进 span: 只给 [from, to) 内的非空白段;
@@ -203,7 +273,8 @@ object BookPager {
         }
 
     // 章 → 行模型。断行度量来自固定字体度量,与传入 layout 的行序结合生成行高。
-    // 仅在此处构建 StaticLayout,断行结果入缓存后 layout 即弃
+    // 仅在此处构建 StaticLayout,断行结果入缓存后 layout 即弃。
+    // 二期: 段落级剥标题 + Run span 度量 + 段落区间表 + 图片行占位修正
     private fun buildChapterLines(
         content: BookContent,
         chapterIndex: Int,
@@ -211,8 +282,8 @@ object BookPager {
     ): ChapterLines {
         val doc = content.chapterDoc(chapterIndex)
         val title = content.chapterTitle(chapterIndex)
-        val (body, stripped) = ChapterComposer.stripLeadingTitle(doc.bodyText, title)
-        val composed = ChapterComposer.compose(title, body, typo)
+        val (paras, stripped) = ChapterComposer.stripLeadingTitleParas(doc.paragraphs, title)
+        val composed = ChapterComposer.compose(title, paras, typo)
         val bodyStart = ChapterComposer.bodyStart(title.length)
         val measure = Typography.buildLayout(composed, typo)
         val bodyFm = Paint.FontMetrics()
@@ -228,7 +299,7 @@ object BookPager {
         val titleNatural = (titleFm.descent - titleFm.ascent).toInt().toFloat()
         val paraAbove = LineGrid.paraAbove(typo.paraExtraPx, Typography.GRID_PX)
         // 满页排版: 正文行高放大贴合版心(每页固定行数,页底余数缩到网格级;
-        // 全章行高一致,跨页行位对齐保持)。标题行/空行不参与放大
+        // 全章行高一致,跨页行位对齐保持)。标题行/空行/图片行不参与放大
         val bodyPitch = PaginationEngine.fitPitch(
             typo.textHeight,
             LineGrid.linePitch(bodyNatural, typo.lineExtraPx, Typography.GRID_PX),
@@ -255,7 +326,48 @@ object BookPager {
             }
             lines += TextLine(s, e, kind, isParaStart, pitch, if (isParaStart) paraAbove else 0, ascentAbs)
         }
-        return ChapterLines(composed, bodyStart, content.chapterStart(chapterIndex) + stripped, lines)
+
+        // 段落区间表(正文区,不含段间换行;与 paras 对齐,空段为空区间)
+        val paraRanges = ArrayList<IntRange>(paras.size)
+        run {
+            var p = bodyStart
+            for (para in paras) {
+                paraRanges += p until (p + para.text.length)
+                p += para.text.length + 1
+            }
+        }
+
+        // 图片行占位: 按 U+FFFC 单字符定位该段的行,按版心宽等比换算显示尺寸,
+        // 行高替换为"段前距 + 图片高"(网格化;超高图缩到一页内),基线偏移清零(行顶绘制)
+        val imageSizes = HashMap<Int, ImageSize>()
+        for ((pi, para) in paras.withIndex()) {
+            if (!para.isImage) continue
+            val rng = paraRanges[pi]
+            val li = lines.indexOfFirst { it.start == rng.first && it.end == rng.first + 1 }
+            if (li < 0) continue
+            val bounds = content.imageBounds(para.imageRef ?: "")
+            val size = if (bounds == null || bounds.width() <= 0 || bounds.height() <= 0) {
+                ImageSize(typo.textWidth, typo.fontPx.toInt() * 3)   // 坏图占位 3 行高,可见可感知
+            } else {
+                val w = typo.textWidth
+                var h = (w.toFloat() * bounds.height() / bounds.width()).roundToInt().coerceAtLeast(1)
+                var dw = w
+                if (h > typo.textHeight) {
+                    h = typo.textHeight
+                    dw = (h.toFloat() * bounds.width() / bounds.height()).roundToInt().coerceAtLeast(1)
+                }
+                ImageSize(dw, h)
+            }
+            imageSizes[pi] = size
+            val old = lines[li]
+            val imgPitch = old.paraAbove + PaginationEngine.gridCeil(size.height.toFloat(), Typography.GRID_PX)
+            lines[li] = TextLine(old.start, old.end, old.kind, old.isParaStart, imgPitch, old.paraAbove, 0)
+        }
+
+        return ChapterLines(
+            composed, bodyStart, content.chapterStart(chapterIndex) + stripped, lines,
+            paras, paraRanges, imageSizes
+        )
     }
 
     // 行分类: 全空白行(含标题块后的空行)→ BLANK;正文区之前的非空行 → TITLE;其余 → BODY
@@ -307,6 +419,22 @@ object BookPager {
         typo: ResolvedTypography
     ): BookPage {
         if (spec.kind != PageKind.CONTENT) {
+            if (spec.kind == PageKind.COVER) {
+                val cover = content.coverPath
+                if (!cover.isNullOrEmpty() && java.io.File(cover).exists()) {
+                    // 封面页升级: 有封面画图(版心内等比居中,超高图缩到版心高内),无封面回退文字
+                    val bounds = content.imageBounds(cover)
+                    if (bounds != null && bounds.width() > 0 && bounds.height() > 0) {
+                        var dw = typo.textWidth
+                        var dh = (dw.toFloat() * bounds.height() / bounds.width()).roundToInt().coerceAtLeast(1)
+                        if (dh > typo.textHeight) {
+                            dh = typo.textHeight
+                            dw = (dh.toFloat() * bounds.width() / bounds.height()).roundToInt().coerceAtLeast(1)
+                        }
+                        return BookPage(spec, "", "", coverImage = cover, coverWidth = dw, coverHeight = dh)
+                    }
+                }
+            }
             val text = if (spec.kind == PageKind.COVER) content.bookTitle else "最后一页了"
             return BookPage(spec, "", "", virtualLayout = Typography.buildVirtualLayout(text, typo))
         }
@@ -325,7 +453,8 @@ object BookPager {
     }
 
     // 行窗口 → 可绘制行。跳过空行(其行高已占位);窗口首个非空行豁免段前距(与分页同口径);
-    // 段中行做两端对齐拉伸(行尾之后不是换行/章末即为段中行;标题行/段落末行保持自然参差)。
+    // 段中行做两端对齐拉伸(行尾之后不是换行/章末即为段中行;标题行/段落末行保持自然参差);
+    // 图片段产出图片行(无缩进无拉伸,从行顶绘制);普通行折算行内样式段。
     // measure 注入以便本地单测
     internal fun drawLines(
         cl: ChapterLines,
@@ -342,23 +471,73 @@ object BookPager {
             val ln = cl.lines[li]
             val above = if (li == head) 0 else ln.paraAbove
             if (ln.kind != LineKind.BLANK) {
-                val text = cl.composed.substring(ln.start, ln.end)
-                val indented = ln.isParaStart && typo.indentPx > 0f &&
-                    !ChapterComposer.leadingIndented(cl.composed, ln.start)
-                val x = if (indented) typo.indentPx else 0f
-                val midPara = ln.kind == LineKind.BODY &&
-                    ln.end < cl.composed.length && cl.composed[ln.end] != '\n'
-                val segs = if (typo.justify && midPara) {
-                    PaginationEngine.justifySegments(text, typo.textWidth - x, typo.fontPx, measure)
-                        ?.map { LineSeg(it.first, it.second) }
-                } else null
-                out += DrawLine(
-                    text, x, (y + above + ln.ascentAbs).toFloat(), ln.kind == LineKind.TITLE,
-                    globalOffset(ln.start, cl.bodyStart, cl.bodyZero, chapterStartGlobal), segs
-                )
+                val global = globalOffset(ln.start, cl.bodyStart, cl.bodyZero, chapterStartGlobal)
+                val pi = paraIndexOf(cl, ln.start)
+                val para = if (pi >= 0) cl.paras[pi] else null
+                if (para?.isImage == true) {
+                    val sz = cl.imageDrawSizes[pi] ?: ImageSize(0, 0)
+                    out += DrawLine(
+                        "", 0f, (y + above).toFloat(), false, global,
+                        imageRef = para.imageRef,
+                        imageWidth = sz.width.toFloat(),
+                        imageHeight = sz.height.toFloat()
+                    )
+                } else {
+                    val text = cl.composed.substring(ln.start, ln.end)
+                    val indented = ln.isParaStart && typo.indentPx > 0f &&
+                        !ChapterComposer.leadingIndented(cl.composed, ln.start)
+                    val x = if (indented) typo.indentPx else 0f
+                    val midPara = ln.kind == LineKind.BODY &&
+                        ln.end < cl.composed.length && cl.composed[ln.end] != '\n'
+                    val segs = if (typo.justify && midPara) {
+                        PaginationEngine.justifySegments(text, typo.textWidth - x, typo.fontPx, measure)
+                            ?.map { LineSeg(it.first, it.second) }
+                    } else null
+                    out += DrawLine(
+                        text, x, (y + above + ln.ascentAbs).toFloat(), ln.kind == LineKind.TITLE,
+                        global, segs, lineStyles(cl, ln, pi)
+                    )
+                }
             }
             y += ln.pitch - (if (li == head) ln.paraAbove else 0)
         }
+        return out
+    }
+
+    // pos 所在段落下标(二分;段间换行位与空段不会被命中,返回 -1)
+    internal fun paraIndexOf(cl: ChapterLines, pos: Int): Int {
+        var lo = 0
+        var hi = cl.paraRanges.lastIndex
+        while (lo <= hi) {
+            val mid = (lo + hi) / 2
+            val r = cl.paraRanges[mid]
+            when {
+                pos < r.first -> hi = mid - 1
+                pos > r.last -> lo = mid + 1
+                else -> return mid
+            }
+        }
+        return -1
+    }
+
+    // 行内样式段折算: 行区间裁剪到所在段,段落 Run 映射为行内相对坐标。
+    // 无 Run/无有效样式的行返回 null(单一样式快速路径,TXT 恒走此路径)
+    internal fun lineStyles(cl: ChapterLines, ln: TextLine, paraIndex: Int): List<LineStyle>? {
+        if (paraIndex < 0) return null
+        val para = cl.paras[paraIndex]
+        if (para.runs.isEmpty()) return null
+        val rng = cl.paraRanges[paraIndex]
+        val a = maxOf(ln.start, rng.first)
+        val b = minOf(ln.end, rng.last + 1)
+        if (a >= b) return null
+        val off = a - rng.first
+        val out = ArrayList<LineStyle>()
+        for (run in para.runs) {
+            val s = maxOf(run.start, off)
+            val e = minOf(run.end, off + (b - a))
+            if (s < e) out += LineStyle(s - off, e - off, run.style)
+        }
+        if (out.isEmpty() || out.all { it.style == 0 }) return null
         return out
     }
 

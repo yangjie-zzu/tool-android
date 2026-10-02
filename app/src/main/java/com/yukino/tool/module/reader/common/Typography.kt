@@ -23,7 +23,8 @@ data class ResolvedTypography(
 object Typography {
 
     // 断行/排版算法版本: 算法变化(如断行策略切换、行高贴合版心、页首豁免段前距)时 +1,使旧分页缓存失效
-    const val BREAK_STRATEGY_VERSION = 9
+    // v10: 二期富文本(Run span 度量/图片行占位)进入断行与分页,旧缓存全部失效重算
+    const val BREAK_STRATEGY_VERSION = 10
 
     // 行高/段前距取整粒度(px): 向上取整到它的整数倍,取整只增不减,字形不被裁
     const val GRID_PX = 1

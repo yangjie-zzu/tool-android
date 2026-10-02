@@ -62,7 +62,28 @@ class ReaderPageView(context: Context) : View(context) {
     private val bodyPaint = android.text.TextPaint(Paint.ANTI_ALIAS_FLAG)
     private val titlePaint = android.text.TextPaint(Paint.ANTI_ALIAS_FLAG)
     private val batteryPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val decorPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val imagePaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
     private val timeFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
+
+    // 样式段衍生 paint(style 位 → paint;configurePaints 时整体失效重建)。title 位参与 key
+    private val stylePaints = android.util.SparseArray<android.text.TextPaint>()
+
+    // 图片缓存: imageRef → 解码 Bitmap(LRU,总字节超限逐出最老;换书/版式变化不失效——
+    // 同一路径解码结果不变,翻页反复命中)。解码单线程后台,未命中画占位框,完成后重绘
+    private val imageCache = object : LinkedHashMap<String, android.graphics.Bitmap>(8, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, android.graphics.Bitmap>): Boolean {
+            if (byteTotal() <= IMAGE_CACHE_BYTES) return false
+            // 逐出最老一项后仍可能超限(单图超限保留——总有一张可画)
+            return true
+        }
+
+        private fun byteTotal(): Long = values.sumOf { it.byteCount.toLong() }
+    }
+    private val pendingDecodes = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<String, Boolean>())
+    private val imageDecoder = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "reader-image")
+    }
 
     // 电量百分比(null=未获取): 系统电量广播驱动;时间由分钟定时器刷新
     private var batteryPct: Int? = null
@@ -119,6 +140,7 @@ class ReaderPageView(context: Context) : View(context) {
         bodyPaint.color = t.fgColor
         titlePaint.textSize = t.fontPx * ChapterComposer.TITLE_SCALE
         titlePaint.color = t.fgColor
+        stylePaints.clear()   // 衍生 paint 带字号/颜色,版式变化重建
     }
 
     fun setContentInsets(topPx: Int, bottomPx: Int) {
@@ -295,21 +317,36 @@ class ReaderPageView(context: Context) : View(context) {
         val contentTop = topInsetPx + pagePadPx.toFloat() + topGapPx
         val contentBottom = (height - bottomInsetPx - footerGapPx).toFloat()
         canvas.clipRect(offsetX, contentTop, offsetX + width, contentBottom)
+        val cover = page.coverImage
         val virtual = page.virtualLayout
-        if (virtual != null) {
+        if (cover != null && page.coverWidth > 0 && page.coverHeight > 0) {
+            // 封面页: 图片在版心内等比居中(尺寸物化时按版心宽换算好)
+            val availH = height - topInsetPx - bottomInsetPx - 2 * pagePadPx
+            val x = offsetX + t.marginPx + (t.textWidth - page.coverWidth) / 2f
+            val y = contentTop + (availH - page.coverHeight) / 2f
+            drawBitmapFit(canvas, cover, x, y, page.coverWidth.toFloat(), page.coverHeight.toFloat())
+        } else if (virtual != null) {
             val y = contentTop + (height - topInsetPx - bottomInsetPx - 2 * pagePadPx - virtual.height) / 2f
             canvas.translate(offsetX + t.marginPx, y)
             virtual.draw(canvas)
         } else {
             canvas.translate(offsetX + t.marginPx, contentTop)
             for (ln in page.lines) {
-                val paint = if (ln.title) titlePaint else bodyPaint
-                val segs = ln.segments
-                if (segs == null) {
-                    canvas.drawText(ln.text, ln.x, ln.baseline, paint)
+                if (ln.imageRef != null) {
+                    drawImageLine(canvas, ln)
+                    continue
+                }
+                val base = if (ln.title) titlePaint else bodyPaint
+                if (ln.styles == null) {
+                    val segs = ln.segments
+                    if (segs == null) {
+                        canvas.drawText(ln.text, ln.x, ln.baseline, base)
+                    } else {
+                        // 两端对齐行: 物化时按词元拉伸算好的分段直接画
+                        for (seg in segs) canvas.drawText(seg.text, ln.x + seg.x, ln.baseline, base)
+                    }
                 } else {
-                    // 两端对齐行: 物化时按词元拉伸算好的分段直接画
-                    for (seg in segs) canvas.drawText(seg.text, ln.x + seg.x, ln.baseline, paint)
+                    drawStyledLine(canvas, ln, base)
                 }
             }
             // 选择高亮: 画在正文之后(叠加),版心坐标直接用
@@ -341,6 +378,143 @@ class ReaderPageView(context: Context) : View(context) {
         canvas.translate(x, 0f)
         canvas.drawRect(0f, 0f, shadowWidthPx.toFloat(), height.toFloat(), shadowPaint)
         canvas.restoreToCount(save)
+    }
+
+    // ---------- 富文本与图片绘制(二期) ----------
+
+    // 样式段衍生 paint: 相对 base 调整字形/字号(key 含 title 位,两套 base 不串)
+    private fun stylePaintFor(base: android.text.TextPaint, title: Boolean, style: Int): android.text.TextPaint {
+        val key = style or (if (title) 1 shl 24 else 0)
+        stylePaints.get(key)?.let { return it }
+        val p = android.text.TextPaint(base)
+        val bold = style and RunStyle.BOLD != 0
+        val italic = style and RunStyle.ITALIC != 0
+        p.typeface = when {
+            bold && italic -> Typeface.create(base.typeface, Typeface.BOLD_ITALIC)
+            bold -> Typeface.create(base.typeface, Typeface.BOLD)
+            italic -> Typeface.create(base.typeface, Typeface.ITALIC)
+            else -> base.typeface
+        }
+        if (style and (RunStyle.SUP or RunStyle.SUB) != 0) p.textSize = base.textSize * ChapterComposer.SUP_SUB_SCALE
+        stylePaints.put(key, p)
+        return p
+    }
+
+    // 上下标基线偏移: 上标上移(字号 1/4),下标下移(字号 0.15)
+    private fun baselineShift(style: Int, fontSize: Float): Float = when {
+        style and RunStyle.SUP != 0 -> -fontSize * 0.25f
+        style and RunStyle.SUB != 0 -> fontSize * 0.15f
+        else -> 0f
+    }
+
+    // 带样式行: 逐样式段绘制;段内若有两端对齐拉伸分段,按词元字符游标裁出子段。
+    // 段起点 x = 行首 x + 前缀宽度(前缀跨样式时按本段 paint 量,词元边界处精确)
+    private fun drawStyledLine(canvas: Canvas, ln: DrawLine, base: android.text.TextPaint) {
+        val styles = ln.styles ?: return
+        val full = ln.text
+        for (st in styles) {
+            val p = stylePaintFor(base, ln.title, st.style)
+            val dy = baselineShift(st.style, base.textSize)
+            val underline = st.style and RunStyle.UNDERLINE != 0
+            val strike = st.style and RunStyle.STRIKE != 0
+            val segs = ln.segments
+            if (segs == null) {
+                if (st.start >= st.end || st.end > full.length) continue
+                val x = ln.x + base.measureText(full, 0, st.start)
+                val sub = full.substring(st.start, st.end)
+                canvas.drawText(sub, x, ln.baseline + dy, p)
+                drawDecor(canvas, p, x, ln.baseline + dy, sub, underline, strike, base.textSize)
+            } else {
+                var cursor = 0
+                for (seg in segs) {
+                    val segEnd = cursor + seg.text.length
+                    val hit = segEnd > st.start && cursor < st.end
+                    val a = (st.start - cursor).coerceIn(0, seg.text.length)
+                    val b = (st.end - cursor).coerceIn(0, seg.text.length)
+                    cursor = segEnd
+                    if (!hit || a >= b) continue
+                    val x = ln.x + seg.x + p.measureText(seg.text, 0, a)
+                    val sub = seg.text.substring(a, b)
+                    canvas.drawText(sub, x, ln.baseline + dy, p)
+                    drawDecor(canvas, p, x, ln.baseline + dy, sub, underline, strike, base.textSize)
+                }
+            }
+        }
+    }
+
+    // 下划线/删除线: 贴基线下方/中线附近画线,粗细随字号
+    private fun drawDecor(
+        canvas: Canvas, p: android.text.TextPaint, x: Float, baseline: Float,
+        text: String, underline: Boolean, strike: Boolean, fontSize: Float
+    ) {
+        if (!underline && !strike) return
+        val w = p.measureText(text)
+        decorPaint.color = p.color
+        decorPaint.strokeWidth = maxOf(1f, fontSize * 0.055f)
+        if (underline) {
+            val y = baseline + fontSize * 0.12f
+            canvas.drawLine(x, y, x + w, y, decorPaint)
+        }
+        if (strike) {
+            val y = baseline - fontSize * 0.28f
+            canvas.drawLine(x, y, x + w, y, decorPaint)
+        }
+    }
+
+    // 图片行: baseline 字段复用为行顶 y,绘制按物化尺寸;未解码先画占位框(异步解码完成后重绘)
+    private fun drawImageLine(canvas: Canvas, ln: DrawLine) {
+        val w = ln.imageWidth
+        val h = ln.imageHeight
+        if (w <= 0f || h <= 0f) return
+        val bmp = imageFor(ln.imageRef ?: return)
+        if (bmp != null) {
+            canvas.drawBitmap(bmp, null, android.graphics.RectF(0f, ln.baseline, w, ln.baseline + h), imagePaint)
+        } else {
+            drawPlaceholder(canvas, 0f, ln.baseline, w, h)
+        }
+    }
+
+    // 封面/图片共用的按矩形绘制(缓存未命中画占位框)
+    private fun drawBitmapFit(canvas: Canvas, ref: String, x: Float, y: Float, w: Float, h: Float) {
+        val bmp = imageFor(ref)
+        if (bmp != null) {
+            canvas.drawBitmap(bmp, null, android.graphics.RectF(x, y, x + w, y + h), imagePaint)
+        } else {
+            drawPlaceholder(canvas, x, y, w, h)
+        }
+    }
+
+    private fun drawPlaceholder(canvas: Canvas, x: Float, y: Float, w: Float, h: Float) {
+        val fg = bodyPaint.color
+        decorPaint.color = (0x40 shl 24) or (fg and 0x00FFFFFF)
+        decorPaint.style = Paint.Style.STROKE
+        decorPaint.strokeWidth = 1.5f
+        canvas.drawRoundRect(x, y, x + w, y + h, 4f, 4f, decorPaint)
+        decorPaint.style = Paint.Style.FILL
+    }
+
+    // 取图片 Bitmap: 命中即回;未命中提交后台解码(单线程,重复请求去重)后重绘。
+    // 抖动防护: 同一帧内多行/拖拽双层引用同一图片只解码一次
+    private fun imageFor(ref: String): android.graphics.Bitmap? {
+        synchronized(imageCache) { imageCache[ref]?.let { return it } }
+        if (pendingDecodes.add(ref)) {
+            imageDecoder.execute {
+                val bmp = runCatching { android.graphics.BitmapFactory.decodeFile(ref) }.getOrNull()
+                if (bmp != null) {
+                    synchronized(imageCache) { imageCache[ref] = bmp }
+                }
+                pendingDecodes.remove(ref)
+                postInvalidate()
+            }
+        }
+        return null
+    }
+
+    // 换书清理(缓存图片不跨书复用,大书图片占内存)
+    fun clearImages() {
+        synchronized(imageCache) { imageCache.clear() }
+        pendingDecodes.clear()
+        invalidate()
     }
 
     // 电池图标: 右缘对齐 right、底边贴文字基线;外框+正极凸头描边,内部按电量填充,
@@ -378,5 +552,6 @@ class ReaderPageView(context: Context) : View(context) {
         private const val SHADOW_COLOR = 0x33000000
         private const val CHROME_TEXT_SP = 12f
         private const val INDICATOR_BAR_DP = 3f
+        private const val IMAGE_CACHE_BYTES = 32L * 1024 * 1024   // 图片缓存内存上限(roadmap 二期)
     }
 }
