@@ -19,12 +19,14 @@ data class Progress(
     val percent: Double = 0.0
 )
 
-// 分组: 可嵌套(parentId 指向另一组, NULL=顶层组)。存 reader_group 表
+// 分组: 可嵌套(parentId 指向另一组, NULL=顶层组)。存 reader_group 表。
+// sourceUri: 导入文件夹成组时记录的文件夹 tree uri(重复导入同一文件夹据此拒绝)
 data class ReaderGroup(
     val id: String,
     val name: String,
     val parentId: String?,   // NULL = 顶层组
-    val addedAt: Long
+    val addedAt: Long,
+    val sourceUri: String? = null   // 手动创建的组为 NULL
 )
 
 @Serializable

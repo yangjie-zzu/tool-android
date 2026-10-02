@@ -16,7 +16,7 @@ import android.database.sqlite.SQLiteOpenHelper
 object AppDb {
 
     private const val NAME = "tool.db"
-    private const val VERSION = 4
+    private const val VERSION = 5
 
     @Volatile
     private var helper: SQLiteOpenHelper? = null
@@ -46,9 +46,13 @@ object AppDb {
                     }
                     // v4: 书架分组 + 登记式导入(老书内容已落盘, ready=1)
                     if (oldVersion < 4) {
-                        db.execSQL(Schema.READER_GROUP)
+                        db.execSQL(Schema.READER_GROUP_V4)
                         db.execSQL("ALTER TABLE reader_book ADD COLUMN group_id TEXT")
                         db.execSQL("ALTER TABLE reader_book ADD COLUMN ready INTEGER NOT NULL DEFAULT 1")
+                    }
+                    // v5: 分组记录来源文件夹 uri(重复导入去重)
+                    if (oldVersion < 5) {
+                        db.execSQL("ALTER TABLE reader_group ADD COLUMN source_uri TEXT")
                     }
                 }
             }
@@ -107,7 +111,7 @@ object AppDb {
                     "ready INTEGER NOT NULL DEFAULT 0)"        // 0=登记态(内容未落盘/章节未解析)
             )
             db.execSQL("CREATE INDEX idx_book_last_read ON reader_book(last_read_at DESC)")
-            // 书架分组(可嵌套)
+            // 书架分组(可嵌套, 带来源文件夹 uri)
             db.execSQL(Schema.READER_GROUP)
             // 阅读设置: 恒单行
             db.execSQL(
@@ -160,8 +164,17 @@ object AppDb {
             )
         }
 
-        // v4: 书架分组(可嵌套, parent_id 指向另一组)
+        // v5: 书架分组(可嵌套, source_uri = 导入来源文件夹, 供重复导入去重)
         const val READER_GROUP =
+            "CREATE TABLE reader_group (" +
+                "id TEXT PRIMARY KEY NOT NULL, " +
+                "name TEXT NOT NULL, " +
+                "parent_id TEXT, " +
+                "added_at INTEGER NOT NULL, " +
+                "source_uri TEXT)"
+
+        // v4 建的分组表无 source_uri, 升 v5 时补列
+        const val READER_GROUP_V4 =
             "CREATE TABLE reader_group (" +
                 "id TEXT PRIMARY KEY NOT NULL, " +
                 "name TEXT NOT NULL, " +

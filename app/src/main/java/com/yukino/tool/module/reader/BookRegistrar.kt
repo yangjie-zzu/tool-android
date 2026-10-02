@@ -53,9 +53,12 @@ object BookRegistrar {
             val now = System.currentTimeMillis()
             val groups = ArrayList<ReaderGroup>()
             val existing = ReaderStore.loadGroups(context)
-            val rootGroup = existing.firstOrNull { it.parentId == parentGroupId && it.name == rootName }
-                ?: ReaderGroup(UUID.randomUUID().toString(), rootName, parentGroupId, now)
-                    .also { groups += it }
+            val rootUri = treeUri.toString()
+            existing.firstOrNull { it.sourceUri == rootUri }?.let {
+                return@runCatching ImportResult.Failed("该文件夹已导入过（分组「${it.name}」）")
+            }
+            val rootGroup = ReaderGroup(UUID.randomUUID().toString(), rootName, parentGroupId, now, rootUri)
+                .also { groups += it }
             fun groupFor(path: List<String>): String {
                 var id = rootGroup.id
                 for ((depth, name) in path.withIndex()) {

@@ -213,6 +213,28 @@ fun ReaderApp(
         }
     }
 
+    // 删组及全部内容: 递归删子组与组内书籍(缓存文件+库行, specs 级联), 不可恢复
+    fun deleteGroupAll(group: ReaderGroup) {
+        val ids = mutableListOf(group.id)
+        var frontier = listOf(group.id)
+        while (frontier.isNotEmpty()) {
+            frontier = groups.filter { it.parentId in frontier }.map { it.id }
+            ids += frontier
+        }
+        scope.launch(Dispatchers.IO) {
+            val deleted = ReaderStore.deleteGroupsDeep(context, ids)
+            deleted.forEach { File(it.cachePath).deleteRecursively() }
+        }
+        groups = groups.filterNot { it.id in ids }
+        val removed = books.filter { it.groupId in ids }
+        books = books.filterNot { it.groupId in ids }
+        if (removed.isNotEmpty()) {
+            Toast.makeText(
+                context, "已删除「${group.name}」及 ${removed.size} 本书", Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
+
     // 删组: 子组递归收集一并删除, 组内书籍(各层)回归未分组;书本身不动
     fun deleteGroup(group: ReaderGroup) {
         val ids = mutableListOf(group.id)
@@ -277,6 +299,7 @@ fun ReaderApp(
             onOpenGroup = { currentGroupId = it },
             onBackToParent = { currentGroupId = currentGroup?.parentId },
             onDeleteGroup = { deleteGroup(it) },
+            onDeleteGroupAll = { deleteGroupAll(it) },
             onImportFile = { importFile() },
             onImportFolder = { importFolder() }
         )

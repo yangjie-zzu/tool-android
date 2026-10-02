@@ -123,7 +123,7 @@ object ReaderStore {
     fun loadGroups(context: Context): List<ReaderGroup> {
         val out = mutableListOf<ReaderGroup>()
         AppDb.get(context).rawQuery(
-            "SELECT id, name, parent_id, added_at FROM reader_group", null
+            "SELECT id, name, parent_id, added_at, source_uri FROM reader_group", null
         ).use { c ->
             while (c.moveToNext()) {
                 out.add(
@@ -131,7 +131,8 @@ object ReaderStore {
                         id = c.getString(0),
                         name = c.getString(1),
                         parentId = if (c.isNull(2)) null else c.getString(2),
-                        addedAt = c.getLong(3)
+                        addedAt = c.getLong(3),
+                        sourceUri = if (c.isNull(4)) null else c.getString(4)
                     )
                 )
             }
@@ -142,12 +143,13 @@ object ReaderStore {
     @Synchronized
     fun upsertGroup(context: Context, group: ReaderGroup) {
         val st = AppDb.get(context).compileStatement(
-            "INSERT OR REPLACE INTO reader_group(id, name, parent_id, added_at) VALUES(?,?,?,?)"
+            "INSERT OR REPLACE INTO reader_group(id, name, parent_id, added_at, source_uri) VALUES(?,?,?,?,?)"
         )
         st.bindString(1, group.id)
         st.bindString(2, group.name)
         if (group.parentId != null) st.bindString(3, group.parentId) else st.bindNull(3)
         st.bindLong(4, group.addedAt)
+        if (group.sourceUri != null) st.bindString(5, group.sourceUri) else st.bindNull(5)
         st.executeInsert()
     }
 
@@ -158,16 +160,59 @@ object ReaderStore {
         db.beginTransaction()
         try {
             val st = db.compileStatement(
-                "INSERT OR REPLACE INTO reader_group(id, name, parent_id, added_at) VALUES(?,?,?,?)"
+                "INSERT OR REPLACE INTO reader_group(id, name, parent_id, added_at, source_uri) VALUES(?,?,?,?,?)"
             )
             groups.forEach { g ->
                 st.bindString(1, g.id)
                 st.bindString(2, g.name)
                 if (g.parentId != null) st.bindString(3, g.parentId) else st.bindNull(3)
                 st.bindLong(4, g.addedAt)
+                if (g.sourceUri != null) st.bindString(5, g.sourceUri) else st.bindNull(5)
                 st.executeInsert()
             }
             db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    // 删组及组内(各层)书籍: 返回被删的书(调用方负责清理其缓存文件)。specs 靠外键级联
+    @Synchronized
+    fun deleteGroupsDeep(context: Context, groupIds: List<String>): List<ReaderBook> {
+        if (groupIds.isEmpty()) return emptyList()
+        val db = AppDb.get(context)
+        db.beginTransaction()
+        try {
+            val placeholders = groupIds.joinToString(",") { "?" }
+            val deleted = ArrayList<ReaderBook>()
+            db.rawQuery(
+                "SELECT $BOOK_COLUMNS FROM reader_book WHERE group_id IN ($placeholders)",
+                groupIds.toTypedArray()
+            ).use { c ->
+                while (c.moveToNext()) {
+                    deleted.add(
+                        ReaderBook(
+                            id = c.getString(0), title = c.getString(1),
+                            sourceUri = c.getString(2), cachePath = c.getString(3),
+                            encoding = c.getString(4), totalChars = c.getLong(5),
+                            chapters = emptyList(),
+                            addedAt = c.getLong(7), lastReadAt = c.getLong(8),
+                            fileSize = c.getLong(11), format = c.getString(12),
+                            groupId = c.getString(15)
+                        )
+                    )
+                }
+            }
+            db.execSQL(
+                "DELETE FROM reader_book WHERE group_id IN ($placeholders)",
+                groupIds.toTypedArray()
+            )
+            db.execSQL(
+                "DELETE FROM reader_group WHERE id IN ($placeholders)",
+                groupIds.toTypedArray()
+            )
+            db.setTransactionSuccessful()
+            return deleted
         } finally {
             db.endTransaction()
         }

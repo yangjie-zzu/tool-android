@@ -60,6 +60,7 @@ fun ReaderBookshelfPage(
     onOpenGroup: (String) -> Unit,
     onBackToParent: () -> Unit,
     onDeleteGroup: (ReaderGroup) -> Unit,
+    onDeleteGroupAll: (ReaderGroup) -> Unit,
     onImportFile: () -> Unit,
     onImportFolder: () -> Unit
 ) {
@@ -151,12 +152,18 @@ fun ReaderBookshelfPage(
             AlertDialog(
                 onDismissRequest = { deletingGroup = null },
                 title = { Text("删除分组「${group.name}」？") },
-                text = { Text("组内的书籍和子分组会保留，移回未分组。书籍本身不会被删除。") },
+                text = { Text("仅删分组：组内书籍和子分组保留，移回未分组。\n删除全部：子分组和组内书籍（含缓存与进度）一并删除，不可恢复。") },
                 confirmButton = {
-                    TextButton(onClick = {
-                        onDeleteGroup(group)
-                        deletingGroup = null
-                    }) { Text("删除") }
+                    Row {
+                        TextButton(onClick = {
+                            onDeleteGroup(group)          // 仅删组
+                            deletingGroup = null
+                        }) { Text("仅删分组") }
+                        TextButton(onClick = {
+                            onDeleteGroupAll(group)       // 连书籍一起删
+                            deletingGroup = null
+                        }) { Text("删除全部") }
+                    }
                 },
                 dismissButton = {
                     TextButton(onClick = { deletingGroup = null }) { Text("取消") }
@@ -239,6 +246,7 @@ private fun BookItem(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
+            // 状态显示: "打开"是未读→已读的分界线(未打开=未读), 进度只影响已读的百分比
             val percent = (book.progress.percent * 100).toInt()
             val subtitle = buildString {
                 if (book.format == BookFormat.EPUB) append("EPUB · ")
@@ -251,12 +259,7 @@ private fun BookItem(
                         } + " · "
                     )
                 }
-                if (!book.ready) {
-                    append("未解析 · ")
-                } else {
-                    append("${book.chapters.size} 章 · ")
-                }
-                append(if (percent > 0) "已读 $percent%" else "未读")
+                append(if (book.ready) "已读 $percent%" else "未读")
                 append(" · ${dateFmt.format(Date(book.lastReadAt))}")
             }
             Text(
