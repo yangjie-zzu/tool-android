@@ -1,6 +1,7 @@
 package com.yukino.tool.module.reader
 
 import com.yukino.tool.module.reader.common.ChapterLines
+import com.yukino.tool.module.reader.common.CssLen
 import com.yukino.tool.module.reader.common.ChapterComposer
 import com.yukino.tool.module.reader.common.BookPager
 import com.yukino.tool.module.reader.common.LineKind
@@ -303,14 +304,14 @@ class EpubRichContentTest {
     fun `负margin提取`() {
         // 四值简写 margin: top right bottom left → 上=-0.2 下=-0.1
         val l = HtmlTextExtractor.parseParaLayout(mapOf("margin" to "-0.2em 0 -0.1em 0"))
-        assertEquals(-0.2f, l!!.aboveEm)
-        assertEquals(-0.1f, l.belowEm)
+        assertEquals(CssLen(-0.2f), l!!.aboveEm)
+        assertEquals(CssLen(-0.1f), l.belowEm)
         val l2 = HtmlTextExtractor.parseParaLayout(mapOf("margin-top" to "-1em", "margin-bottom" to "0.3em"))
-        assertEquals(-1f, l2!!.aboveEm)
-        assertEquals(0.3f, l2.belowEm)
+        assertEquals(CssLen(-1f), l2!!.aboveEm)
+        assertEquals(CssLen(0.3f), l2.belowEm)
         val l3 = HtmlTextExtractor.parseParaLayout(mapOf("margin" to "1em"))
-        assertEquals(1f, l3!!.aboveEm)
-        assertEquals(1f, l3.belowEm)
+        assertEquals(CssLen(1f), l3!!.aboveEm)
+        assertEquals(CssLen(1f), l3.belowEm)
     }
 
 
@@ -467,9 +468,9 @@ class EpubRichContentTest {
         assertEquals(0f, paras[1].indentEm)          // ul.contents 命中
         // li.c-rules: 命中后代链(祖先链 ul→li)
         val deep = paras.first { it.text.contains("深层规则项") }
-        assertEquals(-0.5f, deep.spaceAboveEm)
+        assertEquals(CssLen(-0.5f), deep.spaceAboveEm)
         val direct = paras.first { it.text.contains("直接子li") }
-        assertEquals(1f, direct.spaceAboveEm)        // 子代: li 是 ul.direct 直接子级
+        assertEquals(CssLen(1f), direct.spaceAboveEm)     // 子代: li 是 ul.direct 直接子级
         val nested = paras.first { it.text.contains("深层li") }
         assertNull(nested.spaceAboveEm)              // 内层 ul 下的 li 不命中 '>' 直接子代
     }
@@ -497,14 +498,14 @@ class EpubRichContentTest {
         assertEquals(2, l2!!.align)
         assertEquals(0f, l2.indentEm)
         val l3 = HtmlTextExtractor.parseParaLayout(mapOf("margin-top" to "1.5em", "margin-bottom" to "2em"))
-        assertEquals(1.5f, l3!!.aboveEm)
-        assertEquals(2f, l3.belowEm)
+        assertEquals(CssLen(1.5f), l3!!.aboveEm)
+        assertEquals(CssLen(2f), l3.belowEm)
         val l4 = HtmlTextExtractor.parseParaLayout(mapOf("margin" to "1em"))
-        assertEquals(1f, l4!!.aboveEm)
-        assertEquals(1f, l4.belowEm)
-        // px/百分比单位忽略;left/justify 对齐忽略
+        assertEquals(CssLen(1f), l4!!.aboveEm)
+        assertEquals(CssLen(1f), l4.belowEm)
+        // px/百分比单位忽略仅限 text-indent;left 现为显式对齐 3
         assertNull(HtmlTextExtractor.parseParaLayout(mapOf("text-indent" to "20px")))
-        assertNull(HtmlTextExtractor.parseParaLayout(mapOf("text-align" to "left")))
+        assertEquals(3, HtmlTextExtractor.parseParaLayout(mapOf("text-align" to "left"))!!.align)
     }
 
     @Test
@@ -521,7 +522,7 @@ class EpubRichContentTest {
         assertEquals(1, paras[0].align)
         assertEquals(0f, paras[0].indentEm)
         assertEquals(2, paras[1].align)              // style 覆盖 class
-        assertEquals(1f, paras[2].spaceAboveEm)      // 继承容器的 margin-top
+        assertEquals(CssLen(1f), paras[2].spaceAboveEm)   // 继承容器的 margin-top
     }
 
     @Test
@@ -556,15 +557,15 @@ class EpubRichContentTest {
         val paras = listOf(
             Paragraph("居中诗", align = 1),
             Paragraph("缩进段", indentEm = 0f),
-            Paragraph("标题段", heading = 2, spaceAboveEm = 1.5f, spaceBelowEm = 2f)
+            Paragraph("标题段", heading = 2, spaceAboveEm = CssLen(1.5f), spaceBelowEm = CssLen(2f))
         )
         ChapterFileCodec.write(f, paras)
         val (read, _) = ChapterFileCodec.read(f)
         assertEquals(1, read[0].align)
         assertEquals(0f, read[1].indentEm)
         assertEquals(2, read[2].heading)
-        assertEquals(1.5f, read[2].spaceAboveEm)
-        assertEquals(2f, read[2].spaceBelowEm)
+        assertEquals(CssLen(1.5f), read[2].spaceAboveEm)
+        assertEquals(CssLen(2f), read[2].spaceBelowEm)
         assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(f))
         f.delete()
     }
@@ -642,8 +643,11 @@ class EpubRichContentTest {
         assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v6))   // 六期缺七期选择器/ruby识别
         val v7 = File.createTempFile("v7ch", ".txt")
         v7.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":7}""")
-        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v7))
-        legacy.delete(); v2.delete(); v4.delete(); v5.delete(); v6.delete(); v7.delete()
+        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v7))   // 七期批次一缺盒样式
+        val v8 = File.createTempFile("v8ch", ".txt")
+        v8.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":8}""")
+        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v8))
+        legacy.delete(); v2.delete(); v4.delete(); v5.delete(); v6.delete(); v7.delete(); v8.delete()
     }
 
     // ---- 老书升级: 章号映射(顺序保持的标题匹配) ----
@@ -789,5 +793,177 @@ class EpubRichContentTest {
         assertEquals(0L, found["a1"])
         assertEquals(8L, found["a3"])
         assertNull(content.anchorOffset(99, "a1"))   // 章越界
+    }
+
+    // ---- 七期批次二: 长度/边距/定宽/显式对齐/行距/颜色/边框/盒组 ----
+
+    @Test
+    fun `CssLen解析_em_px与百分比`() {
+        fun f(v: String) = CssLen.parse(v)!!
+        assertEquals(CssLen(2f), f("2em"))
+        assertEquals(CssLen(0f), f("0"))
+        assertEquals(CssLen(0.75f), f("12px"))
+        assertEquals(CssLen(10f, pct = true), f("10%"))
+        assertNull(CssLen.parse("1.5rem"))
+        assertNull(CssLen.parse("auto"))
+        // px 换算: em×字号, %×可用宽
+        assertEquals(38f, f("2em").px(19f, 400f), 0.001f)
+        assertEquals(40f, f("10%").px(19f, 400f), 0.001f)
+    }
+
+    @Test
+    fun `左右边距与padding折算进段布局`() {
+        val l1 = HtmlTextExtractor.parseParaLayout(
+            mapOf("margin-left" to "2em", "margin-right" to "10%", "width" to "24em")
+        )
+        assertEquals(CssLen(2f), l1!!.leftEm)
+        assertEquals(CssLen(10f, pct = true), l1.rightEm)
+        assertEquals(CssLen(24f), l1.widthEm)
+        val l2 = HtmlTextExtractor.parseParaLayout(
+            mapOf("padding-top" to "0.3em", "padding-left" to "1em", "padding-right" to "6px")
+        )
+        assertEquals(CssLen(0.3f), l2!!.aboveEm)
+        assertEquals(CssLen(1f), l2.leftEm)
+        assertEquals(CssLen(6f / 16f), l2.rightEm)
+        // margin 简写四值取上下 + 左右;2em 22em 定宽段
+        val l3 = HtmlTextExtractor.parseParaLayout(mapOf("margin" to "0.2em 0 0 0.3em"))
+        assertEquals(CssLen(0.2f), l3!!.aboveEm)
+        assertEquals(CssLen(0f), l3.belowEm)
+    }
+
+    @Test
+    fun `margin简写auto定宽居中标记`() {
+        val l = HtmlTextExtractor.parseParaLayout(mapOf("margin" to "3% auto", "width" to "24em"))
+        assertTrue(l!!.widthCenter)
+    }
+
+    @Test
+    fun `显式left与justify对齐`() {
+        assertEquals(3, HtmlTextExtractor.parseParaLayout(mapOf("text-align" to "left"))!!.align)
+        assertEquals(4, HtmlTextExtractor.parseParaLayout(mapOf("text-align" to "justify"))!!.align)
+    }
+
+    @Test
+    fun `行距倍率解析`() {
+        assertEquals(1.3f, HtmlTextExtractor.lineHeightVal("1.3em")!!)
+        assertEquals(1.2f, HtmlTextExtractor.lineHeightVal("1.2")!!)
+        assertEquals(1.2f, HtmlTextExtractor.lineHeightVal("120%")!!)
+        assertEquals(0f, HtmlTextExtractor.lineHeightVal("0%")!!)
+        assertNull(HtmlTextExtractor.lineHeightVal("normal"))
+    }
+
+    @Test
+    fun `颜色解析_hex_rgb与命名`() {
+        assertEquals(0xFF6B8E23L, HtmlTextExtractor.parseColor("#6b8e23"))
+        assertEquals(0xFFFF0000L, HtmlTextExtractor.parseColor("#FF0000"))
+        assertEquals(0xFF331122L, HtmlTextExtractor.parseColor("#312"))
+        assertEquals(0xFF331122L, HtmlTextExtractor.parseColor("rgb(51, 17, 34)"))
+        assertEquals(0x80FFFFFFL, HtmlTextExtractor.parseColor("rgba(255, 255, 255, 0.5)"))
+        assertEquals(0xFFFFFFFFL, HtmlTextExtractor.parseColor("white"))
+        assertEquals(0xFF000000L, HtmlTextExtractor.parseColor("black"))
+        assertNull(HtmlTextExtractor.parseColor("notacolor"))
+    }
+
+    @Test
+    fun `border归并_简写与分边覆盖`() {
+        val edges = HtmlTextExtractor.parseEdges(
+            mapOf(
+                "border" to "2px solid #000000",
+                "border-left" to "thick #FF0080 solid",
+                "border-right-width" to "0.5em",
+                "border-style" to "dotted solid dotted none"
+            )
+        )
+        // border-style 多值展开后: 上=dotted 下=dotted 右=solid 左=none;
+        // 分边 border-left 再覆盖(粗+彩+solid)
+        assertEquals(2, edges[0].style)                       // 上 dotted
+        assertEquals(1, edges[1].style)                       // 右 solid(border-style 展开)
+        assertEquals(0.5f, edges[1].widthEm)                  // 右宽 0.5em
+        assertEquals(2, edges[2].style)                       // 下 dotted
+        assertEquals(1, edges[3].style)                       // 左 solid(分边覆盖)
+        assertEquals(0xFF0080L, edges[3].color and 0xFFFFFF)
+        assertEquals(5f / 16f, edges[3].widthEm)              // thick
+        // 全 none 的 border:0
+        val none = HtmlTextExtractor.parseEdges(mapOf("border" to "0"))
+        assertTrue(none.all { it.style == 0 })
+    }
+
+    @Test
+    fun `盒样式生成与盒组归属`() {
+        val html = """
+            <style>.ibox { border-left: solid 16px #F768A4; background-color: #ffffff;
+            padding: 1px; border-radius: 6px; box-shadow: 2px 2px 3px #000 }
+            .inner p { margin: 0 }</style>
+            <div class="ibox"><p>盒内第一段</p><p>盒内第二段</p></div>
+            <p>盒外段落</p>
+        """.trimIndent()
+        val paras = extractHtml(html)
+        val box = paras[0].boxStyle
+        assertTrue(box != null)
+        assertEquals(0xFFFFFFFFL, box!!.bg)
+        assertEquals(1, box.edges.count { it.widthEm > 0f && it.style > 0 })
+        assertEquals(16f / 16f, box.edges[3].widthEm)   // 左边 16px
+        assertEquals(0xFFF768A4L, box.edges[3].color)
+        assertEquals(CssLen(6f / 16f), box.radius)
+        assertTrue(box.shadow)
+        assertTrue(paras[1].boxStyle === paras[0].boxStyle)   // 同一盒实例(聚合绘制)
+        assertNull(paras[2].boxStyle)
+        // 盒 padding 折算段左缩进(padding: 1px = 1/16 em)
+        assertEquals(CssLen(1f / 16f), paras[0].marginLeftEm)
+    }
+
+    @Test
+    fun `七期段落字段章文件往返`() {
+        val f = File.createTempFile("ch_v8", ".txt")
+        val box = com.yukino.tool.module.reader.common.BoxStyle(
+            bg = 0xFFFFFFFFL, radius = CssLen(6f / 16f), shadow = true,
+            edges = listOf(
+                com.yukino.tool.module.reader.common.EdgeStyle(0f, 0, 0xFF000000L),
+                com.yukino.tool.module.reader.common.EdgeStyle(0f, 0, 0xFF000000L),
+                com.yukino.tool.module.reader.common.EdgeStyle(0f, 0, 0xFF000000L),
+                com.yukino.tool.module.reader.common.EdgeStyle(1f, 1, 0xFFF768A4L)
+            )
+        )
+        val paras = listOf(
+            Paragraph("定宽段", widthEm = CssLen(24f), widthCenter = true, marginLeftEm = CssLen(2f),
+                marginRightEm = CssLen(3f), lineSpacingMult = 1.2f,
+                spaceAboveEm = CssLen(10f, pct = true), boxStyle = box)
+        )
+        ChapterFileCodec.write(f, paras)
+        val (read, _) = ChapterFileCodec.read(f)
+        val p = read[0]
+        assertEquals(CssLen(24f), p.widthEm)
+        assertTrue(p.widthCenter)
+        assertEquals(CssLen(2f), p.marginLeftEm)
+        assertEquals(CssLen(3f), p.marginRightEm)
+        assertEquals(1.2f, p.lineSpacingMult)
+        assertEquals(CssLen(10f, pct = true), p.spaceAboveEm)
+        assertEquals(box, p.boxStyle)
+        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(f))
+        f.delete()
+    }
+
+    @Test
+    fun `段落度量_定宽居中与右缩进判定`() {
+        val typo = com.yukino.tool.module.reader.common.Typography.resolve(
+            2f, com.yukino.tool.module.reader.common.ReaderSettings(),
+            800, 1200
+        )
+        // margin auto + width → 居中: 左右留白对称,需独立断行(定宽取版心 1/3)
+        val wEm = typo.textWidth / 3f / typo.fontPx
+        val pm = BookPager.paraMetrics(
+            Paragraph("x", widthEm = CssLen(wEm), widthCenter = true), typo
+        )
+        assertEquals(typo.textWidth.toFloat() / 2f - wEm * typo.fontPx / 2f, pm.mlPx, 0.01f)
+        assertTrue(pm.needsOverride)
+        // margin-left only → 无右缩进,主 layout 断行(leading margin 机制)
+        val pm2 = BookPager.paraMetrics(Paragraph("x", marginLeftEm = CssLen(2f)), typo)
+        assertEquals(2f * typo.fontPx, pm2.mlPx, 0.01f)
+        assertEquals(0f, pm2.mrPx)
+        assertTrue(!pm2.needsOverride)
+        // 无书内布局 → 全宽
+        val pm3 = BookPager.paraMetrics(Paragraph("x"), typo)
+        assertEquals(typo.textWidth.toFloat(), pm3.availWidth, 0.01f)
+        assertTrue(!pm3.needsOverride)
     }
 }

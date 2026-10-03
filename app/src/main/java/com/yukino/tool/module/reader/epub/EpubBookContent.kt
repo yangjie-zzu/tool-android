@@ -48,20 +48,40 @@ class EpubBookContent(
                         com.yukino.tool.module.reader.common.Paragraph(
                             p.text, p.runs, p.kind, java.io.File(chapterDir, p.imageRef!!).absolutePath,
                             p.anchor, p.notes, p.align, p.indentEm, p.spaceAboveEm, p.spaceBelowEm,
-                            p.heading, inline
+                            p.heading, inline, p.marginLeftEm, p.marginRightEm, p.widthEm,
+                            p.widthCenter, p.lineSpacingMult, boxAbs(p.boxStyle)
                         )
-                    } else if (inline !== p.inlineImages) {
+                    } else if (inline !== p.inlineImages || p.boxStyle != boxAbs(p.boxStyle)) {
                         com.yukino.tool.module.reader.common.Paragraph(
                             p.text, p.runs, p.kind, p.imageRef,
                             p.anchor, p.notes, p.align, p.indentEm, p.spaceAboveEm, p.spaceBelowEm,
-                            p.heading, inline
+                            p.heading, inline, p.marginLeftEm, p.marginRightEm, p.widthEm,
+                            p.widthCenter, p.lineSpacingMult, boxAbs(p.boxStyle)
                         )
                     } else p
                 }
+            } else if (paras.any { it.boxStyle != boxAbs(it.boxStyle) }) {
+                paras.map { it.copyBox(boxAbs(it.boxStyle)) }
             } else paras
             ChapterDocument(chapters[index].title, resolved, footnotes)
         }
     }
+
+    // 盒背景图相对路径 → 绝对路径(无背景图原样返回同实例,避免无谓拷贝)
+    private fun boxAbs(bs: com.yukino.tool.module.reader.common.BoxStyle?): com.yukino.tool.module.reader.common.BoxStyle? {
+        if (bs == null) return null
+        val img = bs.bgImage ?: return bs
+        if (img.startsWith("/")) return bs
+        return bs.copy(bgImage = java.io.File(chapterDir, img).absolutePath)
+    }
+
+    private fun com.yukino.tool.module.reader.common.Paragraph.copyBox(
+        bs: com.yukino.tool.module.reader.common.BoxStyle?
+    ): com.yukino.tool.module.reader.common.Paragraph =
+        com.yukino.tool.module.reader.common.Paragraph(
+            text, runs, kind, imageRef, anchor, notes, align, indentEm, spaceAboveEm, spaceBelowEm,
+            heading, inlineImages, marginLeftEm, marginRightEm, widthEm, widthCenter, lineSpacingMult, bs
+        )
 
     // 章内锚点 → 投影偏移: 扫段落 anchor 匹配,偏移 = 前序段长累计(与 bodyText 同构)
     override fun anchorOffset(chapterIndex: Int, anchorId: String): Long? {

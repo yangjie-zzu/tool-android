@@ -331,6 +331,8 @@ class ReaderPageView(context: Context) : View(context) {
             virtual.draw(canvas)
         } else {
             canvas.translate(offsetX + t.marginPx, contentTop)
+            // 七期: 盒组矩形(底色/背景图/边框/圆角/阴影)画在文字下层
+            for (b in page.boxes) drawBoxShape(canvas, b, t)
             for (ln in page.lines) {
                 if (ln.imageRef != null) {
                     drawImageLine(canvas, ln)
@@ -540,6 +542,247 @@ class ReaderPageView(context: Context) : View(context) {
             val y = baseline - fontSize * 0.28f
             canvas.drawLine(x, y, x + w, y, decorPaint)
         }
+    }
+
+    // ---------- 七期: 盒组绘制(底色/背景图/边框/圆角/阴影) ----------
+
+    private val boxPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val bgImagePaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
+
+    // 夜间主题颜色适配: 亮度反转(保持色相)——深底变浅、浅底变深,书内色块在暗背景下可读
+    private fun adaptColor(color: Long, night: Boolean): Long {
+        if (!night) return color
+        val a = (color ushr 24) and 0xFFL
+        val r = 255L - ((color ushr 16) and 0xFFL)
+        val g = 255L - ((color ushr 8) and 0xFFL)
+        val b = 255L - (color and 0xFFL)
+        return (a shl 24) or (r shl 16) or (g shl 8) or b
+    }
+
+    // 立体边框(ridge/groove/inset/outset)的亮/暗分量: 亮 = 向白靠拢 40%,暗 = 压暗 40%
+    private fun shade(color: Long, lighten: Boolean): Long {
+        val a = (color ushr 24) and 0xFFL
+        fun adj(c: Long): Long = if (lighten) c + ((255L - c) * 2L / 5L) else c * 3L / 5L
+        val r = adj((color ushr 16) and 0xFFL)
+        val g = adj((color ushr 8) and 0xFFL)
+        val b = adj(color and 0xFFL)
+        return (a shl 24) or (r shl 16) or (g shl 8) or b
+    }
+
+    private fun drawBoxShape(canvas: Canvas, box: DrawBox, t: ResolvedTypography) {
+        val night = t.night
+        val style = box.style
+        val fontPx = t.fontPx
+        val rect = android.graphics.RectF(box.left, box.top, box.right, box.bottom)
+        val radius = style.radius?.px(fontPx, t.textWidth.toFloat())?.coerceAtLeast(0f) ?: 0f
+        boxPaint.style = Paint.Style.FILL
+        boxPaint.shadowLayerCompatClear()
+
+        // 底色(阴影挂在底色填充上;无底色的阴影画一层近透明填充承载)
+        style.bg?.let { c ->
+            boxPaint.color = adaptColor(c, night).toInt()
+            if (style.shadow) {
+                boxPaint.setShadowLayer(fontPx * 0.16f, fontPx * 0.1f, fontPx * 0.14f, 0x55000000)
+            }
+            fillRound(canvas, rect, radius, boxPaint)
+            boxPaint.shadowLayerCompatClear()
+        } ?: run {
+            if (style.shadow) {
+                boxPaint.color = 0x01000000
+                boxPaint.setShadowLayer(fontPx * 0.18f, fontPx * 0.1f, fontPx * 0.16f, 0x55000000)
+                fillRound(canvas, rect, radius, boxPaint)
+                boxPaint.shadowLayerCompatClear()
+            }
+        }
+
+        // 背景图: cover 铺满盒矩形(等比放缩到覆盖,居中裁剪;夜间压暗 55%)
+        val bgRef = style.bgImage
+        if (bgRef != null && rect.width() > 1f && rect.height() > 1f) {
+            val bmp = imageFor(bgRef, rect.width().toInt(), rect.height().toInt())
+            if (bmp != null) {
+                val scale = maxOf(rect.width() / bmp.width, rect.height() / bmp.height)
+                val dw = bmp.width * scale
+                val dh = bmp.height * scale
+                val sx = (bmp.width - rect.width() / scale) / 2f
+                val sy = (bmp.height - rect.height() / scale) / 2f
+                if (night) {
+                    val cm = android.graphics.ColorMatrix().apply { setScale(0.45f, 0.45f, 0.45f, 1f) }
+                    bgImagePaint.colorFilter = android.graphics.ColorMatrixColorFilter(cm)
+                } else {
+                    bgImagePaint.colorFilter = null
+                }
+                canvas.drawBitmap(
+                    bmp,
+                    android.graphics.Rect(sx.toInt(), sy.toInt(), (sx + rect.width() / scale).toInt(), (sy + rect.height() / scale).toInt()),
+                    rect, bgImagePaint
+                )
+            } else {
+                drawPlaceholder(canvas, rect.left, rect.top, rect.width(), rect.height())
+            }
+        }
+
+        // 四边边框: 上右下左(0..3)。全边同型同色且宽度一致 → 整框圆角描边;
+        // 异型逐边画(细边画线,粗边矩形填充;dotted/dashed 虚线;double 双线;立体样式两色模拟)。
+        // 跨页延续缘(组在相邻页继续)不画横向边框,左右边照画
+        val edges = style.edges
+        if (edges.size == 4) {
+            val active = edges.map { if (it.widthEm > 0f && it.style > 0) it else null }
+            val (e0, e1, e2, e3) = active
+            val uniform = !box.topOpen && !box.bottomOpen &&
+                e0 != null && e0 == e1 && e1 == e2 && e2 == e3
+            if (uniform) {
+                drawUniformBorder(canvas, rect, radius, e0!!, adaptColor(e0.color, night), fontPx)
+            } else {
+                if (!box.topOpen) drawEdge(canvas, rect, 0, e0, night, fontPx)     // 上
+                if (!box.bottomOpen) drawEdge(canvas, rect, 2, e2, night, fontPx)  // 下
+                drawEdge(canvas, rect, 3, e3, night, fontPx)   // 左
+                drawEdge(canvas, rect, 1, e1, night, fontPx)   // 右
+            }
+        }
+    }
+
+    private fun Paint.shadowLayerCompatClear() { clearShadowLayer() }
+
+    private fun fillRound(canvas: Canvas, rect: android.graphics.RectF, radius: Float, paint: Paint) {
+        if (radius > 0f) canvas.drawRoundRect(rect, radius, radius, paint)
+        else canvas.drawRect(rect, paint)
+    }
+
+    // 整框描边(四边同型): solid 一次 stroke;dotted/dashed 虚线;double 双线;立体两色双描。
+    // widthEm 以 em 计,×字号得 px(与书内 em 排版体系一致,随阅读字号缩放)
+    private fun drawUniformBorder(
+        canvas: Canvas,
+        rect: android.graphics.RectF,
+        radius: Float,
+        edge: com.yukino.tool.module.reader.common.EdgeStyle,
+        color: Long,
+        fontPx: Float
+    ) {
+        val w = edge.widthEm * fontPx
+        if (w <= 0f) return
+        when (edge.style) {
+            1 -> strokeRound(canvas, rect, radius, w, color.toInt())
+            2, 3 -> {
+                boxPaint.style = Paint.Style.STROKE
+                boxPaint.strokeWidth = w
+                boxPaint.color = color.toInt()
+                val dash = if (edge.style == 2) w else w * 3f
+                boxPaint.pathEffect = android.graphics.DashPathEffect(floatArrayOf(dash, dash), 0f)
+                strokeRoundPath(canvas, rect, radius, boxPaint)
+                boxPaint.pathEffect = null
+            }
+            4 -> {
+                val lw = w / 3f
+                strokeRound(canvas, rect, radius, lw, color.toInt())
+                val r2 = RectInflater.inset(rect, lw * 2f)
+                strokeRound(canvas, r2, (radius - lw * 2f).coerceAtLeast(0f), lw, color.toInt())
+            }
+            else -> {   // 5..8 立体: ridge(5)/outset(8) 上左亮;groove(6)/inset(7) 反之
+                val lightTopLeft = edge.style == 5 || edge.style == 8
+                val light = shade(color, lightTopLeft)
+                val dark = shade(color, !lightTopLeft)
+                strokeRound(canvas, rect, radius, w / 2f, light.toInt())
+                val r2 = RectInflater.inset(rect, w / 2f)
+                strokeRound(canvas, r2, (radius - w / 2f).coerceAtLeast(0f), w / 2f, dark.toInt())
+            }
+        }
+    }
+
+    // 单边绘制(side: 0上 1右 2下 3左)。跨页延续缘(topOpen/bottomOpen)由调用方传 null 边
+    private fun drawEdge(
+        canvas: Canvas,
+        rect: android.graphics.RectF,
+        side: Int,
+        edge: com.yukino.tool.module.reader.common.EdgeStyle?,
+        night: Boolean,
+        fontPx: Float
+    ) {
+        if (edge == null) return
+        val w = edge.widthEm * fontPx
+        if (w <= 0f) return
+        val color = adaptColor(edge.color, night)
+        val horizontal = side == 0 || side == 2
+        // 线中心: 细边贴外沿中线;粗边(>2.5px)矩形填充从外沿向内
+        val y = when (side) { 0 -> rect.top; else -> rect.bottom }
+        val x = when (side) { 3 -> rect.left; else -> rect.right }
+        when (edge.style) {
+            1 -> {
+                if (horizontal) canvas.drawRect(rect.left, y, rect.right, y + if (side == 0) w else -w, boxPaint.also { it.style = Paint.Style.FILL; it.color = color.toInt() })
+                else canvas.drawRect(x, rect.top, x + if (side == 3) w else -w, rect.bottom, boxPaint.also { it.style = Paint.Style.FILL; it.color = color.toInt() })
+            }
+            2, 3 -> {
+                boxPaint.style = Paint.Style.STROKE
+                boxPaint.strokeWidth = w
+                boxPaint.color = color.toInt()
+                val dash = if (edge.style == 2) w else w * 3f
+                boxPaint.pathEffect = android.graphics.DashPathEffect(floatArrayOf(dash, dash), 0f)
+                val mid = w / 2f
+                if (horizontal) {
+                    val yy = if (side == 0) y + mid else y - mid
+                    canvas.drawLine(rect.left, yy, rect.right, yy, boxPaint)
+                } else {
+                    val xx = if (side == 3) x + mid else x - mid
+                    canvas.drawLine(xx, rect.top, xx, rect.bottom, boxPaint)
+                }
+                boxPaint.pathEffect = null
+            }
+            4 -> {
+                boxPaint.style = Paint.Style.FILL
+                boxPaint.color = color.toInt()
+                val lw = w / 3f
+                if (horizontal) {
+                    val dir = if (side == 0) 1f else -1f
+                    canvas.drawRect(rect.left, y, rect.right, y + dir * lw, boxPaint)
+                    canvas.drawRect(rect.left, y + dir * lw * 2f, rect.right, y + dir * lw * 3f, boxPaint)
+                } else {
+                    val dir = if (side == 3) 1f else -1f
+                    canvas.drawRect(x, rect.top, x + dir * lw, rect.bottom, boxPaint)
+                    canvas.drawRect(x + dir * lw * 2f, rect.top, x + dir * lw * 3f, rect.bottom, boxPaint)
+                }
+            }
+            else -> {   // 立体样式: 单边一色(与相邻边明暗相反)——ridge/outset 上左亮,下右暗;groove/inset 反转
+                val lightTopLeft = when (edge.style) {
+                    5, 8 -> side == 0 || side == 3
+                    6, 7 -> side == 1 || side == 2
+                    else -> true
+                }
+                boxPaint.style = Paint.Style.FILL
+                boxPaint.color = adaptColor(shade(edge.color, lightTopLeft), night).toInt()
+                if (horizontal) {
+                    val dir = if (side == 0) 1f else -1f
+                    canvas.drawRect(rect.left, y, rect.right, y + dir * w, boxPaint)
+                } else {
+                    val dir = if (side == 3) 1f else -1f
+                    canvas.drawRect(x, rect.top, x + dir * w, rect.bottom, boxPaint)
+                }
+            }
+        }
+    }
+
+    private fun strokeRound(canvas: Canvas, rect: android.graphics.RectF, radius: Float, w: Float, color: Int) {
+        boxPaint.style = Paint.Style.STROKE
+        boxPaint.strokeWidth = w
+        boxPaint.color = color
+        boxPaint.pathEffect = null
+        if (radius > 0f) {
+            val inset = w / 2f
+            val r = android.graphics.RectF(rect).apply { inset(inset, inset) }
+            canvas.drawRoundRect(r, radius, radius, boxPaint)
+        } else {
+            canvas.drawRect(rect, boxPaint)
+        }
+    }
+
+    private fun strokeRoundPath(canvas: Canvas, rect: android.graphics.RectF, radius: Float, paint: Paint) {
+        val inset = paint.strokeWidth / 2f
+        val r = android.graphics.RectF(rect).apply { inset(inset, inset) }
+        if (radius > 0f) canvas.drawRoundRect(r, radius, radius, paint)
+        else canvas.drawRect(r, paint)
+    }
+
+    private object RectInflater {
+        fun inset(r: android.graphics.RectF, by: Float): android.graphics.RectF =
+            android.graphics.RectF(r.left + by, r.top + by, r.right - by, r.bottom - by)
     }
 
     // 图片行: baseline 字段复用为行顶 y,绘制按物化尺寸;未解码先画占位框(异步解码完成后重绘)

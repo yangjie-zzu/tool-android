@@ -5,7 +5,11 @@ import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import org.jsoup.nodes.Node
 import org.jsoup.nodes.TextNode
+import com.yukino.tool.module.reader.common.CssLen
+import com.yukino.tool.module.reader.common.BoxStyle
+import com.yukino.tool.module.reader.common.EdgeStyle
 import com.yukino.tool.module.reader.common.NoteAnchor
+import kotlin.math.roundToInt
 import com.yukino.tool.module.reader.common.ParaKind
 import com.yukino.tool.module.reader.common.Paragraph
 import com.yukino.tool.module.reader.common.Run
@@ -263,7 +267,7 @@ object HtmlTextExtractor {
         return props ?: emptyMap()
     }
 
-    // em 值解析("2em"/"1.5em"/"0" → em 数值;px/百分比/其他单位忽略——换算依赖字号,不做)
+    // em 值解析("2em"/"1.5em"/"0" → em 数值;其他单位忽略)——首行缩进仍为 em-only
     private fun emVal(v: String): Float? {
         if (v == "0") return 0f
         val m = Regex("^(-?[\\d.]+)em$").find(v.trim()) ?: return null
@@ -272,46 +276,281 @@ object HtmlTextExtractor {
 
     // 排版属性 → 段级布局(仅取子集范围内属性;null = 未设置/跟随全局)。
     // 六期 A3: float:right 降级支持——块标记为右对齐独立块(无文字环绕,正文不避让);
-    // float:left 等于默认流向,忽略
+    // float:left 等于默认流向,忽略。
+    // 七期: 长度统一 em/px(÷16)/%(相对可用宽);margin-left/right + 简写左右分量 +
+    // padding 四向; 显式 text-align left(3)/justify(4); width 定宽; line-height 段级行距
     internal fun parseParaLayout(props: Map<String, String>): ParaLayout? {
         var align = 0
         var indentEm: Float? = null
-        var aboveEm: Float? = null
-        var belowEm: Float? = null
+        var above: CssLen? = null
+        var below: CssLen? = null
+        var left: CssLen? = null
+        var right: CssLen? = null
+        var width: CssLen? = null
+        var lineMult: Float? = null
         var floatRight = false
+        var widthCenter = false
         when (props["text-align"]) {
             "center" -> align = 1
             "right" -> align = 2
+            "left" -> align = 3
+            "justify" -> align = 4
         }
         emVal(props["text-indent"] ?: "")?.let { indentEm = it }
-        emVal(props["margin-top"] ?: "")?.let { aboveEm = it }
-        emVal(props["margin-bottom"] ?: "")?.let { belowEm = it }
-        // margin 简写: 单值(四边)/两值(上下 左右)/四值(上 右 下 左)——取上、下
+        CssLen.parse(props["margin-top"] ?: "")?.let { above = it }
+        CssLen.parse(props["margin-bottom"] ?: "")?.let { below = it }
+        CssLen.parse(props["margin-left"] ?: "")?.let { left = it }
+        CssLen.parse(props["margin-right"] ?: "")?.let { right = it }
+        CssLen.parse(props["width"] ?: "")?.let { width = it }
+        // padding: 上下折段前段后,左右折整段缩进;简写四值展开(上 右 下 左)
+        CssLen.parse(props["padding-top"] ?: "")?.let { above = mergeLen(above, it) }
+        CssLen.parse(props["padding-bottom"] ?: "")?.let { below = mergeLen(below, it) }
+        CssLen.parse(props["padding-left"] ?: "")?.let { left = mergeLen(left, it) }
+        CssLen.parse(props["padding-right"] ?: "")?.let { right = mergeLen(right, it) }
+        props["padding"]?.let { v ->
+            val parts = expand4(v)
+            CssLen.parse(parts[0])?.let { above = mergeLen(above, it) }
+            CssLen.parse(parts[2])?.let { below = mergeLen(below, it) }
+            CssLen.parse(parts[3])?.let { left = mergeLen(left, it) }
+            CssLen.parse(parts[1])?.let { right = mergeLen(right, it) }
+        }
+        props["line-height"]?.let { lineMult = lineHeightVal(it) }
+        // margin 简写: 单值(四边)/两值(上下 左右)/三值(上 左右 下)/四值(上 右 下 左);
+        // auto 在左右位且定宽时 = 居中(widthCenter 置位),无定宽视 0
         props["margin"]?.trim()?.split(Regex("\\s+"))?.let { parts ->
-            val top = emVal(parts[0])
-            if (top != null) {
-                if (aboveEm == null) aboveEm = top
-                if (belowEm == null) {
-                    belowEm = when {
-                        parts.size >= 4 -> emVal(parts[2])
-                        parts.size == 2 -> emVal(parts[1])
-                        else -> top
-                    }
+            fun at(i: Int) = if (i < parts.size) parts[i] else ""
+            CssLen.parse(at(0))?.let { if (above == null) above = it }
+            val bottomRaw = when {
+                parts.size >= 3 -> at(2)
+                parts.size == 2 -> at(1)
+                else -> at(0)
+            }
+            CssLen.parse(bottomRaw)?.let { if (below == null) below = it }
+            val lr = when {
+                parts.size >= 4 -> listOf(at(1), at(3))
+                parts.size >= 2 -> listOf(at(1), at(1))
+                else -> listOf(at(0), at(0))
+            }
+            var center = false
+            if (left == null) {
+                if (lr[0] == "auto") center = true else CssLen.parse(lr[0])?.let { left = it }
+            }
+            if (right == null) {
+                if (lr[1] == "auto") center = true else CssLen.parse(lr[1])?.let { right = it }
+            }
+            if (center && width != null) widthCenter = true
+        }
+        if (props["float"] == "right") floatRight = true
+        val any = align != 0 || indentEm != null || above != null || below != null ||
+            left != null || right != null || width != null || lineMult != null || floatRight
+        return if (!any) null
+        else ParaLayout(align, indentEm, above, below, left, right, width, lineMult, floatRight, widthCenter)
+    }
+
+    // 已有值保留(先到先得,style 属性在 propsFor 已覆盖同 key),避免简写反向覆盖长属性
+    private fun mergeLen(cur: CssLen?, add: CssLen): CssLen = cur ?: add
+
+    // line-height → 倍率: "1.3em"/"1.2"/"120%" 均为 1.2/1.3 类倍率;0% 之类的 0 值钳到下限
+    internal fun lineHeightVal(v: String): Float? {
+        val s = v.trim()
+        (s == "0").let { if (it) return 0f }
+        Regex("^([\\d.]+)em$").find(s)?.let { return it.groupValues[1].toFloatOrNull() }
+        Regex("^([\\d.]+)%$").find(s)?.let { return it.groupValues[1].toFloatOrNull()?.div(100f) }
+        Regex("^([\\d.]+)$").find(s)?.let { return it.groupValues[1].toFloatOrNull() }
+        return null
+    }
+
+    // ---------- 七期: 颜色 / 边框 / 盒样式 ----------
+
+    // CSS 颜色 → ARGB Long。支持 #RGB/#RGBA/#RRGGBB/#RRGGBBAA、rgb()/rgba()(0-255 或 %)、
+    // 常用命名色;认不出返回 null(属性忽略)
+    internal fun parseColor(raw: String): Long? {
+        val v = raw.trim().lowercase()
+        if (v.startsWith("#")) {
+            val h = v.substring(1)
+            return when (h.length) {
+                3 -> hex4(h[0], h[0], h[1], h[1], h[2], h[2], 'f', 'f')
+                4 -> hex4(h[0], h[0], h[1], h[1], h[2], h[2], h[3], h[3])
+                6 -> hex4(h[0], h[1], h[2], h[3], h[4], h[5], 'f', 'f')
+                8 -> hex4(h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7])
+                else -> null
+            }
+        }
+        val m = Regex("^rgba?\\(([^)]+)\\)$").find(v)
+        if (m != null) {
+            val parts = m.groupValues[1].split(',').map { it.trim() }
+            if (parts.size < 3) return null
+            fun ch(s: String): Int? = when {
+                s.endsWith("%") -> s.dropLast(1).toFloatOrNull()?.let { (it * 255 / 100).roundToInt() }
+                else -> s.toFloatOrNull()?.roundToInt()
+            }?.coerceIn(0, 255)
+            val r = ch(parts[0]) ?: return null
+            val g = ch(parts[1]) ?: return null
+            val b = ch(parts[2]) ?: return null
+            val a = if (parts.size >= 4) {
+                val s = parts[3]
+                (if (s.endsWith("%")) s.dropLast(1).toFloatOrNull()?.times(2.55f) else s.toFloatOrNull()?.times(255f))
+                    ?.roundToInt()?.coerceIn(0, 255) ?: return null
+            } else 255
+            return (a.toLong() shl 24) or (r.toLong() shl 16) or (g.toLong() shl 8) or b.toLong()
+        }
+        return NAMED_COLORS[v]
+    }
+
+    private fun hex4(r1: Char, r2: Char, g1: Char, g2: Char, b1: Char, b2: Char, a1: Char, a2: Char): Long? {
+        fun h(c1: Char, c2: Char): Int? {
+            val hi = c1.digitToIntOrNull(16) ?: return null
+            val lo = c2.digitToIntOrNull(16) ?: return null
+            return (hi shl 4) or lo
+        }
+        val r = h(r1, r2) ?: return null
+        val g = h(g1, g2) ?: return null
+        val b = h(b1, b2) ?: return null
+        val a = h(a1, a2) ?: return null
+        return (a.toLong() shl 24) or (r.toLong() shl 16) or (g.toLong() shl 8) or b.toLong()
+    }
+
+    private val NAMED_COLORS = mapOf(
+        "white" to 0xFFFFFFFFL, "black" to 0xFF000000L, "red" to 0xFFFF0000L, "green" to 0xFF008000L,
+        "blue" to 0xFF0000FFL, "gray" to 0xFF808080L, "grey" to 0xFF808080L, "silver" to 0xFFC0C0C0L,
+        "yellow" to 0xFFFFFF00L, "orange" to 0xFFFFA500L, "pink" to 0xFFFFC0CBL, "purple" to 0xFF800080L,
+        "navy" to 0xFF000080L, "teal" to 0xFF008080L, "olive" to 0xFF808000L, "lime" to 0xFF00FF00L,
+        "aqua" to 0xFF00FFFFL, "cyan" to 0xFF00FFFFL, "fuchsia" to 0xFFFF00FFL, "magenta" to 0xFFFF00FFL,
+        "maroon" to 0xFF800000L, "transparent" to 0x00000000L
+    )
+
+    // border 系属性 → 四边样式(上右下左)。归并顺序(后者覆盖):
+    // border 简写 → border-style/color/width 多值展开 → 分边简写(border-left: ...) → 分边单属性(border-left-style: ...)
+    internal fun parseEdges(props: Map<String, String>): List<EdgeStyle> {
+        val edges = Array(4) { EdgeStyle(0f, 0, 0xFF000000L) }
+        props["border"]?.let { v ->
+            val decl = parseBorderDecl(v)
+            for (i in 0..3) edges[i] = decl ?: EdgeStyle(0f, 0, 0xFF000000L)
+        }
+        props["border-style"]?.let { expand4(it).forEachIndexed { i, s -> edges[i] = edges[i].copy(style = borderStyleVal(s)) } }
+        props["border-color"]?.let { expand4(it).forEachIndexed { i, s -> parseColor(s)?.let { c -> edges[i] = edges[i].copy(color = c) } } }
+        props["border-width"]?.let { expand4(it).forEachIndexed { i, s -> borderWidthEm(s)?.let { w -> edges[i] = edges[i].copy(widthEm = w) } } }
+        for ((k, i) in listOf("border-top" to 0, "border-right" to 1, "border-bottom" to 2, "border-left" to 3)) {
+            props[k]?.let { v -> parseBorderDecl(v)?.let { edges[i] = it } }
+        }
+        for ((k, i) in listOf(
+            "border-top-style" to 0, "border-right-style" to 1, "border-bottom-style" to 2, "border-left-style" to 3,
+            "border-top-color" to 0, "border-right-color" to 1, "border-bottom-color" to 2, "border-left-color" to 3,
+            "border-top-width" to 0, "border-right-width" to 1, "border-bottom-width" to 2, "border-left-width" to 3
+        )) {
+            val v = props[k] ?: continue
+            edges[i] = when {
+                k.endsWith("-style") -> edges[i].copy(style = borderStyleVal(v))
+                k.endsWith("-color") -> parseColor(v)?.let { edges[i].copy(color = it) } ?: edges[i]
+                else -> borderWidthEm(v)?.let { edges[i].copy(widthEm = it) } ?: edges[i]
+            }
+        }
+        return edges.toList()
+    }
+
+    // CSS 多值展开(1 值=四边,2 值=上下 左右,3 值=上 左右 下,4 值=上右下左)
+    private fun expand4(v: String): List<String> {
+        val parts = v.trim().split(Regex("\\s+"))
+        return when (parts.size) {
+            1 -> listOf(parts[0], parts[0], parts[0], parts[0])
+            2 -> listOf(parts[0], parts[1], parts[0], parts[1])
+            3 -> listOf(parts[0], parts[1], parts[2], parts[1])
+            else -> parts.take(4)
+        }
+    }
+
+    // border 简写单声明("2px solid #000" / "dotted 3px #0072E3" / "thick #FF0080 solid" / "0" / "none")
+    // → 边样式;含 none/hidden(或仅 0) → 无边
+    private fun parseBorderDecl(v: String): EdgeStyle? {
+        val s = v.trim()
+        if (s.isEmpty()) return null
+        if (s == "0" || s == "none" || s == "hidden") return EdgeStyle(0f, 0, 0xFF000000L)
+        var w = 3f / 16f   // CSS 缺省 medium
+        var style = 0
+        var color = 0xFF000000L
+        for (tok in s.split(Regex("\\s+"))) {
+            val t = tok.lowercase()
+            val bw = borderWidthEm(t)
+            if (bw != null) { w = bw; continue }
+            val bs = borderStyleVal(t)
+            if (bs > 0) { style = bs; continue }
+            val c = parseColor(t)
+            if (c != null) { color = c; continue }
+            // 认不出的 token(如 rgb 带空格被拆坏)宽容跳过
+        }
+        return EdgeStyle(w, style, color)
+    }
+
+    private fun borderStyleVal(v: String): Int = when (v.trim().lowercase()) {
+        "solid" -> 1; "dotted" -> 2; "dashed" -> 3; "double" -> 4
+        "ridge" -> 5; "groove" -> 6; "inset" -> 7; "outset" -> 8
+        else -> 0
+    }
+
+    // 边框宽 → em("2px"/"0.1em"/"thin"/"medium"/"thick";0 也有效)
+    private fun borderWidthEm(v: String): Float? = when (v.trim().lowercase()) {
+        "thin" -> 1f / 16f
+        "medium" -> 3f / 16f
+        "thick" -> 5f / 16f
+        else -> CssLen.parse(v)?.let { if (it.pct) null else it.v }
+    }
+
+    // url(...) 值提取(背景图)
+    private fun parseUrlValue(v: String): String? {
+        val m = Regex("url\\(([^)]+)\\)").find(v) ?: return null
+        return m.groupValues[1].trim().trim('"', '\'').takeIf { it.isNotEmpty() }
+    }
+
+    // 排版属性 → 盒样式(底色/背景图/圆角/阴影/内边距/四边边框)。
+    // 只带视觉的元素生成;全空返回 null(不进盒组)
+    internal fun parseBoxStyle(props: Map<String, String>, docDir: String): BoxStyle? {
+        val bg = props["background-color"]?.let { parseColor(it) }
+            ?.takeIf { it != 0L }   // transparent 不当底色
+        var bgImage: String? = null
+        for (key in listOf("background-image", "background")) {
+            if (bgImage != null) break
+            props[key]?.let { v ->
+                parseUrlValue(v)?.let { u ->
+                    bgImage = resolveHref(docDir, percentDecode(u)).ifBlank { null }
                 }
             }
         }
-        if (props["float"] == "right") floatRight = true
-        return if (align == 0 && indentEm == null && aboveEm == null && belowEm == null && !floatRight) null
-        else ParaLayout(align, indentEm, aboveEm, belowEm, floatRight)
+        val radius = props["border-radius"]?.trim()?.split(Regex("\\s+"))?.firstOrNull()?.let { CssLen.parse(it) }
+        val shadow = props["box-shadow"]?.let { it.trim().lowercase() != "none" } == true
+        fun padOf(key: String): Float? = CssLen.parse(props[key] ?: "")?.let { if (it.pct) null else it.v }
+        var padTop = padOf("padding-top") ?: 0f
+        var padBottom = padOf("padding-bottom") ?: 0f
+        var padLeft = padOf("padding-left") ?: 0f
+        var padRight = padOf("padding-right") ?: 0f
+        props["padding"]?.let { v ->
+            val parts = expand4(v)
+            listOf(
+                0 to { x: Float -> padTop = x },
+                1 to { x: Float -> padRight = x },
+                2 to { x: Float -> padBottom = x },
+                3 to { x: Float -> padLeft = x }
+            ).forEach { (idx, set) -> CssLen.parse(parts[idx])?.let { if (!it.pct) set(it.v) } }
+        }
+        val edges = parseEdges(props)
+        val hasEdges = edges.any { it.widthEm > 0f && it.style > 0 }
+        if (bg == null && bgImage == null && radius == null && !shadow && !hasEdges &&
+            padTop == 0f && padBottom == 0f && padLeft == 0f && padRight == 0f
+        ) return null
+        return BoxStyle(bg, bgImage, radius, shadow, padTop, padBottom, padLeft, padRight, edges)
     }
 
-    // 段级布局(解析产物;四期 CSS 子集 + 六期 float 降级)
+    // 段级布局(解析产物;七期起含左右缩进/定宽/行距/显式对齐)
     data class ParaLayout(
         val align: Int,
         val indentEm: Float?,
-        val aboveEm: Float?,
-        val belowEm: Float?,
-        val floatRight: Boolean = false
+        val aboveEm: CssLen?,
+        val belowEm: CssLen?,
+        val leftEm: CssLen? = null,
+        val rightEm: CssLen? = null,
+        val widthEm: CssLen? = null,
+        val lineMult: Float? = null,
+        val floatRight: Boolean = false,
+        val widthCenter: Boolean = false
     )
 
     // ---------- 段缓冲: 规整文本与 Run 边界一体化记录 ----------
@@ -338,21 +577,36 @@ object HtmlTextExtractor {
         // 段级排版上下文(CSS 继承简化: 子元素未设用父值,设了覆盖;离开元素恢复快照)
         var paraAlign = 0
         var paraIndentEm: Float? = null
-        var paraAboveEm: Float? = null
-        var paraBelowEm: Float? = null
+        var paraAboveEm: CssLen? = null
+        var paraBelowEm: CssLen? = null
+        var paraLeftEm: CssLen? = null
+        var paraRightEm: CssLen? = null
+        var paraWidthEm: CssLen? = null
+        var paraWidthCenter = false
+        var paraLineMult: Float? = null
         var pendingHeading = 0
+
+        // 盒上下文栈: 带盒样式的块元素覆盖期间,其覆盖的段落归属该盒(最内层优先)
+        val boxStack = ArrayDeque<com.yukino.tool.module.reader.common.BoxStyle>()
 
         fun result(): List<Paragraph> = out
 
         // 快照/恢复排版上下文(元素进出)
-        fun snapshotLayout(): Array<Any?> =
-            arrayOf(paraAlign, paraIndentEm, paraAboveEm, paraBelowEm)
+        fun snapshotLayout(): Array<Any?> = arrayOf(
+            paraAlign, paraIndentEm, paraAboveEm, paraBelowEm,
+            paraLeftEm, paraRightEm, paraWidthEm, paraWidthCenter, paraLineMult
+        )
 
         fun restoreLayout(s: Array<Any?>) {
             paraAlign = s[0] as Int
             paraIndentEm = s[1] as Float?
-            paraAboveEm = s[2] as Float?
-            paraBelowEm = s[3] as Float?
+            paraAboveEm = s[2] as CssLen?
+            paraBelowEm = s[3] as CssLen?
+            paraLeftEm = s[4] as CssLen?
+            paraRightEm = s[5] as CssLen?
+            paraWidthEm = s[6] as CssLen?
+            paraWidthCenter = s[7] as Boolean
+            paraLineMult = s[8] as Float?
         }
 
         fun applyLayout(l: ParaLayout?) {
@@ -363,7 +617,19 @@ object HtmlTextExtractor {
             if (l.indentEm != null) paraIndentEm = l.indentEm
             if (l.aboveEm != null) paraAboveEm = l.aboveEm
             if (l.belowEm != null) paraBelowEm = l.belowEm
+            if (l.leftEm != null) paraLeftEm = l.leftEm
+            if (l.rightEm != null) paraRightEm = l.rightEm
+            if (l.widthEm != null) paraWidthEm = l.widthEm
+            if (l.widthCenter) paraWidthCenter = true
+            if (l.lineMult != null) paraLineMult = l.lineMult
         }
+
+        // 段落产出时的整段左右缩进: 直接用上下文值——祖先盒/元素的 padding 已在
+        // parseParaLayout 折算并经快照恢复继承(多层盒逐层叠加);
+        // BoxStyle.padXXX 只供绘制矩形外扩,不再叠加(否则同层双重计算)
+        private fun effectiveLeft(): CssLen? = paraLeftEm
+
+        private fun effectiveRight(): CssLen? = paraRightEm
 
         // CJK 字符(汉字/CJK标点/全角): 与一期 CJK_GLUE 同一区间
         private fun isCjk(c: Char): Boolean =
@@ -414,7 +680,13 @@ object HtmlTextExtractor {
                     spaceAboveEm = paraAboveEm,
                     spaceBelowEm = paraBelowEm,
                     heading = pendingHeading,
-                    inlineImages = pendingInline.filter { it.start < sb.length }
+                    inlineImages = pendingInline.filter { it.start < sb.length },
+                    marginLeftEm = effectiveLeft(),
+                    marginRightEm = effectiveRight(),
+                    widthEm = paraWidthEm,
+                    widthCenter = paraWidthCenter,
+                    lineSpacingMult = paraLineMult,
+                    boxStyle = boxStack.lastOrNull()
                 )
                 if (openAnchors.isNotEmpty()) openAnchors.removeFirst()
             }
@@ -431,7 +703,12 @@ object HtmlTextExtractor {
                 anchor = openAnchors.firstOrNull()?.also { openAnchors.removeFirst() },
                 align = paraAlign,
                 spaceAboveEm = paraAboveEm,
-                spaceBelowEm = paraBelowEm
+                spaceBelowEm = paraBelowEm,
+                marginLeftEm = effectiveLeft(),
+                marginRightEm = effectiveRight(),
+                widthEm = paraWidthEm,
+                widthCenter = paraWidthCenter,
+                boxStyle = boxStack.lastOrNull()
             )
         }
 
@@ -529,6 +806,10 @@ object HtmlTextExtractor {
         val savedLayout = b.snapshotLayout()
         b.applyLayout(parseParaLayout(props))
 
+        // 七期: 盒样式(底色/边框/圆角/阴影/背景图/内边距)——覆盖期间产出的段落归入该盒
+        val box = parseBoxStyle(props, b.docDir)
+        if (box != null) b.boxStack.addLast(box)
+
         try {
             when {
                 name == "br" -> b.flush()
@@ -582,6 +863,7 @@ object HtmlTextExtractor {
             }
         } finally {
             if (id.isNotEmpty()) b.openAnchors.removeId(id)
+            if (box != null) b.boxStack.removeLast()
             b.curStyle = saved
             b.restoreLayout(savedLayout)
         }

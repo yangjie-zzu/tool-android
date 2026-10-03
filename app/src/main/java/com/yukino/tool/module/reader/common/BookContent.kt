@@ -28,10 +28,65 @@ class NoteAnchor(val start: Int, val end: Int, val noteId: String)
 // ref 为图片路径(章文件存相对路径,加载侧转绝对)。行内渲染,不独占行
 class InlineImg(val start: Int, val ref: String)
 
-// 段落级书内排版(四期 CSS 子集;来源 = style 属性 + 文档 class 样式表,解析侧提取):
-// align 0=默认(跟随全局) 1=居中 2=右对齐;indentEm 非空覆盖全局首行缩进(null=跟随全局);
-// spaceAboveEm/spaceBelowEm 书内块级 margin(em),排版时按"段距跟随书内"开关取舍;
-// heading = 1..6 表示该段源自 hn 标题(h2 拆章依据),0 = 普通段落
+// CSS 长度(七期): em 绝对值或版心百分比(CSS 的 margin/width 百分比相对包含块宽度)。
+// 排版期换算 px: em × 字号,百分比 × 可用宽
+@kotlinx.serialization.Serializable
+data class CssLen(val v: Float, val pct: Boolean = false) {
+    fun px(fontPx: Float, availWidthPx: Float): Float =
+        if (pct) v / 100f * availWidthPx else v * fontPx
+
+    companion object {
+        // "1.5em" / "24px"(÷16 折 em) / "10%" / "0" → CssLen;其他单位/形态 null
+        fun parse(raw: String): CssLen? {
+            val s = raw.trim()
+            if (s.isEmpty()) return null
+            if (s == "0") return CssLen(0f)
+            Regex("^(-?[\\d.]+)em$").find(s)?.let { return it.groupValues[1].toFloatOrNull()?.let { v -> CssLen(v) } }
+            Regex("^(-?[\\d.]+)px$").find(s)?.let { return it.groupValues[1].toFloatOrNull()?.let { v -> CssLen(v / 16f) } }
+            Regex("^(-?[\\d.]+)%$").find(s)?.let { return it.groupValues[1].toFloatOrNull()?.let { v -> CssLen(v, pct = true) } }
+            return null
+        }
+    }
+}
+
+// 边框样式(七期): 每边(宽, 样式, 颜色)。style:
+// 1 solid / 2 dotted / 3 dashed / 4 double / 5 ridge / 6 groove / 7 inset / 8 outset
+// (5..8 绘制层两色立体模拟;0/widthEm<=0 = 无边)
+@kotlinx.serialization.Serializable
+data class EdgeStyle(
+    val widthEm: Float = 0f,
+    val style: Int = 0,
+    val color: Long = 0xFF000000
+)
+
+// 盒样式(七期批次二): 底色/背景图/圆角/阴影/内边距/四边边框。
+// 带盒样式的块元素覆盖的连续段落为一个"盒组",绘制时按组聚合矩形(底色+边框),
+// 文本左右缩进 = margin/padding 折算,padTop/padBottom 只外扩绘制矩形不移动文本
+@kotlinx.serialization.Serializable
+data class BoxStyle(
+    val bg: Long? = null,
+    val bgImage: String? = null,      // 相对解压根路径(加载侧转绝对);cover 铺满盒矩形
+    val radius: CssLen? = null,       // 圆角(px/em 折 em,% 排版期相对版心宽换算)
+    val shadow: Boolean = false,
+    val padTopEm: Float = 0f,
+    val padBottomEm: Float = 0f,
+    val padLeftEm: Float = 0f,
+    val padRightEm: Float = 0f,
+    val edges: List<EdgeStyle> = emptyList()   // 固定 4 项: 上右下左
+) {
+    companion object {
+        val NONE = BoxStyle()
+    }
+}
+
+// 段落级书内排版(四期 CSS 子集;七期扩展):
+// align 0=默认(跟随全局) 1=居中 2=右对齐 3=左对齐(显式) 4=两端对齐(显式);
+// indentEm 非空覆盖全局首行缩进(null=跟随全局);
+// spaceAboveEm/spaceBelowEm 书内块级 margin(七期起支持 em/px/%),排版时按"段距跟随书内"开关取舍;
+// heading = 1..6 表示该段源自 hn 标题(h2 拆章依据),0 = 普通段落;
+// 七期: marginLeft/RightEm 整段左右缩进(margin/padding 折算),widthEm 定宽
+// (排版期推出右侧留白,左右 auto 时居中),lineSpacingMult 段级行距倍率(覆盖全局行距),
+// boxStyle 非空 = 段落在该盒内(相同样式相邻段落聚合绘制底色/边框)
 class Paragraph(
     val text: String,
     val runs: List<Run> = emptyList(),
@@ -41,10 +96,16 @@ class Paragraph(
     val notes: List<NoteAnchor> = emptyList(),
     val align: Int = 0,
     val indentEm: Float? = null,
-    val spaceAboveEm: Float? = null,
-    val spaceBelowEm: Float? = null,
+    val spaceAboveEm: CssLen? = null,
+    val spaceBelowEm: CssLen? = null,
     val heading: Int = 0,
-    val inlineImages: List<InlineImg> = emptyList()
+    val inlineImages: List<InlineImg> = emptyList(),
+    val marginLeftEm: CssLen? = null,
+    val marginRightEm: CssLen? = null,
+    val widthEm: CssLen? = null,
+    val widthCenter: Boolean = false,   // 定宽且左右 margin auto → 排版期整体居中
+    val lineSpacingMult: Float? = null,
+    val boxStyle: BoxStyle? = null
 ) {
     val isImage: Boolean get() = kind == ParaKind.IMAGE
 }

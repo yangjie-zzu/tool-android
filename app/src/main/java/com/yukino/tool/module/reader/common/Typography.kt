@@ -18,14 +18,15 @@ data class ResolvedTypography(
     val fgColor: Int,
     val bgColor: Int,
     val justify: Boolean,
-    val bookSpacing: Boolean = true   // 段距跟随书内 CSS(四期): false = 忽略书内 margin
+    val bookSpacing: Boolean = true,  // 段距跟随书内 CSS(四期): false = 忽略书内 margin 纯用全局段距
+    val night: Boolean = false        // 七期: 夜间主题(书内颜色/底色/边框做亮度适配)
 )
 
 object Typography {
 
     // 断行/排版算法版本: 算法变化(如断行策略切换、行高贴合版心、页首豁免段前距)时 +1,使旧分页缓存失效
-    // v13: 六期外部 CSS/负 margin/float 降级进入断行与分页,旧缓存全部失效重算
-    const val BREAK_STRATEGY_VERSION = 13
+    // v14: 七期左右缩进/定宽独立断行/段级行距进入断行与分页,旧缓存全部失效重算
+    const val BREAK_STRATEGY_VERSION = 14
 
     // 行高/段前距取整粒度(px): 向上取整到它的整数倍,取整只增不减,字形不被裁
     const val GRID_PX = 1
@@ -60,7 +61,8 @@ object Typography {
             fgColor = s.effectiveFg.toInt(),
             bgColor = s.effectiveBg.toInt(),
             justify = s.justify,
-            bookSpacing = s.bookSpacing
+            bookSpacing = s.bookSpacing,
+            night = s.theme == ReaderTheme.NIGHT
         )
     }
 
