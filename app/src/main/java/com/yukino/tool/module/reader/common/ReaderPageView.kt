@@ -353,6 +353,8 @@ class ReaderPageView(context: Context) : View(context) {
             canvas.translate(offsetX + t.marginPx, contentTop)
             // 七期: 盒组矩形(底色/背景图/边框/圆角/阴影)画在文字下层
             for (b in page.boxes) drawBoxShape(canvas, b, t)
+            // 批次四: 表格片段(同样在文字下层;表格行不产文字行)
+            for (tb in page.tables) drawTable(canvas, tb, t)
             for (ln in page.lines) {
                 if (ln.imageRef != null) {
                     drawImageLine(canvas, ln)
@@ -821,6 +823,84 @@ class ReaderPageView(context: Context) : View(context) {
     private object RectInflater {
         fun inset(r: android.graphics.RectF, by: Float): android.graphics.RectF =
             android.graphics.RectF(r.left + by, r.top + by, r.right - by, r.bottom - by)
+    }
+
+    // ---------- 批次四: 表格绘制 ----------
+
+    // 表格片段: 底色 → 格边框(collapse 相邻共享边重复覆盖;分离模式格矩形收缩 gap/2) → 格文本。
+    // 文本行复用 drawStyledLine(构造行内样式段,th 表头补加粗位);垂直对齐/水平对齐由布局期算好
+    private fun drawTable(canvas: Canvas, dt: DrawTable, t: ResolvedTypography) {
+        val tl = dt.layout
+        val night = t.night
+
+        fun cellRect(cb: TableCellBox): android.graphics.RectF {
+            val inset = if (tl.gap > 0f) tl.gap / 2f else 0f
+            return android.graphics.RectF(
+                dt.x + cb.x - inset, dt.y + cb.y - inset,
+                dt.x + cb.x + cb.w + inset, dt.y + cb.y + cb.h + inset
+            )
+        }
+
+        // 1. 底色
+        for (cb in tl.cells) {
+            cb.cell.bg?.let { c ->
+                boxPaint.style = Paint.Style.FILL
+                boxPaint.color = adaptColor(c, night).toInt()
+                canvas.drawRect(cellRect(cb), boxPaint)
+            }
+        }
+        // 2. 格边框(四边独立;0 宽/无边跳过)
+        for (cb in tl.cells) {
+            val rect = cellRect(cb)
+            val edges = cb.cell.edges
+            for ((side, edge) in edges.withIndex()) {
+                if (edge.widthEm <= 0f || edge.style <= 0) continue
+                drawEdge(canvas, rect, side, edge, night, t.fontPx)
+            }
+        }
+        // 3. 格文本(逐行;水平对齐按自然行宽;表头补加粗;复用 drawStyledLine)
+        for (cb in tl.cells) {
+            for ((li, line) in cb.lines.withIndex()) {
+                val bold = if (cb.cell.header) RunStyle.BOLD else 0
+                val styles = when {
+                    line.styles.isEmpty() && bold != 0 ->
+                        listOf(LineStyle(0, line.text.length, bold))
+                    bold != 0 -> line.styles.map { LineStyle(it.start, it.end, it.style or bold, it.sizeEm, it.color, it.shadow, it.font) }
+                    else -> line.styles
+                }
+                val base = bodyPaint
+                // 行宽: 有样式段按样式 paint 逐段量,否则整行量
+                var lw = 0f
+                if (styles.isEmpty()) {
+                    lw = base.measureText(line.text)
+                } else {
+                    var cursor = 0
+                    for (st in styles) {
+                        val a = st.start.coerceIn(0, line.text.length)
+                        val b = st.end.coerceIn(0, line.text.length)
+                        if (a > cursor) lw += base.measureText(line.text, cursor, a)
+                        if (b > a) lw += stylePaintFor(base, false, st).measureText(line.text, a, b)
+                        cursor = maxOf(cursor, b)
+                    }
+                    if (cursor < line.text.length) lw += base.measureText(line.text, cursor, line.text.length)
+                }
+                val xOff = when (cb.cell.align) {
+                    1 -> (cb.w - lw) / 2f
+                    2 -> (cb.w - lw).coerceAtLeast(0f)
+                    else -> 0f
+                }
+                val lineY = dt.y + cb.y + li * tl.lineH + tl.lineH * 0.82f
+                if (styles.isEmpty()) {
+                    canvas.drawText(line.text, dt.x + cb.x + xOff, lineY, base)
+                } else {
+                    drawStyledLine(
+                        canvas,
+                        DrawLine(line.text, dt.x + cb.x + xOff, lineY, false, 0L, null, styles),
+                        base
+                    )
+                }
+            }
+        }
     }
 
     // 图片行: baseline 字段复用为行顶 y,绘制按物化尺寸;未解码先画占位框(异步解码完成后重绘)

@@ -62,7 +62,8 @@ object ChapterFileCodec {
         val w: CssLenDto? = null,   // 七期: 定宽
         val wc: Boolean = false,    // 七期: 定宽且左右 margin auto(排版期居中)
         val lh: Float? = null,      // 七期: 段级行距倍率
-        val b: Int? = null          // 七期: 盒样式下标(boxes 表)
+        val b: Int? = null,         // 七期: 盒样式下标(boxes 表)
+        val tb: TableDto? = null    // 七期批次四: 表格段数据
     )
 
     @Serializable
@@ -76,13 +77,33 @@ object ChapterFileCodec {
     )
 
     @Serializable
+    private data class CellDto(
+        val r: Int, val c: Int,
+        val rs: Int = 1, val cs: Int = 1,
+        val t: String,
+        val runs: List<RunDto> = emptyList(),
+        val al: Int = 0, val va: Int = 1,
+        val bg: Long? = null,
+        val edges: List<EdgeDto> = emptyList(),
+        val th: Boolean = false
+    )
+
+    @Serializable
+    private data class TableDto(
+        val rows: Int, val cols: Int,
+        val cells: List<CellDto>,
+        val collapse: Boolean = true,
+        val spacing: Float = 0f
+    )
+
+    @Serializable
     private data class ChapterDto(
         val p: List<ParagraphDto>,
         val notes: Map<String, String> = emptyMap(),
         val boxes: Map<Int, BoxDto> = emptyMap(),   // 七期: 盒样式表(段落 b 下标引用)
         val fonts: Map<Int, String> = emptyMap(),   // 七期批次三: 字体表(下标 → family 名)
         val fontPaths: Map<String, String> = emptyMap(),  // family → 字体文件相对路径
-        val v: Int = 0   // 格式版本: 9 = 七期批次三(对象化 runs);旧文件缺省 0
+        val v: Int = 0   // 格式版本: 10 = 七期批次四(表格真渲染);旧文件缺省 0
     )
 
     private val json = Json { ignoreUnknownKeys = true }
@@ -128,7 +149,25 @@ object ChapterFileCodec {
                 w = p.widthEm?.let { CssLenDto(it.v, it.pct) },
                 wc = p.widthCenter,
                 lh = p.lineSpacingMult,
-                b = p.boxStyle?.let { boxIdOf(it) }
+                b = p.boxStyle?.let { boxIdOf(it) },
+                tb = p.table?.let { td ->
+                    TableDto(
+                        rows = td.rows, cols = td.cols,
+                        cells = td.cells.map { cell ->
+                            CellDto(
+                                r = cell.row, c = cell.col, rs = cell.rowSpan, cs = cell.colSpan,
+                                t = cell.text,
+                                runs = cell.runs.map {
+                                    RunDto(it.start, it.end, it.style, it.sizeEm, it.color, it.shadow, it.fontId)
+                                },
+                                al = cell.align, va = cell.vAlign, bg = cell.bg,
+                                edges = cell.edges.map { EdgeDto(it.widthEm, it.style, it.color) },
+                                th = cell.header
+                            )
+                        },
+                        collapse = td.collapse, spacing = td.spacingEm
+                    )
+                }
             )
         }
         val dto = ChapterDto(
@@ -144,7 +183,7 @@ object ChapterFileCodec {
     // 七期批次三格式版本: 对象化 runs(字号倍率/颜色/阴影/@font-face 字体下标)。
     // fonts 表 value 存 family 名,实际字体文件路径由内容源按书籍 CSS @font-face 解析。
     // 低版本文件打开时自动升级重提取
-    const val FORMAT_VERSION = 9
+    const val FORMAT_VERSION = 10
 
     private fun BoxDto.toBoxStyle() = com.yukino.tool.module.reader.common.BoxStyle(
         bg = bg, bgImage = bgImg,
@@ -202,6 +241,33 @@ object ChapterFileCodec {
             rs
         }
         val inlines = ii.map { InlineImg(it.s, it.ref) }
+        val table = tb?.let { td ->
+            com.yukino.tool.module.reader.common.TableData(
+                rows = td.rows, cols = td.cols,
+                cells = td.cells.map { cell ->
+                    com.yukino.tool.module.reader.common.TableCell(
+                        row = cell.r, col = cell.c, rowSpan = cell.rs, colSpan = cell.cs,
+                        text = cell.t,
+                        runs = cell.runs.map { Run(it.s, it.e, it.st, it.sz, it.co, it.sh, it.fo) },
+                        align = cell.al, vAlign = cell.va, bg = cell.bg,
+                        edges = cell.edges.map { com.yukino.tool.module.reader.common.EdgeStyle(it.w, it.st, it.c) },
+                        header = cell.th
+                    )
+                },
+                collapse = td.collapse, spacingEm = td.spacing
+            )
+        }
+        if (table != null) {
+            return Paragraph(
+                t, runs, ParaKind.TABLE, table = table,
+                anchor = a,
+                notes = n.map { NoteAnchor(it.s, it.e, it.id) },
+                align = al ?: 0,
+                spaceAboveEm = mt?.toCssLen(), spaceBelowEm = mb?.toCssLen(),
+                marginLeftEm = ml?.toCssLen(), marginRightEm = mr?.toCssLen(),
+                boxStyle = b?.let { boxStyles[it] }
+            )
+        }
         if (img != null) {
             return Paragraph(
                 t, emptyList(), ParaKind.IMAGE, img, a,

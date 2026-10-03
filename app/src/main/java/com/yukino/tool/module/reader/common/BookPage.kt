@@ -68,7 +68,9 @@ class ChapterLines(
     val inlineSizes: Map<String, ImageSize> = emptyMap(), // 五期: 行内图片显示尺寸(ref → 尺寸)
     val overrideLines: Map<Int, List<IntRange>> = emptyMap(), // 七期: 右缩进/定宽段的独立断行(paraIndex → composed 行区间)
     val fontIds: Map<Int, String> = emptyMap(),   // 七期批次三: run.fontId → family
-    val fontFiles: Map<String, String> = emptyMap() // family → 字体文件绝对路径
+    val fontFiles: Map<String, String> = emptyMap(), // family → 字体文件绝对路径
+    val tableLayouts: Map<Int, TableLayout> = emptyMap(),  // 批次四: 表格段布局(paraIndex → 布局)
+    val tableRowOfLine: Map<Int, Int> = emptyMap()         // 批次四: lines 下标 → 表格行号(表格段)
 )
 
 // 图片行的显示尺寸(版心坐标系;按版心宽等比缩放,超高图缩到一页内)
@@ -117,6 +119,45 @@ class DrawBox(
     val bottomOpen: Boolean
 )
 
+// ---------- 表格(七期批次四) ----------
+
+// 格内折行的一行: 行文本 + 行首字符在格文本中的偏移 + 富文本样式段(相对行文本)
+class CellTextLine(val text: String, val startOff: Int, val styles: List<LineStyle>)
+
+// 格矩形(表内坐标)与折行内容
+class TableCellBox(
+    val cell: TableCell,
+    val x: Float,
+    val y: Float,
+    val w: Float,
+    val h: Float,
+    val lines: List<CellTextLine>
+)
+
+// 表格布局(断行期一次算好,物化按页窗口切片): 列宽/行高/格几何
+class TableLayout(
+    val widths: List<Float>,
+    val heights: List<Float>,
+    val rowY: List<Float>,
+    val cells: List<TableCellBox>,
+    val totalWidth: Float,
+    val totalHeight: Float,
+    val padH: Float,
+    val padV: Float,
+    val gap: Float,
+    val lineH: Float
+)
+
+// 表格片段(物化产物): 全表布局 + 本页窗口的行范围;表格整体顶可为负(从上页延续),
+// 绘制层靠版心裁剪兜底
+class DrawTable(
+    val layout: TableLayout,
+    val x: Float,
+    val y: Float,
+    val firstRow: Int,
+    val lastRowExclusive: Int
+)
+
 class LineSeg(val text: String, val x: Float)
 
 // 可渲染页: 自包含(行布局+页眉页脚文案),渲染层不接触章/行模型。
@@ -127,6 +168,7 @@ class BookPage(
     val footerLabel: String,      // 空串不画
     val lines: List<DrawLine> = emptyList(),   // 正文页的行(相对版心顶的基线坐标)
     val boxes: List<DrawBox> = emptyList(),    // 七期: 盒组矩形(画在文字下层)
+    val tables: List<DrawTable> = emptyList(), // 批次四: 表格片段(画在文字下层)
     val fontFiles: Map<String, String> = emptyMap(),  // 七期批次三: family → 字体文件路径(绘制层加载 Typeface)
     val virtualLayout: StaticLayout? = null,   // 封面/封底: 居中布局,与 lines 二选一
     val coverImage: String? = null,            // 封面页: 封面图路径(与 virtualLayout 二选一,优先图)
@@ -446,9 +488,26 @@ object BookPager {
         // 这些段用独立 StaticLayout(宽 = 可用宽)断行,行区间替换主行
         fun paraMetricsOf(p: Paragraph?): ParaMetrics = paraMetrics(p, typo)
         val overrides = HashMap<Int, List<IntRange>>()
+        val tableLayouts = HashMap<Int, TableLayout>()
+        val tableRowOfLine = HashMap<Int, Int>()
         run {
             for ((pi, para) in paras.withIndex()) {
                 if (para.isImage) continue   // 图片段单行,不参与独立断行(对齐由物化层处理)
+                // 表格段: 布局一次(列宽/行高/格折行),虚拟行 = 表格行(每行 pitch = 行高),分页引擎按行切页天然断表
+                if (para.isTable) {
+                    val td = para.table ?: continue
+                    val pm = paraMetricsOf(para)
+                    val measurePaint = TextPaint(TextPaint.ANTI_ALIAS_FLAG).apply { textSize = typo.fontPx }
+                    val layout = layoutTable(td, pm.availWidth, typo) { s -> measurePaint.measureText(s) }
+                    tableLayouts[pi] = layout
+                    val rng = paraRanges[pi]
+                    if (!rng.isEmpty()) {
+                        val rows = ArrayList<IntRange>(layout.heights.size)
+                        repeat(layout.heights.size) { rows += rng.first until rng.last + 1 }   // 全部行同一 U+FFFC 占位
+                        overrides[pi] = rows
+                    }
+                    continue
+                }
                 val pm = paraMetricsOf(para)
                 if (!pm.needsOverride) continue
                 val rng = paraRanges[pi]
@@ -501,9 +560,18 @@ object BookPager {
                         val bookGrid = if (isStart) {
                             PaginationEngine.gridCeil(extraAbove[curPi], Typography.GRID_PX).coerceAtLeast(-paraAbove)
                         } else 0
-                        val (bp, ba) = paraLinePitch(para)
-                        val above = if (isStart) paraAbove + bookGrid else 0
-                        lines += TextLine(r.first, r.last + 1, LineKind.BODY, isStart, above + bp, above, ba)
+                        // 表格行: pitch = 表格行高网格化(基线偏移零,绘制从行顶);普通右缩进段: 段级行距
+                        if (para.isTable) {
+                            val tl = tableLayouts[curPi]!!
+                            val pitch = PaginationEngine.gridCeil(tl.heights[j], Typography.GRID_PX)
+                            val above = if (isStart) paraAbove + bookGrid else 0
+                            lines += TextLine(r.first, r.last + 1, LineKind.BODY, isStart, above + pitch, above, 0)
+                            tableRowOfLine[lines.lastIndex] = j
+                        } else {
+                            val (bp, ba) = paraLinePitch(para)
+                            val above2 = if (isStart) paraAbove + bookGrid else 0
+                            lines += TextLine(r.first, r.last + 1, LineKind.BODY, isStart, above2 + bp, above2, ba)
+                        }
                     }
                 }
                 continue
@@ -574,7 +642,8 @@ object BookPager {
 
         return ChapterLines(
             composed, bodyStart, content.chapterStart(chapterIndex) + stripped, lines,
-            paras, paraRanges, imageSizes, inlineSizes, overrides, doc.fontIds, doc.fontFiles
+            paras, paraRanges, imageSizes, inlineSizes, overrides, doc.fontIds, doc.fontFiles,
+            tableLayouts, tableRowOfLine
         )
     }
 
@@ -600,6 +669,147 @@ object BookPager {
         ml = ml.coerceIn(0f, tw * 0.45f)   // 防病态: 缩进不吞没行
         mr = mr.coerceIn(0f, tw * 0.45f)
         return ParaMetrics(ml, mr, tw - ml - mr, mr > 0.5f)
+    }
+
+    // ---------- 表格布局(七期批次四) ----------
+
+    // 列宽: 内容自然宽按 colSpan 均摊取列最大;总宽不足版心按比例摊余量撑满,
+    // 超出版心按比例压缩(保底 30% 版心)。行高: 单行格取需求最大,跨行格差额均摊到覆盖行。
+    // 格内文本贪心折行(空格优先断,超长硬断),runs 折算为行相对 LineStyle
+    internal fun layoutTable(
+        td: TableData,
+        availWidth: Float,
+        typo: ResolvedTypography,
+        measure: (String) -> Float
+    ): TableLayout {
+        val fontPx = typo.fontPx
+        val padH = fontPx * 0.3f
+        val padV = fontPx * 0.18f
+        val gap = if (td.collapse) 0f else td.spacingEm * fontPx
+        val lineH = fontPx * 1.35f
+        // 1. 列宽
+        val widths = FloatArray(td.cols)
+        for (cell in td.cells) {
+            val boldFactor = if (cell.header) 1.06f else 1f
+            val natural = measure(cell.text) * boldFactor + padH * 2f
+            val per = natural / cell.colSpan
+            for (c in cell.col until minOf(cell.col + cell.colSpan, td.cols)) {
+                widths[c] = maxOf(widths[c], per)
+            }
+        }
+        val gapTotal = gap * (td.cols + 1)
+        val naturalSum = widths.sum() + gapTotal
+        if (naturalSum < availWidth && widths.sum() > 0f) {
+            val extra = availWidth - naturalSum
+            val wsum = widths.sum()
+            for (c in widths.indices) widths[c] += extra * widths[c] / wsum
+        } else if (naturalSum > availWidth) {
+            val scale = (availWidth - gapTotal).coerceAtLeast(typo.textWidth * 0.3f) /
+                (naturalSum - gapTotal).coerceAtLeast(1f)
+            for (c in widths.indices) widths[c] *= scale
+        }
+        // 列 x 坐标
+        val colX = FloatArray(td.cols)
+        run { var acc = gap; for (c in 0 until td.cols) { colX[c] = acc; acc += widths[c] + gap } }
+        // 2. 格内容折行与需求高
+        data class Prepared(val cell: TableCell, val x: Float, val innerW: Float, val lines: List<CellTextLine>, val needH: Float)
+        val prepared = ArrayList<Prepared>(td.cells.size)
+        for (cell in td.cells) {
+            val lastCol = minOf(cell.col + cell.colSpan, td.cols)
+            val outerW = widths.copyOfRange(cell.col, lastCol).sum()
+            val innerW = (outerW - padH * 2f).coerceAtLeast(fontPx)
+            val lines = wrapCellText(cell, innerW, typo, measure)
+            val needH = lines.size * lineH + padV * 2f
+            prepared += Prepared(cell, colX[cell.col] + padH, innerW, lines, needH)
+        }
+        // 3. 行高: 单行格先行,跨行格补差
+        val heights = FloatArray(td.rows) { 0f }
+        for (p in prepared) if (p.cell.rowSpan == 1) heights[p.cell.row] = maxOf(heights[p.cell.row], p.needH)
+        for (p in prepared) {
+            if (p.cell.rowSpan == 1) continue
+            val r0 = p.cell.row
+            val r1 = minOf(p.cell.row + p.cell.rowSpan, td.rows)
+            var spanned = 0f
+            for (r in r0 until r1) spanned += heights[r]
+            if (spanned < p.needH) {
+                val per = (p.needH - spanned) / (r1 - r0)
+                for (r in r0 until r1) heights[r] += per
+            }
+        }
+        for (r in heights.indices) heights[r] = maxOf(heights[r], lineH + padV * 2f)
+        // 行 y
+        val rowY = FloatArray(td.rows)
+        run { var accY = gap; for (r in 0 until td.rows) { rowY[r] = accY; accY += heights[r] + gap } }
+        // 4. 格几何与垂直对齐
+        val cellBoxes = ArrayList<TableCellBox>(prepared.size)
+        for (p in prepared) {
+            val r0 = p.cell.row
+            val r1 = minOf(p.cell.row + p.cell.rowSpan, td.rows)
+            var spannedH = 0f
+            for (r in r0 until r1) spannedH += heights[r] + (if (r > r0) gap else 0f)
+            val textH = p.lines.size * lineH
+            val yOff = when (p.cell.vAlign) {
+                0 -> padV
+                2 -> (spannedH - textH - padV).coerceAtLeast(padV)
+                else -> (spannedH - textH) / 2f
+            }
+            cellBoxes += TableCellBox(p.cell, p.x, rowY[r0] + yOff, p.innerW, spannedH, p.lines)
+        }
+        val totalW = widths.sum() + gapTotal
+        val totalH = rowY.lastOrNull()?.plus(heights.lastOrNull() ?: 0f)?.plus(gap) ?: 0f
+        return TableLayout(widths.toList(), heights.toList(), rowY.toList(), cellBoxes, totalW, totalH, padH, padV, gap, lineH)
+    }
+
+    // 格内贪心折行: 空格处优先断(断后空格丢弃),无空格超长按字符硬断(CJK 逐字天然可断);
+    // runs 裁剪为行相对 LineStyle
+    internal fun wrapCellText(
+        cell: TableCell,
+        innerW: Float,
+        typo: ResolvedTypography,
+        measure: (String) -> Float
+    ): List<CellTextLine> {
+        val text = cell.text
+        if (text.isEmpty()) return emptyList()
+        val lines = ArrayList<CellTextLine>()
+        var lineStart = 0
+        var w = 0f
+        var lastBreak = -1
+        var i = 0
+        fun emit(from: Int, until: Int) {
+            val seg = text.substring(from, until).trimEnd()
+            if (seg.isEmpty()) return
+            val off = from
+            val styles = ArrayList<LineStyle>()
+            for (run in cell.runs) {
+                val a = maxOf(run.start, off)
+                val b2 = minOf(run.end, off + seg.length)
+                if (a < b2) styles += LineStyle(a - off, b2 - off, run.style, run.sizeEm, run.color, run.shadow, null)
+            }
+            lines += CellTextLine(seg, off, styles)
+        }
+        while (i < text.length) {
+            val cw = measure(text[i].toString())
+            if (w + cw > innerW && i > lineStart) {
+                if (lastBreak >= lineStart) {
+                    emit(lineStart, lastBreak + 1)
+                    lineStart = lastBreak + 1
+                    while (lineStart < text.length && text[lineStart] == ' ') lineStart++
+                    i = lineStart
+                    w = 0f
+                    lastBreak = -1
+                    continue
+                }
+                emit(lineStart, i)
+                lineStart = i
+                w = 0f
+                continue
+            }
+            w += cw
+            if (text[i] == ' ') lastBreak = i
+            i++
+        }
+        if (lineStart < text.length) emit(lineStart, text.length)
+        return lines
     }
 
     // 右缩进/定宽段的独立断行 layout: 宽 = 可用宽,首行缩进由 leading margin 承担,
@@ -706,7 +916,7 @@ object BookPager {
         val drawn = drawLinesWithBoxes(cl, slice, typo, measure = { paint.measureText(it) }, chapterStartGlobal = chapterStartGlobal)
         return BookPage(
             spec, spec.chapterTitle, label,
-            drawn.lines, drawn.boxes, cl.fontFiles
+            drawn.lines, drawn.boxes, drawn.tables, cl.fontFiles
         )
     }
 
@@ -722,7 +932,7 @@ object BookPager {
         chapterStartGlobal: Long = 0L
     ): List<DrawLine> = drawLinesWithBoxes(cl, slice, typo, measure, chapterStartGlobal).lines
 
-    internal class DrawLinesResult(val lines: List<DrawLine>, val boxes: List<DrawBox>)
+    internal class DrawLinesResult(val lines: List<DrawLine>, val boxes: List<DrawBox>, val tables: List<DrawTable> = emptyList())
 
     internal fun drawLinesWithBoxes(
         cl: ChapterLines,
@@ -733,11 +943,14 @@ object BookPager {
     ): DrawLinesResult {
         val out = ArrayList<DrawLine>(slice.endLineExclusive - slice.startLine)
         val boxes = ArrayList<DrawBox>()
+        val tables = ArrayList<DrawTable>()
         var head = slice.startLine
         while (head < slice.endLineExclusive && cl.lines[head].kind == LineKind.BLANK) head++
         // 段落行块区间(页内): 盒组聚合用
         val paraTop = HashMap<Int, Float>()
         val paraBottom = HashMap<Int, Float>()
+        val tableWindow = HashMap<Int, Pair<Int, Int>>()   // paraIndex → (firstRow, lastRowExclusive)
+        val tableTopY = HashMap<Int, Float>()               // 窗口内表格首行顶 y
         var y = 0
         for (li in slice.startLine until slice.endLineExclusive) {
             val ln = cl.lines[li]
@@ -749,6 +962,15 @@ object BookPager {
                 val pm = paraMetrics(para, typo)
                 paraTop[pi] = minOf(paraTop[pi] ?: Float.MAX_VALUE, (y + above).toFloat())
                 paraBottom[pi] = maxOf(paraBottom[pi] ?: 0f, (y + ln.pitch).toFloat())
+                // 批次四: 表格行——不产文字行,记录窗口内的表格行号范围,循环后切片
+                if (para?.isTable == true) {
+                    val rowNo = cl.tableRowOfLine[li] ?: 0
+                    val cur = tableWindow[pi]
+                    tableWindow[pi] = if (cur == null) rowNo to rowNo + 1 else minOf(cur.first, rowNo) to maxOf(cur.second, rowNo + 1)
+                    tableTopY[pi] = minOf(tableTopY[pi] ?: Float.MAX_VALUE, (y + above).toFloat())
+                    y += ln.pitch - (if (li == head) ln.paraAbove else 0)
+                    continue
+                }
                 if (para?.isImage == true) {
                     val sz = cl.imageDrawSizes[pi] ?: ImageSize(0, 0)
                     // 四期: 图片行随段级对齐(居中/右对齐;默认贴左);七期: 左缩进基点
@@ -822,6 +1044,16 @@ object BookPager {
             }
             y += ln.pitch - (if (li == head) ln.paraAbove else 0)
         }
+        // 批次四: 表格片段(表格整体顶 = 窗口首行顶 - 之前各行高累计;可负 = 从上页延续)
+        for ((pi, win) in tableWindow) {
+            val tl = cl.tableLayouts[pi] ?: continue
+            val para = cl.paras.getOrNull(pi) ?: continue
+            val pmT = paraMetrics(para, typo)
+            var before = 0f
+            for (r in 0 until win.first) before += tl.heights[r]
+            val topY = (tableTopY[pi] ?: 0f) - before
+            tables += DrawTable(tl, pmT.mlPx, topY, win.first, win.second)
+        }
         // 七期: 盒组聚合(页内连续同 boxStyle 段落 → 一个矩形;跨页组边缘不画横向框)
         run {
             val order = paraTop.keys.sorted()
@@ -864,7 +1096,7 @@ object BookPager {
             }
             flushBox()
         }
-        return DrawLinesResult(out, boxes)
+        return DrawLinesResult(out, boxes, tables)
     }
 
     // pos 所在段落下标(二分;段间换行位与空段不会被命中,返回 -1)

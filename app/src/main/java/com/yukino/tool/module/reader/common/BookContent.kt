@@ -29,7 +29,7 @@ data class Run(
     val fontId: Int? = null
 )
 
-enum class ParaKind { TEXT, IMAGE }
+enum class ParaKind { TEXT, IMAGE, TABLE }
 
 // 段内脚注角标区间(纯文本投影坐标): 角标文本保留在投影中(如 "[1]"),
 // noteId 指向章级 footnotes 表(不进正文阅读流)
@@ -90,6 +90,31 @@ data class BoxStyle(
     }
 }
 
+// 表格单元格(七期批次四): 网格展开后的占位(跨行跨列以 row/col 起点 + span 表达)。
+// 内容 = 单元格投影文本 + 富文本 runs(段间以单空格拼接);垂直对齐 0=top 1=middle 2=bottom
+class TableCell(
+    val row: Int,
+    val col: Int,
+    val rowSpan: Int = 1,
+    val colSpan: Int = 1,
+    val text: String,
+    val runs: List<Run> = emptyList(),
+    val align: Int = 0,               // 水平对齐(0 默认/1 中/2 右/3 左/4 两端)
+    val vAlign: Int = 1,              // 垂直对齐(top/middle/bottom)
+    val bg: Long? = null,             // 单元格底色
+    val edges: List<EdgeStyle> = emptyList(),   // 四边框(上右下左)
+    val header: Boolean = false       // th 表头(默认加粗居中)
+)
+
+// 表格(七期批次四): 真渲染数据。行高列宽排版期按内容分配;跨页按行切分
+class TableData(
+    val rows: Int,
+    val cols: Int,
+    val cells: List<TableCell>,
+    val collapse: Boolean = true,     // border-collapse: true 合并边框;false 分离(border-spacing 生效)
+    val spacingEm: Float = 0f         // border-spacing(em,collapse=false 时)
+)
+
 // 段落级书内排版(四期 CSS 子集;七期扩展):
 // align 0=默认(跟随全局) 1=居中 2=右对齐 3=左对齐(显式) 4=两端对齐(显式);
 // indentEm 非空覆盖全局首行缩进(null=跟随全局);
@@ -116,9 +141,11 @@ class Paragraph(
     val widthEm: CssLen? = null,
     val widthCenter: Boolean = false,   // 定宽且左右 margin auto → 排版期整体居中
     val lineSpacingMult: Float? = null,
-    val boxStyle: BoxStyle? = null
+    val boxStyle: BoxStyle? = null,
+    val table: TableData? = null      // 七期批次四: 表格段(投影 U+FFFC 占位,真渲染)
 ) {
     val isImage: Boolean get() = kind == ParaKind.IMAGE
+    val isTable: Boolean get() = table != null
 }
 
 // 章文档: 标题 + 正文段落序列。bodyText 是段落的纯文本投影(段间一个 \n),

@@ -6,6 +6,8 @@ import org.jsoup.nodes.Element
 import org.jsoup.nodes.Node
 import org.jsoup.nodes.TextNode
 import com.yukino.tool.module.reader.common.CssLen
+import com.yukino.tool.module.reader.common.TableCell
+import com.yukino.tool.module.reader.common.TableData
 import com.yukino.tool.module.reader.common.BoxStyle
 import com.yukino.tool.module.reader.common.EdgeStyle
 import com.yukino.tool.module.reader.common.NoteAnchor
@@ -736,6 +738,20 @@ object HtmlTextExtractor {
             pendingSpace = false
         }
 
+        fun addTable(td: com.yukino.tool.module.reader.common.TableData) {
+            out += Paragraph(
+                IMAGE_PLACEHOLDER, emptyList(), ParaKind.TABLE, imageRef = null,
+                anchor = openAnchors.firstOrNull()?.also { openAnchors.removeFirst() },
+                align = paraAlign,
+                spaceAboveEm = paraAboveEm,
+                spaceBelowEm = paraBelowEm,
+                marginLeftEm = effectiveLeft(),
+                marginRightEm = effectiveRight(),
+                boxStyle = boxStack.lastOrNull(),
+                table = td
+            )
+        }
+
         fun addImage(ref: String, width: CssLen? = null) {
             out += Paragraph(
                 IMAGE_PLACEHOLDER, emptyList(), ParaKind.IMAGE, imageRef = ref,
@@ -853,7 +869,7 @@ object HtmlTextExtractor {
             when {
                 name == "br" -> b.flush()
                 name == "img" -> { b.flush(); emitImage(node, b, cssRules) }
-                name == "table" -> { b.flush(); emitTable(node, b) }
+                name == "table" -> { b.flush(); emitTable(node, b, cssRules, noteIds) }
                 name == "ruby" -> {
                     // 七期: 基文本进正文(行内不断段), rt 音译提入脚注表并在基文本区间挂可点锚点
                     val rt = node.children()
@@ -932,17 +948,85 @@ object HtmlTextExtractor {
         }
     }
 
-    // 表格: 含跨行跨列或嵌套的复杂表出占位段;简单表逐行"单元格 | 单元格"
-    // (单元格内样式忽略——降级场景;空行丢弃)
-    private fun emitTable(node: Element, b: Builder) {
-        if (node.selectFirst("[rowspan],[colspan], table table") != null) {
+    // 表格(七期批次四): 真渲染数据提取。colspan/rowspan 网格展开(含被占位跳过);
+    // 嵌套表与超阈值(>500 格)仍降级占位。单元格内容经子 Builder 提取投影与 runs
+    // (段间单空格拼接,runs 平移),格级样式取 class/style(对齐/垂直对齐/底色/边框/th 加粗)
+    private fun emitTable(node: Element, b: Builder, cssRules: List<CssRule>, noteIds: Set<String>) {
+        if (node.selectFirst("table table") != null) {
             b.addPlainPara(TABLE_PLACEHOLDER)
             return
         }
-        for (tr in node.select("tr")) {
-            val cells = tr.select("th,td").map { collapse(it.text()) }.filter { it.isNotEmpty() }
-            if (cells.isNotEmpty()) b.addPlainPara(cells.joinToString(" | "))
+        val occupied = HashMap<Int, MutableSet<Int>>()   // row -> 被上方 rowspan 占用的列
+        val cells = ArrayList<TableCell>()
+        var rowCount = 0
+        var colCount = 0
+        val trs = node.select("tr")
+        for ((ri, tr) in trs.withIndex()) {
+            var c = 0
+            for (cellEl in tr.children()) {
+                val tag = cellEl.tagName().lowercase()
+                if (tag != "td" && tag != "th") continue
+                while (occupied[ri]?.contains(c) == true) c++
+                val rs = cellEl.attr("rowspan").toIntOrNull()?.coerceIn(1, 64) ?: 1
+                val cs = cellEl.attr("colspan").toIntOrNull()?.coerceIn(1, 64) ?: 1
+                for (dr in 0 until rs) occupied.getOrPut(ri + dr) { HashSet() }.also { it.addAll(c until c + cs) }
+                val (text, runs) = extractCellContent(cellEl, b, cssRules, noteIds)
+                if (text.isNotBlank() || tag == "th") {
+                    val props = propsFor(cellEl, cssRules)
+                    val pl = parseParaLayout(props)
+                    val vAlign = when (props["vertical-align"]) {
+                        "top" -> 0; "bottom" -> 2; else -> 1
+                    }
+                    val box = parseBoxStyle(props, b.docDir)
+                    cells += TableCell(
+                        row = ri, col = c, rowSpan = rs, colSpan = cs,
+                        text = text, runs = runs,
+                        align = pl?.align ?: 0,
+                        vAlign = vAlign,
+                        bg = box?.bg,
+                        edges = parseEdges(props),
+                        header = tag == "th"
+                    )
+                }
+                c += cs
+                colCount = maxOf(colCount, c)
+                rowCount = maxOf(rowCount, ri + rs)
+            }
+            rowCount = maxOf(rowCount, ri + 1)
         }
+        if (cells.isEmpty() || cells.size > 500) {
+            b.addPlainPara(TABLE_PLACEHOLDER)
+            return
+        }
+        val props = propsFor(node, cssRules)
+        b.addTable(
+            TableData(
+                rows = rowCount, cols = colCount, cells = cells,
+                collapse = props["border-collapse"]?.trim() != "separate",
+                spacingEm = CssLen.parse(props["border-spacing"] ?: "")?.let { if (it.pct) 0f else it.v } ?: 0f
+            )
+        )
+    }
+
+    // 单元格内容: 子 Builder 独立提取投影文本与 runs(多段以单空格拼接,runs 平移对齐)。
+    // 子上下文不带段落级排版(对齐由 TableCell.align 承载)
+    private fun extractCellContent(
+        el: Element, b: Builder, cssRules: List<CssRule>, noteIds: Set<String>
+    ): Pair<String, List<Run>> {
+        val sub = Builder(b.docDir)
+        for (c in el.childNodes()) walk(c, sub, ArrayDeque(), noteIds, cssRules)
+        sub.flush()
+        var text = ""
+        var off = 0
+        val runs = ArrayList<Run>()
+        for (p in sub.result()) {
+            if (text.isNotEmpty()) { text += " "; off += 1 }
+            for (r in p.runs) runs += r.copy(start = r.start + off, end = r.end + off)
+            text += p.text
+            off += p.text.length
+        }
+        // run.fontId 已按子 Builder 自身表(可能为空)分配——单元格内不引用字体,清零防越界
+        return text to runs.map { if (it.fontId != null) it.copy(fontId = null) else it }
     }
 
     // 单元格文本规整(整段产出无 Run,不走 Builder)

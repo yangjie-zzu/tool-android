@@ -155,18 +155,120 @@ class EpubRichContentTest {
     }
 
     @Test
-    fun `简单表格逐行管道连接`() {
+    fun `简单表格真渲染数据`() {
         val paras = extractHtml("<table><tr><td>a</td><td>b</td></tr><tr><td>1</td><td>2</td></tr></table>")
-        assertEquals(listOf("a | b", "1 | 2"), paras.map { it.text })
+        assertEquals(1, paras.size)
+        val p = paras[0]
+        assertTrue(p.isTable)
+        val td = p.table!!
+        assertEquals(2, td.rows)
+        assertEquals(2, td.cols)
+        assertEquals(listOf("a", "b", "1", "2"), td.cells.map { it.text })
+        assertEquals(listOf(0, 1, 0, 1), td.cells.map { it.col })
+        assertTrue(td.collapse)
     }
 
     @Test
-    fun `跨行列复杂表格出占位段`() {
+    fun `跨行列表格网格展开`() {
         val paras = extractHtml(
             "<table><tr><td rowspan=\"2\">a</td><td>b</td></tr><tr><td>c</td></tr></table>"
         )
-        assertEquals(1, paras.size)
-        assertTrue(paras[0].text.contains("表格内容"))
+        val td = paras[0].table!!
+        assertEquals(2, td.rows)
+        assertEquals(2, td.cols)
+        val a = td.cells.first { it.text == "a" }
+        assertEquals(0, a.row)
+        assertEquals(0, a.col)
+        assertEquals(2, a.rowSpan)
+        // 第二行的 c 落在列 1(列 0 被跨行格占用)
+        val c = td.cells.first { it.text == "c" }
+        assertEquals(1, c.row)
+        assertEquals(1, c.col)
+    }
+
+    @Test
+    fun `表头与单元格样式`() {
+        val paras = extractHtml(
+            "<style>td.vm { vertical-align: top; background-color: #eee } .hl { color: #f00 }</style>" +
+                "<table><tr><th>表头</th></tr><tr><td class=\"vm\"><span class=\"hl\">高亮</span></td></tr></table>"
+        )
+        val td = paras[0].table!!
+        val th = td.cells[0]
+        assertTrue(th.header)
+        assertEquals(1, th.vAlign)   // th 默认居中
+        val c = td.cells[1]
+        assertEquals(0, c.vAlign)    // vm → top
+        assertEquals(0xFFEEEEEEL, c.bg)
+        // 格内富文本: color run 保留
+        assertTrue(c.runs.any { it.color == 0xFFFF0000L })
+    }
+
+    @Test
+    fun `表格布局列宽行高与折行`() {
+        val typo = com.yukino.tool.module.reader.common.Typography.resolve(
+            2f, com.yukino.tool.module.reader.common.ReaderSettings(), 800, 1200
+        )
+        val measure = { s: String -> s.length * 10f }
+        val td = com.yukino.tool.module.reader.common.TableData(
+            rows = 2, cols = 2,
+            cells = listOf(
+                com.yukino.tool.module.reader.common.TableCell(0, 0, text = "ab"),
+                com.yukino.tool.module.reader.common.TableCell(0, 1, text = "长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长"),
+                com.yukino.tool.module.reader.common.TableCell(1, 0, rowSpan = 2, colSpan = 2, text = "跨行格")
+            )
+        )
+        val tl = BookPager.layoutTable(td, typo.textWidth.toFloat(), typo, measure)
+        assertEquals(2, tl.widths.size)
+        // 撑满可用宽
+        assertEquals(typo.textWidth.toFloat(), tl.totalWidth, 1f)
+        // "长内容×9" 自然宽超半版心被压缩 → 折行(至少 2 行);首行行高不低于内容
+        val wrapCell = tl.cells.first { it.cell.text.startsWith("长") }
+        assertTrue(wrapCell.lines.size >= 2)
+        assertTrue(tl.heights[0] >= wrapCell.lines.size * tl.lineH + tl.padV * 2 - 1f)
+        // 折行文本拼回原文(空格清理后字符一致)
+        assertEquals("长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长", wrapCell.lines.joinToString("") { it.text })
+        // 跨行格底边 = 两行高之和(简化: 格高不小于内容)
+        val spanCell = tl.cells.first { it.cell.rowSpan == 2 }
+        assertTrue(spanCell.h >= tl.lineH + tl.padV * 2)
+    }
+
+    @Test
+    fun `十期章文件表格往返`() {
+        val f = File.createTempFile("ch_v10", ".txt")
+        val td = com.yukino.tool.module.reader.common.TableData(
+            rows = 1, cols = 2, collapse = false, spacingEm = 0.2f,
+            cells = listOf(
+                com.yukino.tool.module.reader.common.TableCell(
+                    0, 0, text = "格A", runs = listOf(Run(0, 1, RunStyle.BOLD)),
+                    align = 1, vAlign = 0, bg = 0xFFEEEEL,
+                    edges = listOf(
+                        com.yukino.tool.module.reader.common.EdgeStyle(1f, 1, 0xFF000000L),
+                        com.yukino.tool.module.reader.common.EdgeStyle(), 
+                        com.yukino.tool.module.reader.common.EdgeStyle(),
+                        com.yukino.tool.module.reader.common.EdgeStyle()
+                    ),
+                    header = true
+                ),
+                com.yukino.tool.module.reader.common.TableCell(0, 1, colSpan = 1, text = "格B")
+            )
+        )
+        val paras = listOf(Paragraph(HtmlTextExtractor.IMAGE_PLACEHOLDER, table = td))
+        ChapterFileCodec.write(f, paras)
+        val read = ChapterFileCodec.read(f)
+        val rt = read.paragraphs[0].table!!
+        assertEquals(1, rt.rows)
+        assertEquals(2, rt.cols)
+        assertEquals("格A", rt.cells[0].text)
+        assertEquals(RunStyle.BOLD, rt.cells[0].runs[0].style and RunStyle.BOLD)
+        assertEquals(1, rt.cells[0].align)
+        assertEquals(0, rt.cells[0].vAlign)
+        assertEquals(0xFFEEEEL, rt.cells[0].bg)
+        assertEquals(1f, rt.cells[0].edges[0].widthEm)
+        assertTrue(rt.cells[0].header)
+        assertTrue(!rt.collapse)
+        assertEquals(0.2f, rt.spacingEm)
+        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(f))
+        f.delete()
     }
 
     // ---- 章文件编解码 ----
@@ -649,8 +751,11 @@ class EpubRichContentTest {
         assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v8))   // 批次二缺对象化 runs
         val v9 = File.createTempFile("v9ch", ".txt")
         v9.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":9}""")
-        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v9))
-        legacy.delete(); v2.delete(); v4.delete(); v5.delete(); v6.delete(); v7.delete(); v8.delete(); v9.delete()
+        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v9))   // 批次三缺表格真渲染
+        val v10 = File.createTempFile("v10ch", ".txt")
+        v10.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":10}""")
+        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v10))
+        legacy.delete(); v2.delete(); v4.delete(); v5.delete(); v6.delete(); v7.delete(); v8.delete(); v9.delete(); v10.delete()
     }
 
     // ---- 老书升级: 章号映射(顺序保持的标题匹配) ----
