@@ -552,16 +552,24 @@ object HtmlTextExtractor {
         var boxMarginAuto = 0
         var boxMarginLeft: CssLen? = props["margin-left"]?.let { CssLen.parse(it) }
         var boxMarginRight: CssLen? = props["margin-right"]?.let { CssLen.parse(it) }
-        if (props["margin-left"] == "auto" || props["margin-right"] == "auto") {
-            val al = props["margin-left"] == "auto"
-            val ar = props["margin-right"] == "auto"
-            boxMarginAuto = when {
-                al && ar -> 1
-                al -> 2
-                else -> 3
+        // margin 简写: 四值展开取左右分量, auto 判定定位语义(双 auto 居中/左 auto 贴右/右 auto 贴左)
+        props["margin"]?.trim()?.split(Regex("\\s+"))?.let { parts ->
+            fun at(i: Int) = if (i < parts.size) parts[i] else ""
+            val lr = when {
+                parts.size >= 4 -> listOf(at(1), at(3))
+                parts.size >= 2 -> listOf(at(1), at(1))
+                else -> listOf(at(0), at(0))
             }
-            if (al) boxMarginLeft = null
-            if (ar) boxMarginRight = null
+            if (boxMarginLeft == null) {
+                if (lr[0] == "auto") boxMarginAuto = 2 else boxMarginLeft = CssLen.parse(lr[0])
+            }
+            if (boxMarginRight == null) {
+                if (lr[1] == "auto") {
+                    if (boxMarginAuto == 0) boxMarginAuto = 3
+                } else if (boxMarginRight == null) boxMarginRight = CssLen.parse(lr[1])
+            }
+            // 双 auto = 居中
+            if (lr[0] == "auto" && lr[1] == "auto") boxMarginAuto = 1
         }
         val rotateDeg = props["transform"]?.let { tf ->
             Regex("rotate\\((-?[\\d.]+)deg\\)").find(tf)?.groupValues?.get(1)?.toFloatOrNull()

@@ -827,15 +827,33 @@ object BookPager {
             for (c in free) widths[c] = maxOf(widths[c], per)
         }
         val gapTotal = gap * (td.cols + 1)
-        val naturalSum = widths.sum() + gapTotal
-        if (naturalSum < availWidth && widths.sum() > 0f) {
-            val extra = availWidth - naturalSum
-            val wsum = widths.sum()
-            for (c in widths.indices) widths[c] += extra * widths[c] / wsum
-        } else if (naturalSum > availWidth) {
-            val scale = (availWidth - gapTotal).coerceAtLeast(typo.textWidth * 0.3f) /
-                (naturalSum - gapTotal).coerceAtLeast(1f)
-            for (c in widths.indices) widths[c] *= scale
+        // 批次四修复: 提示列(td width)固定,余量/压缩只作用于未提示列——
+        // 原书列宽比例(如登场人物表 8.5em/14em)不被内容长短打乱
+        val anyHint = td.colWidths.any { it != null }
+        if (anyHint) {
+            val freeSum = (widths.indices).filter { !hinted[it] }.sumOf { widths[it].toDouble() }.toFloat()
+            val budget = (availWidth - gapTotal - widths.filterIndexed { c, _ -> hinted[c] }.sum())
+                .coerceAtLeast(typo.textWidth * 0.15f)
+            if (freeSum > 0f) {
+                if (freeSum > budget) {
+                    val scale = budget / freeSum
+                    for (c in widths.indices) if (!hinted[c]) widths[c] *= scale
+                } else if (freeSum > 0f && budget > freeSum) {
+                    val extra = budget - freeSum
+                    for (c in widths.indices) if (!hinted[c]) widths[c] += extra * widths[c] / freeSum
+                }
+            }
+        } else {
+            val naturalSum = widths.sum() + gapTotal
+            if (naturalSum < availWidth && widths.sum() > 0f) {
+                val extra = availWidth - naturalSum
+                val wsum = widths.sum()
+                for (c in widths.indices) widths[c] += extra * widths[c] / wsum
+            } else if (naturalSum > availWidth) {
+                val scale = (availWidth - gapTotal).coerceAtLeast(typo.textWidth * 0.3f) /
+                    (naturalSum - gapTotal).coerceAtLeast(1f)
+                for (c in widths.indices) widths[c] *= scale
+            }
         }
         // 列 x 坐标
         val colX = FloatArray(td.cols)
