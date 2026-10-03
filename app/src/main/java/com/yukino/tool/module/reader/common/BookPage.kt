@@ -508,6 +508,27 @@ object BookPager {
                     }
                     continue
                 }
+                if (para.breakAll) {
+                    // 批次四e: word-break:break-all——手动逐字折行(空格优先,超长硬断),
+                    // 行区间直接产出(绘制走普通行路径,折行宽度 = 可用宽 - 首行缩进)
+                    val rngB = paraRanges[pi]
+                    if (!rngB.isEmpty()) {
+                        val pmB = paraMetricsOf(para)
+                        val indentB = ChapterComposer.paraIndentPx(para, typo)
+                        val innerW = (pmB.availWidth - indentB).coerceAtLeast(typo.fontPx)
+                        val measurePaint = TextPaint(TextPaint.ANTI_ALIAS_FLAG).apply { textSize = typo.fontPx }
+                        val tmp = TableCell(0, 0, text = para.text, runs = para.runs)
+                        val wrapped = wrapCellText(tmp, innerW, typo) { st -> measurePaint.measureText(st) }
+                        var off = 0
+                        val rows = ArrayList<IntRange>(wrapped.size)
+                        for (wl in wrapped) {
+                            rows += (rngB.first + wl.startOff) until (rngB.first + wl.startOff + wl.text.length).coerceAtMost(rngB.last + 1)
+                            off += wl.text.length
+                        }
+                        if (rows.isNotEmpty()) overrides[pi] = rows
+                    }
+                    continue
+                }
                 val pm = paraMetricsOf(para)
                 if (!pm.needsOverride) continue
                 val rng = paraRanges[pi]
@@ -593,6 +614,40 @@ object BookPager {
                 }
             }
             lines += TextLine(s, e, kind, isParaStart, pitch, if (isParaStart) paraAbove + bookGrid else 0, ascentAbs)
+        }
+
+        // 批次四c: 固定高盒——盒组内容高 < 固定高时,内容整体下移(垂直居中):
+        // 首行段前距与各行基线加偏移;矩形高由物化层取 max(内容高, 固定高)
+        run {
+            var gp = 0
+            while (gp < paras.size) {
+                val box = paras[gp].boxStyle
+                val hCss = box?.heightCss
+                if (hCss == null) { gp++; continue }
+                var last = gp
+                while (last + 1 < paras.size && paras[last + 1].boxStyle == box) last++
+                val firstIdx = lines.indexOfFirst { it.isParaStart && it.start == paraRanges[gp].first }
+                val lastIdx = lines.indexOfLast { it.start >= paraRanges[gp].first && it.start <= paraRanges[last].first }
+                if (firstIdx >= 0 && lastIdx >= firstIdx) {
+                    val hPx = hCss.px(typo.fontPx, typo.textWidth.toFloat())
+                    var contentH = 0f
+                    for (li in firstIdx..lastIdx) contentH += lines[li].pitch
+                    if (hPx > contentH) {
+                        val shift = (hPx - contentH) / 2f
+                        val shiftI = Math.round(shift)
+                        for (li in firstIdx..lastIdx) {
+                            val ln = lines[li]
+                            val above = ln.paraAbove + if (li == firstIdx) shiftI else 0
+                            lines[li] = TextLine(
+                                ln.start, ln.end, ln.kind, ln.isParaStart,
+                                ln.pitch + if (li == firstIdx) shiftI else 0, above,
+                                ln.ascentAbs + shiftI
+                            )
+                        }
+                    }
+                }
+                gp = last + 1
+            }
         }
 
         // 图片行占位: 按 U+FFFC 单字符定位该段的行,按版心宽等比换算显示尺寸,
@@ -1078,7 +1133,11 @@ object BookPager {
                 val right = (typo.textWidth - pm.mrPx - style.padRightEm * fontPx - br * fontPx)
                     .coerceAtMost(typo.textWidth.toFloat())
                 val top = (paraTop[fp] ?: 0f) - style.padTopEm * fontPx - bt * fontPx
-                val bottom = (paraBottom[lp] ?: 0f) + style.padBottomEm * fontPx + bb * fontPx
+                var bottom = (paraBottom[lp] ?: 0f) + style.padBottomEm * fontPx + bb * fontPx
+                // 批次四c: 固定高盒——矩形高不小于固定高(内容垂直居中已由排版期偏移)
+                style.heightCss?.px(fontPx, typo.textWidth.toFloat())?.let { hPx ->
+                    if (hPx > bottom - top) bottom = top + hPx
+                }
                 val topOpen = fp > 0 && cl.paras[fp - 1].boxStyle == style
                 val bottomOpen = lp < cl.paras.lastIndex && cl.paras[lp + 1].boxStyle == style
                 if (right > left) boxes += DrawBox(style, left, top, right, bottom, topOpen, bottomOpen)

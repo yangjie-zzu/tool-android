@@ -79,6 +79,8 @@ data class BoxStyle(
     val bgImage: String? = null,      // 相对解压根路径(加载侧转绝对);cover 铺满盒矩形
     val radius: CssLen? = null,       // 圆角(px/em 折 em,% 排版期相对版心宽换算)
     val shadow: Boolean = false,
+    val heightCss: CssLen? = null,    // 批次四c: 固定高(盒矩形高 = max(内容高,固定高),内容垂直居中)
+    val rotateDeg: Float? = null,     // 批次四d: transform rotate(度,绘制层盒中心旋转)
     val padTopEm: Float = 0f,
     val padBottomEm: Float = 0f,
     val padLeftEm: Float = 0f,
@@ -142,10 +144,13 @@ class Paragraph(
     val widthCenter: Boolean = false,   // 定宽且左右 margin auto → 排版期整体居中
     val lineSpacingMult: Float? = null,
     val boxStyle: BoxStyle? = null,
-    val table: TableData? = null      // 七期批次四: 表格段(投影 U+FFFC 占位,真渲染)
+    val table: TableData? = null,     // 七期批次四: 表格段(投影 U+FFFC 占位,真渲染)
+    val floatSide: Int = 0,           // 批次四b: 浮动盒(1=right 2=left;带 width+height 才真环绕,否则六期右对齐降级)
+    val breakAll: Boolean = false     // 批次四e: word-break:break-all(词中可断,手动逐字折行)
 ) {
     val isImage: Boolean get() = kind == ParaKind.IMAGE
     val isTable: Boolean get() = table != null
+    val isFloat: Boolean get() = floatSide != 0
 }
 
 // 章文档: 标题 + 正文段落序列。bodyText 是段落的纯文本投影(段间一个 \n),

@@ -301,7 +301,9 @@ object HtmlTextExtractor {
         var width: CssLen? = null
         var lineMult: Float? = null
         var floatRight = false
+        var floatLeft = false
         var widthCenter = false
+        var breakAll = false
         when (props["text-align"]) {
             "center" -> align = 1
             "right" -> align = 2
@@ -352,11 +354,15 @@ object HtmlTextExtractor {
             }
             if (center && width != null) widthCenter = true
         }
+        val wb = props["word-break"]
+        if (wb == "break-all") breakAll = true
+        if (props["word-wrap"] == "break-word" || props["overflow-wrap"] == "break-word") breakAll = true
         if (props["float"] == "right") floatRight = true
+        if (props["float"] == "left") floatLeft = true
         val any = align != 0 || indentEm != null || above != null || below != null ||
-            left != null || right != null || width != null || lineMult != null || floatRight
+            left != null || right != null || width != null || lineMult != null || floatRight || floatLeft || breakAll
         return if (!any) null
-        else ParaLayout(align, indentEm, above, below, left, right, width, lineMult, floatRight, widthCenter)
+        else ParaLayout(align, indentEm, above, below, left, right, width, lineMult, floatRight, widthCenter, floatLeft, breakAll)
     }
 
     // 已有值保留(先到先得,style 属性在 propsFor 已覆盖同 key),避免简写反向覆盖长属性
@@ -528,6 +534,11 @@ object HtmlTextExtractor {
             }
         }
         val radius = props["border-radius"]?.trim()?.split(Regex("\\s+"))?.firstOrNull()?.let { CssLen.parse(it) }
+        // 批次四c: 固定高;批次四d: transform: rotate(Ndeg)
+        val heightCss = props["height"]?.let { CssLen.parse(it) }?.takeIf { it.v > 0 }
+        val rotateDeg = props["transform"]?.let { tf ->
+            Regex("rotate\\((-?[\\d.]+)deg\\)").find(tf)?.groupValues?.get(1)?.toFloatOrNull()
+        }
         val shadow = props["box-shadow"]?.let { it.trim().lowercase() != "none" } == true
         fun padOf(key: String): Float? = CssLen.parse(props[key] ?: "")?.let { if (it.pct) null else it.v }
         var padTop = padOf("padding-top") ?: 0f
@@ -546,9 +557,13 @@ object HtmlTextExtractor {
         val edges = parseEdges(props)
         val hasEdges = edges.any { it.widthEm > 0f && it.style > 0 }
         if (bg == null && bgImage == null && radius == null && !shadow && !hasEdges &&
-            padTop == 0f && padBottom == 0f && padLeft == 0f && padRight == 0f
+            padTop == 0f && padBottom == 0f && padLeft == 0f && padRight == 0f &&
+            heightCss == null && rotateDeg == null
         ) return null
-        return BoxStyle(bg, bgImage, radius, shadow, padTop, padBottom, padLeft, padRight, edges)
+        return BoxStyle(
+            bg, bgImage, radius, shadow, heightCss, rotateDeg,
+            padTop, padBottom, padLeft, padRight, edges
+        )
     }
 
     // 段级布局(解析产物;七期起含左右缩进/定宽/行距/显式对齐)
@@ -562,7 +577,9 @@ object HtmlTextExtractor {
         val widthEm: CssLen? = null,
         val lineMult: Float? = null,
         val floatRight: Boolean = false,
-        val widthCenter: Boolean = false
+        val widthCenter: Boolean = false,
+        val floatLeft: Boolean = false,
+        val breakAll: Boolean = false
     )
 
     // ---------- 段缓冲: 规整文本与 Run 边界一体化记录 ----------
@@ -625,12 +642,14 @@ object HtmlTextExtractor {
         var paraWidthEm: CssLen? = null
         var paraWidthCenter = false
         var paraLineMult: Float? = null
+        var paraFloatSide = 0
+        var paraBreakAll = false
         var pendingHeading = 0
 
         // 快照/恢复排版上下文(元素进出)
         fun snapshotLayout(): Array<Any?> = arrayOf(
             paraAlign, paraIndentEm, paraAboveEm, paraBelowEm,
-            paraLeftEm, paraRightEm, paraWidthEm, paraWidthCenter, paraLineMult
+            paraLeftEm, paraRightEm, paraWidthEm, paraWidthCenter, paraLineMult, paraFloatSide, paraBreakAll
         )
 
         fun restoreLayout(s: Array<Any?>) {
@@ -643,6 +662,8 @@ object HtmlTextExtractor {
             paraWidthEm = s[6] as CssLen?
             paraWidthCenter = s[7] as Boolean
             paraLineMult = s[8] as Float?
+            paraFloatSide = s[9] as Int
+            paraBreakAll = s[10] as Boolean
         }
 
         fun applyLayout(l: ParaLayout?) {
@@ -658,6 +679,12 @@ object HtmlTextExtractor {
             if (l.widthEm != null) paraWidthEm = l.widthEm
             if (l.widthCenter) paraWidthCenter = true
             if (l.lineMult != null) paraLineMult = l.lineMult
+            paraFloatSide = when {
+                l.floatRight -> 1
+                l.floatLeft -> 2
+                else -> paraFloatSide
+            }
+            if (l.breakAll) paraBreakAll = true
         }
 
         // 段落产出时的整段左右缩进: 直接用上下文值——祖先盒/元素的 padding 已在
@@ -727,7 +754,9 @@ object HtmlTextExtractor {
                     widthEm = paraWidthEm,
                     widthCenter = paraWidthCenter,
                     lineSpacingMult = paraLineMult,
-                    boxStyle = boxStack.lastOrNull()
+                    boxStyle = boxStack.lastOrNull(),
+                    floatSide = paraFloatSide,
+                    breakAll = paraBreakAll
                 )
                 if (openAnchors.isNotEmpty()) openAnchors.removeFirst()
             }
@@ -748,7 +777,9 @@ object HtmlTextExtractor {
                 marginLeftEm = effectiveLeft(),
                 marginRightEm = effectiveRight(),
                 boxStyle = boxStack.lastOrNull(),
-                table = td
+                table = td,
+                floatSide = paraFloatSide,
+                breakAll = paraBreakAll
             )
         }
 
@@ -763,7 +794,9 @@ object HtmlTextExtractor {
                 marginRightEm = effectiveRight(),
                 widthEm = width ?: paraWidthEm,
                 widthCenter = paraWidthCenter,
-                boxStyle = boxStack.lastOrNull()
+                boxStyle = boxStack.lastOrNull(),
+                floatSide = paraFloatSide,
+                breakAll = paraBreakAll
             )
         }
 

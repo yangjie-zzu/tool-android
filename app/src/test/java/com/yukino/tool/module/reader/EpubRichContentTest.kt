@@ -395,7 +395,8 @@ class EpubRichContentTest {
     fun `float识别_right降级_right外忽略`() {
         val r1 = HtmlTextExtractor.parseParaLayout(mapOf("float" to "right"))
         assertTrue(r1!!.floatRight)
-        assertNull(HtmlTextExtractor.parseParaLayout(mapOf("float" to "left")))
+        val lf = HtmlTextExtractor.parseParaLayout(mapOf("float" to "left"))
+        assertTrue(lf!!.floatLeft && !lf.floatRight)   // 批次四b: 左浮标记(真环绕由排版期 width+height 判定)
         // float 与显式对齐同设时,显式对齐优先
         val r2 = HtmlTextExtractor.parseParaLayout(mapOf("float" to "right", "text-align" to "center"))
         assertEquals(1, r2!!.align)
@@ -752,10 +753,16 @@ class EpubRichContentTest {
         val v9 = File.createTempFile("v9ch", ".txt")
         v9.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":9}""")
         assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v9))   // 批次三缺表格真渲染
-        val v10 = File.createTempFile("v10ch", ".txt")
-        v10.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":10}""")
-        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v10))
-        legacy.delete(); v2.delete(); v4.delete(); v5.delete(); v6.delete(); v7.delete(); v8.delete(); v9.delete(); v10.delete()
+        val v11 = File.createTempFile("v11ch", ".txt")
+        v11.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":11}""")
+        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v11))   // 批次四缺装饰盒字段
+        val v10b = File.createTempFile("v10ch", ".txt")
+        v10b.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":10}""")
+        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v10b))   // 批次四a 缺装饰盒
+        val v12 = File.createTempFile("v12ch", ".txt")
+        v12.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":12}""")
+        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v12))
+        legacy.delete(); v2.delete(); v4.delete(); v5.delete(); v6.delete(); v7.delete(); v8.delete(); v9.delete(); v10b.delete(); v11.delete(); v12.delete()
     }
 
     // ---- 老书升级: 章号映射(顺序保持的标题匹配) ----
@@ -1177,6 +1184,57 @@ class EpubRichContentTest {
         val read = ChapterFileCodec.read(f)
         assertEquals(listOf(Run(0, 1, 1), Run(1, 2, 0)), read.paragraphs[0].runs)
         assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(f))
+        f.delete()
+    }
+
+    // ---- 批次四 b/c/d/e: float 环绕/固定高/旋转/break-all ----
+
+    @Test
+    fun `浮动盒固定高与旋转提取`() {
+        val html = """
+            <style>.t-box2 { width: 3.5em; height: 3.5em; border-radius: 100px;
+            border: solid 5px #000 }
+            .fr { float: right }
+            .rotate1 { transform: rotate(-5deg) }
+            .da { word-break: break-all }</style>
+            <div class="t-box2 fr"><p>圆盒</p></div>
+            <div class="rotate1">斜盒</div>
+            <p class="da">breakall段</p>
+        """.trimIndent()
+        val paras = extractHtml(html)
+        val fr = paras[0]
+        assertEquals(1, fr.floatSide)
+        val box = fr.boxStyle!!
+        assertEquals(com.yukino.tool.module.reader.common.CssLen(3.5f), box.heightCss)
+        assertTrue(paras[1].boxStyle!!.rotateDeg == -5f)
+        assertTrue(paras[2].breakAll)
+    }
+
+    @Test
+    fun `无宽高的float保持降级不标记环绕`() {
+        val paras = extractHtml("<style>.fr2 { float: right }</style><div class=\"fr2\"><p>无定宽浮块</p></div>")
+        assertEquals(1, paras[0].floatSide)
+        assertNull(paras[0].boxStyle?.heightCss)
+    }
+
+    @Test
+    fun `批次四字段章文件往返`() {
+        val f = File.createTempFile("ch_v12", ".txt")
+        val box = com.yukino.tool.module.reader.common.BoxStyle(
+            heightCss = com.yukino.tool.module.reader.common.CssLen(3.5f), rotateDeg = -5f
+        )
+        val paras = listOf(
+            Paragraph("浮盒", floatSide = 1, widthEm = com.yukino.tool.module.reader.common.CssLen(3.5f),
+                boxStyle = box, breakAll = false),
+            Paragraph("断词", breakAll = true)
+        )
+        ChapterFileCodec.write(f, paras)
+        val read = ChapterFileCodec.read(f)
+        assertEquals(1, read.paragraphs[0].floatSide)
+        assertEquals(com.yukino.tool.module.reader.common.CssLen(3.5f), read.paragraphs[0].boxStyle!!.heightCss)
+        assertEquals(-5f, read.paragraphs[0].boxStyle!!.rotateDeg!!)
+        assertTrue(read.paragraphs[1].breakAll)
+        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(f))
         f.delete()
     }
 }

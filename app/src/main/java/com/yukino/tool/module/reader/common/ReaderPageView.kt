@@ -615,6 +615,13 @@ class ReaderPageView(context: Context) : View(context) {
         val fontPx = t.fontPx
         val rect = android.graphics.RectF(box.left, box.top, box.right, box.bottom)
         val radius = style.radius?.px(fontPx, t.textWidth.toFloat())?.coerceAtLeast(0f) ?: 0f
+        // 批次四d: 盒旋转(绕盒中心;选区命中不走盒内,装饰性元素)
+        val rotated = style.rotateDeg != null && style.rotateDeg != 0f
+        val saveCount = if (rotated) {
+            canvas.save()
+            canvas.rotate(style.rotateDeg!!, rect.centerX(), rect.centerY())
+            1
+        } else 0
         boxPaint.style = Paint.Style.FILL
         boxPaint.shadowLayerCompatClear()
 
@@ -679,6 +686,7 @@ class ReaderPageView(context: Context) : View(context) {
                 drawEdge(canvas, rect, 1, e1, night, fontPx)   // 右
             }
         }
+        if (rotated) canvas.restore()
     }
 
     private fun Paint.shadowLayerCompatClear() { clearShadowLayer() }

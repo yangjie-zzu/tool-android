@@ -39,6 +39,8 @@ object ChapterFileCodec {
         val bgImg: String? = null,
         val rad: CssLenDto? = null,
         val shadow: Boolean = false,
+        val h: CssLenDto? = null,      // 批次四c: 固定高
+        val rot: Float? = null,        // 批次四d: 旋转角(度)
         val pt: Float = 0f, val pb: Float = 0f, val pl: Float = 0f, val pr: Float = 0f,
         val edges: List<EdgeDto> = emptyList()
     )
@@ -63,7 +65,9 @@ object ChapterFileCodec {
         val wc: Boolean = false,    // 七期: 定宽且左右 margin auto(排版期居中)
         val lh: Float? = null,      // 七期: 段级行距倍率
         val b: Int? = null,         // 七期: 盒样式下标(boxes 表)
-        val tb: TableDto? = null    // 七期批次四: 表格段数据
+        val tb: TableDto? = null,   // 七期批次四: 表格段数据
+        val fs: Int = 0,            // 批次四b: 浮动(1=right 2=left)
+        val ba: Boolean = false     // 批次四e: break-all
     )
 
     @Serializable
@@ -124,6 +128,8 @@ object ChapterFileCodec {
                     bg = bs.bg, bgImg = bs.bgImage,
                     rad = bs.radius?.let { CssLenDto(it.v, it.pct) },
                     shadow = bs.shadow,
+                    h = bs.heightCss?.let { CssLenDto(it.v, it.pct) },
+                    rot = bs.rotateDeg,
                     pt = bs.padTopEm, pb = bs.padBottomEm, pl = bs.padLeftEm, pr = bs.padRightEm,
                     edges = bs.edges.map { EdgeDto(it.widthEm, it.style, it.color) }
                 )
@@ -167,7 +173,9 @@ object ChapterFileCodec {
                         },
                         collapse = td.collapse, spacing = td.spacingEm
                     )
-                }
+                },
+                fs = p.floatSide,
+                ba = p.breakAll
             )
         }
         val dto = ChapterDto(
@@ -183,12 +191,14 @@ object ChapterFileCodec {
     // 七期批次三格式版本: 对象化 runs(字号倍率/颜色/阴影/@font-face 字体下标)。
     // fonts 表 value 存 family 名,实际字体文件路径由内容源按书籍 CSS @font-face 解析。
     // 低版本文件打开时自动升级重提取
-    const val FORMAT_VERSION = 10
+    const val FORMAT_VERSION = 12
 
     private fun BoxDto.toBoxStyle() = com.yukino.tool.module.reader.common.BoxStyle(
         bg = bg, bgImage = bgImg,
         radius = rad?.let { com.yukino.tool.module.reader.common.CssLen(it.v, it.pct) },
         shadow = shadow,
+        heightCss = h?.let { com.yukino.tool.module.reader.common.CssLen(it.v, it.pct) },
+        rotateDeg = rot,
         padTopEm = pt, padBottomEm = pb, padLeftEm = pl, padRightEm = pr,
         edges = edges.map { com.yukino.tool.module.reader.common.EdgeStyle(it.w, it.st, it.c) }
     )
@@ -265,7 +275,8 @@ object ChapterFileCodec {
                 align = al ?: 0,
                 spaceAboveEm = mt?.toCssLen(), spaceBelowEm = mb?.toCssLen(),
                 marginLeftEm = ml?.toCssLen(), marginRightEm = mr?.toCssLen(),
-                boxStyle = b?.let { boxStyles[it] }
+                boxStyle = b?.let { boxStyles[it] },
+                breakAll = ba
             )
         }
         if (img != null) {
@@ -275,7 +286,8 @@ object ChapterFileCodec {
                 align = al ?: 0, spaceAboveEm = mt?.toCssLen(), spaceBelowEm = mb?.toCssLen(),
                 marginLeftEm = ml?.toCssLen(), marginRightEm = mr?.toCssLen(),
                 widthEm = w?.toCssLen(), widthCenter = wc, lineSpacingMult = lh,
-                boxStyle = b?.let { boxStyles[it] }
+                boxStyle = b?.let { boxStyles[it] },
+                floatSide = fs, breakAll = ba
             )
         }
         return Paragraph(
@@ -293,7 +305,9 @@ object ChapterFileCodec {
             widthEm = w?.toCssLen(),
             widthCenter = wc,
             lineSpacingMult = lh,
-            boxStyle = b?.let { boxStyles[it] }
+            boxStyle = b?.let { boxStyles[it] },
+            floatSide = fs,
+            breakAll = ba
         )
     }
 
