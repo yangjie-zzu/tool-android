@@ -341,7 +341,7 @@ object HtmlTextExtractor {
             }
             CssLen.parse(bottomRaw)?.let { if (below == null) below = it }
             val lr = when {
-                parts.size >= 4 -> listOf(at(1), at(3))
+                parts.size >= 4 -> listOf(at(3), at(1))
                 parts.size >= 2 -> listOf(at(1), at(1))
                 else -> listOf(at(0), at(0))
             }
@@ -556,7 +556,7 @@ object HtmlTextExtractor {
         props["margin"]?.trim()?.split(Regex("\\s+"))?.let { parts ->
             fun at(i: Int) = if (i < parts.size) parts[i] else ""
             val lr = when {
-                parts.size >= 4 -> listOf(at(1), at(3))
+                parts.size >= 4 -> listOf(at(3), at(1))
                 parts.size >= 2 -> listOf(at(1), at(1))
                 else -> listOf(at(0), at(0))
             }

@@ -1240,7 +1240,8 @@ object BookPager {
                         1 -> { left = (tw - boxW) / 2f + mlB; right = left + boxW }
                         2 -> { right = tw - mrB; left = right - boxW }
                         3 -> { left = mlB; right = left + boxW }
-                        else -> { left = mlB; right = if (mrB > 0f) tw - mrB else left + boxW }
+                        // 双值非 auto: LTR 过约束忽略 margin-right, 盒从 margin-left 起排
+                        else -> { left = mlB; right = left + boxW }
                     }
                 } else {
                     left = pm.mlPx

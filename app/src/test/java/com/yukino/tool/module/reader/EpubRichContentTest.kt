@@ -953,10 +953,10 @@ class EpubRichContentTest {
     fun `margin简写auto定位语义`() {
         // 双 auto = 居中
         assertEquals(1, HtmlTextExtractor.parseParaLayout(mapOf("margin" to "3% auto", "width" to "24em"))!!.widthAlign)
-        // 右 auto = 贴左(CSS: margin-right:auto 把剩余空间分给右边)
-        assertEquals(3, HtmlTextExtractor.parseParaLayout(mapOf("margin" to "-1.7em 0.3em 0 auto", "width" to "1em"))!!.widthAlign)
-        // 左 auto = 贴右
-        assertEquals(2, HtmlTextExtractor.parseParaLayout(mapOf("margin" to "0 auto 0 2em", "width" to "10em"))!!.widthAlign)
+        // 左 auto = 贴右(t-box3 案例: 四值 -1.7em 0.3em 0 auto, 左位 auto 把盒推到右缘)
+        assertEquals(2, HtmlTextExtractor.parseParaLayout(mapOf("margin" to "-1.7em 0.3em 0 auto", "width" to "1em"))!!.widthAlign)
+        // 右 auto = 贴左(四值 0 auto 0 2em: 上0 右auto 下0 左2em)
+        assertEquals(3, HtmlTextExtractor.parseParaLayout(mapOf("margin" to "0 auto 0 2em", "width" to "10em"))!!.widthAlign)
         // 分边属性 auto 同义
         assertEquals(2, HtmlTextExtractor.parseParaLayout(mapOf("margin-left" to "auto", "width" to "10em"))!!.widthAlign)
     }
