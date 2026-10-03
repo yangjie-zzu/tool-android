@@ -535,6 +535,20 @@ class ReaderPageView(context: Context) : View(context) {
     // 段起点 x = 行首 x + 前缀宽度(前缀跨样式时按本段 paint 量,词元边界处精确)
     private fun drawStyledLine(canvas: Canvas, ln: DrawLine, base: android.text.TextPaint) {        val styles = ln.styles ?: return
         val full = ln.text
+        // 段起始 x: 前缀按"各字符所在段自己的 paint"量宽(样式段字号不同时,
+        // 统一用 base 量会让后段起点前移/后移造成覆盖——七期字号混排修复)
+        fun prefixX(upTo: Int): Float {
+            var acc = 0f
+            var i = 0
+            while (i < upTo) {
+                val st = styles.firstOrNull { i >= it.start && i < it.end }
+                val p = if (st != null) stylePaintFor(base, ln.title, st) else base
+                val end = if (st != null) minOf(st.end, upTo) else upTo
+                acc += p.measureText(full, i, end)
+                i = end
+            }
+            return acc
+        }
         for (st in styles) {
             val p = stylePaintFor(base, ln.title, st)
             val dy = baselineShift(st.style, p.textSize)
@@ -543,7 +557,7 @@ class ReaderPageView(context: Context) : View(context) {
             val segs = ln.segments
             if (segs == null) {
                 if (st.start >= st.end || st.end > full.length) continue
-                val x = ln.x + base.measureText(full, 0, st.start)
+                val x = ln.x + prefixX(st.start)
                 val sub = full.substring(st.start, st.end)
                 canvas.drawText(sub, x, ln.baseline + dy, p)
                 drawDecor(canvas, p, x, ln.baseline + dy, sub, underline, strike, p.textSize)

@@ -70,7 +70,8 @@ class ChapterLines(
     val fontIds: Map<Int, String> = emptyMap(),   // 七期批次三: run.fontId → family
     val fontFiles: Map<String, String> = emptyMap(), // family → 字体文件绝对路径
     val tableLayouts: Map<Int, TableLayout> = emptyMap(),  // 批次四: 表格段布局(paraIndex → 布局)
-    val tableRowOfLine: Map<Int, Int> = emptyMap()         // 批次四: lines 下标 → 表格行号(表格段)
+    val tableRowOfLine: Map<Int, Int> = emptyMap(),        // 批次四: lines 下标 → 表格行号(表格段)
+    val avoidX: Map<Int, Float> = emptyMap()               // 批次四b: float 环绕避让偏移(paraIndex → 行 x 偏移)
 )
 
 // 图片行的显示尺寸(版心坐标系;按版心宽等比缩放,超高图缩到一页内)
@@ -410,15 +411,27 @@ object BookPager {
             val perChapter = (0 until content.chapterCount).map { c ->
                 async(Dispatchers.Default) {
                     permits.withPermit {
-                        ensureActive()
+                        try {
+                            ensureActive()
+                        } catch (t: Throwable) { throw t }
+                        try {
                         val cl = putLines(
                             content, c, buildChapterLines(content, c, typo), typo
                         )
                         specsOf(cl, c, content.chapterStart(c), content.chapterTitle(c), typo)
+                        } catch (t: Throwable) {
+                            android.util.Log.e("BookPager", "chapter $c failed", t)
+                            throw t
+                        }
                     }
                 }
             }
-            perChapter.awaitAll().forEach { specs += it }   // 发起顺序 = 章序,结果确定性不变
+            try {
+                perChapter.awaitAll().forEach { specs += it }   // 发起顺序 = 章序,结果确定性不变
+            } catch (t: Throwable) {
+                android.util.Log.e("BookPager", "buildSpecs failed", t)
+                throw t
+            }
             specs += PageSpec(PageKind.BACK, content.chapterCount, 0, 1, content.totalChars, "")
             specs
         }
@@ -543,6 +556,56 @@ object BookPager {
                     }
                 }
                 if (rows.isNotEmpty()) overrides[pi] = rows
+            }
+        }
+
+        // 批次四b: float 盒真环绕——带 width+height 的浮动盒:
+        //   盒段自身按盒宽独立断行;盒行范围内的后续段落缩窄(版心-盒宽)断行,
+        //   物化时行 x 偏移盒宽(盒在左)。避让行数 = max(盒段实际行数, 固定高/行高);
+        //   无 width/height 的 float 保持六期右对齐降级
+        val avoidX = HashMap<Int, Float>()
+        run {
+            for ((piF, paraF) in paras.withIndex()) {
+                if (paraF.floatSide == 0 || paraF.widthEm == null) continue
+                val hCss = paraF.boxStyle?.heightCss ?: continue
+                val pmF = paraMetrics(paraF, typo)
+                val boxW = pmF.availWidth
+                if (boxW <= 0f || boxW >= typo.textWidth * 0.8f) continue   // 盒过宽不环绕
+                val rngF = paraRanges[piF]
+                if (rngF.isEmpty()) continue
+                val slF = overrideLayout(paraF, pmF, typo)
+                val rowsF = ArrayList<IntRange>(slF.lineCount)
+                for (i in 0 until slF.lineCount) {
+                    val rs = slF.getLineStart(i); val re = slF.getLineEnd(i)
+                    if (re > rs) rowsF += (rngF.first + rs) until (rngF.first + re).coerceAtMost(rngF.last + 1)
+                }
+                if (rowsF.isEmpty()) continue
+                overrides[piF] = rowsF
+                val li0 = (0 until measure.lineCount).firstOrNull { measure.getLineStart(it) == rngF.first } ?: continue
+                val hPx = hCss.px(typo.fontPx, typo.textWidth.toFloat())
+                val nBox = maxOf(rowsF.size, kotlin.math.ceil(hPx / bodyPitch).toInt().coerceAtLeast(1))
+                val avoidEnd = li0 + nBox
+                for ((pi, para) in paras.withIndex()) {
+                    if (pi == piF || para.isImage || para.isTable || para.isFloat) continue
+                    val rng = paraRanges[pi]
+                    if (rng.isEmpty()) continue
+                    val liS = (0 until measure.lineCount).firstOrNull { measure.getLineStart(it) == rng.first } ?: continue
+                    val liE = (0 until measure.lineCount).lastOrNull { measure.getLineStart(it) <= rng.last } ?: liS
+                    if (liS >= avoidEnd) break
+                    if (liE < li0) continue
+                    val pmA = paraMetrics(para, typo)
+                    val narrow = pmA.copy(availWidth = (pmA.availWidth - boxW).coerceAtLeast(typo.fontPx))
+                    val sl = overrideLayout(para, narrow, typo)
+                    val rows = ArrayList<IntRange>(sl.lineCount)
+                    for (i in 0 until sl.lineCount) {
+                        val rs = sl.getLineStart(i); val re = sl.getLineEnd(i)
+                        if (re > rs) rows += (rng.first + rs) until (rng.first + re).coerceAtMost(rng.last + 1)
+                    }
+                    if (rows.isNotEmpty()) {
+                        overrides[pi] = rows
+                        avoidX[pi] = if (paraF.floatSide == 2) boxW else 0f
+                    }
+                }
             }
         }
 
@@ -698,7 +761,7 @@ object BookPager {
         return ChapterLines(
             composed, bodyStart, content.chapterStart(chapterIndex) + stripped, lines,
             paras, paraRanges, imageSizes, inlineSizes, overrides, doc.fontIds, doc.fontFiles,
-            tableLayouts, tableRowOfLine
+            tableLayouts, tableRowOfLine, avoidX
         )
     }
 
@@ -1043,17 +1106,18 @@ object BookPager {
                 } else {
                     val text = cl.composed.substring(ln.start, ln.end)
                     val align = para?.align ?: 0
+                    val avoid = if (pi >= 0) cl.avoidX[pi] ?: 0f else 0f
                     val x: Float
                     val segs: List<LineSeg>?
                     when (align) {
                         1 -> {
                             val w = measure(text)
-                            x = (pm.mlPx + (pm.availWidth - w) / 2f).coerceAtLeast(0f)
+                            x = (avoid + pm.mlPx + (pm.availWidth - w) / 2f).coerceAtLeast(0f)
                             segs = null
                         }
                         2 -> {
                             val w = measure(text)
-                            x = (pm.mlPx + pm.availWidth - w).coerceAtLeast(0f)
+                            x = (avoid + pm.mlPx + pm.availWidth - w).coerceAtLeast(0f)
                             segs = null
                         }
                         3 -> {
@@ -1061,7 +1125,7 @@ object BookPager {
                             val indentPx = ChapterComposer.paraIndentPx(para, typo)
                             val indented = ln.isParaStart && indentPx > 0f &&
                                 !ChapterComposer.leadingIndented(cl.composed, ln.start)
-                            x = pm.mlPx + if (indented) indentPx else 0f
+                            x = avoid + pm.mlPx + if (indented) indentPx else 0f
                             segs = null
                         }
                         else -> {
@@ -1069,7 +1133,7 @@ object BookPager {
                             val indentPx = ChapterComposer.paraIndentPx(para, typo)
                             val indented = ln.isParaStart && indentPx > 0f &&
                                 !ChapterComposer.leadingIndented(cl.composed, ln.start)
-                            x = pm.mlPx + if (indented) indentPx else 0f
+                            x = avoid + pm.mlPx + if (indented) indentPx else 0f
                             val doJustify = align == 4 || typo.justify
                             val midPara = ln.kind == LineKind.BODY &&
                                 ln.end < cl.composed.length && cl.composed[ln.end] != '\n'

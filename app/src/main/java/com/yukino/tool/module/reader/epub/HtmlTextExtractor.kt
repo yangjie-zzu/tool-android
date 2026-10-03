@@ -1053,6 +1053,8 @@ object HtmlTextExtractor {
         var off = 0
         val runs = ArrayList<Run>()
         for (p in sub.result()) {
+            // 格内图片段(装饰图)不进格文本——U+FFFC 在格内无图片管线,拼入会画出占位框
+            if (p.isImage) continue
             if (text.isNotEmpty()) { text += " "; off += 1 }
             for (r in p.runs) runs += r.copy(start = r.start + off, end = r.end + off)
             text += p.text
