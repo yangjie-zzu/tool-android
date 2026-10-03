@@ -270,6 +270,50 @@ class EpubRichContentTest {
     // LineStyle 无 equals(普通 class),测试用三元组对比
     private data class LineStyleAssert(val start: Int, val end: Int, val style: Int)
 
+    // ---- 六期: 外部 CSS / float 降级 / 负 margin ----
+
+    @Test
+    fun `外部CSS文件的class规则生效`() {
+        val dir = File.createTempFile("cssdir", "").let { it.delete(); it.mkdirs(); it }
+        val css = File(dir, "style.css")
+        css.writeText(".right { text-align: right }\n.fr { float: right }")
+        val html = File(dir, "ch.xhtml")
+        html.writeText(
+            """<html><head><link href="style.css" rel="stylesheet" type="text/css"/></head>
+            <body><div class="fr"><p>浮块内容</p></div><p class="right">右对齐段</p></body></html>"""
+        )
+        val r = HtmlTextExtractor.extract(html, "")
+        assertEquals(2, r.paragraphs[0].align)   // float:right 降级 → 右对齐
+        assertEquals(2, r.paragraphs[1].align)   // .right 类
+        html.delete(); css.delete(); dir.delete()
+    }
+
+    @Test
+    fun `float识别_right降级_right外忽略`() {
+        val r1 = HtmlTextExtractor.parseParaLayout(mapOf("float" to "right"))
+        assertTrue(r1!!.floatRight)
+        assertNull(HtmlTextExtractor.parseParaLayout(mapOf("float" to "left")))
+        // float 与显式对齐同设时,显式对齐优先
+        val r2 = HtmlTextExtractor.parseParaLayout(mapOf("float" to "right", "text-align" to "center"))
+        assertEquals(1, r2!!.align)
+        assertTrue(r2.floatRight)
+    }
+
+    @Test
+    fun `负margin提取`() {
+        // 四值简写 margin: top right bottom left → 上=-0.2 下=-0.1
+        val l = HtmlTextExtractor.parseParaLayout(mapOf("margin" to "-0.2em 0 -0.1em 0"))
+        assertEquals(-0.2f, l!!.aboveEm)
+        assertEquals(-0.1f, l.belowEm)
+        val l2 = HtmlTextExtractor.parseParaLayout(mapOf("margin-top" to "-1em", "margin-bottom" to "0.3em"))
+        assertEquals(-1f, l2!!.aboveEm)
+        assertEquals(0.3f, l2.belowEm)
+        val l3 = HtmlTextExtractor.parseParaLayout(mapOf("margin" to "1em"))
+        assertEquals(1f, l3!!.aboveEm)
+        assertEquals(1f, l3.belowEm)
+    }
+
+
     // ---- 五期: 行内图片(图片型脚注角标) ----
 
     @Test
@@ -470,7 +514,7 @@ class EpubRichContentTest {
     }
 
     @Test
-    fun `升级检测_旧格式需升级_五期对象豁免`() {
+    fun `升级检测_旧格式需升级_六期对象豁免`() {
         val legacy = File.createTempFile("legacy", ".txt")
         legacy.writeText("第一章 风起\n正文")
         assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(legacy))
@@ -482,8 +526,11 @@ class EpubRichContentTest {
         assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v4))   // 四期缺行内图片
         val v5 = File.createTempFile("v5ch", ".txt")
         v5.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":5}""")
-        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v5))
-        legacy.delete(); v2.delete(); v4.delete(); v5.delete()
+        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v5))   // 五期缺外部CSS/float识别
+        val v6 = File.createTempFile("v6ch", ".txt")
+        v6.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":6}""")
+        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v6))
+        legacy.delete(); v2.delete(); v4.delete(); v5.delete(); v6.delete()
     }
 
     // ---- 老书升级: 章号映射(顺序保持的标题匹配) ----

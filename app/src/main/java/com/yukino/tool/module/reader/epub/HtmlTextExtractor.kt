@@ -61,6 +61,19 @@ object HtmlTextExtractor {
         for (style in doc.select("style")) {
             mergeCssRules(cssRules, parseStyleBlock(style.data()))
         }
+        // 六期 A1: 外部 CSS 文件(<link rel="stylesheet">,真实 EPUB 样式的主要载体)。
+        // 相对文档文件解析;单层引用不追 import;大小上限 2MB 防病态;缺失/失败宽容跳过
+        for (link in doc.select("link")) {
+            if (link.attr("rel").trim().lowercase() != "stylesheet") continue
+            val href = link.attr("href").trim()
+            if (href.isEmpty() || href.startsWith("http", true)) continue
+            runCatching {
+                val f = File(file.parentFile, percentDecode(href))
+                if (f.exists() && f.isFile && f.length() in 1..2_000_000L) {
+                    mergeCssRules(cssRules, parseStyleBlock(f.readText()))
+                }
+            }
+        }
         return extract(doc.body(), docDir, cssRules)
     }
 
@@ -171,12 +184,15 @@ object HtmlTextExtractor {
         return m.groupValues[1].toFloatOrNull()
     }
 
-    // 排版属性 → 段级布局(仅取四期范围内属性;null = 未设置/跟随全局)
+    // 排版属性 → 段级布局(仅取子集范围内属性;null = 未设置/跟随全局)。
+    // 六期 A3: float:right 降级支持——块标记为右对齐独立块(无文字环绕,正文不避让);
+    // float:left 等于默认流向,忽略
     internal fun parseParaLayout(props: Map<String, String>): ParaLayout? {
         var align = 0
         var indentEm: Float? = null
         var aboveEm: Float? = null
         var belowEm: Float? = null
+        var floatRight = false
         when (props["text-align"]) {
             "center" -> align = 1
             "right" -> align = 2
@@ -184,16 +200,33 @@ object HtmlTextExtractor {
         emVal(props["text-indent"] ?: "")?.let { indentEm = it }
         emVal(props["margin-top"] ?: "")?.let { aboveEm = it }
         emVal(props["margin-bottom"] ?: "")?.let { belowEm = it }
-        emVal(props["margin"] ?: "")?.let {
-            if (aboveEm == null) aboveEm = it
-            if (belowEm == null) belowEm = it
+        // margin 简写: 单值(四边)/两值(上下 左右)/四值(上 右 下 左)——取上、下
+        props["margin"]?.trim()?.split(Regex("\\s+"))?.let { parts ->
+            val top = emVal(parts[0])
+            if (top != null) {
+                if (aboveEm == null) aboveEm = top
+                if (belowEm == null) {
+                    belowEm = when {
+                        parts.size >= 4 -> emVal(parts[2])
+                        parts.size == 2 -> emVal(parts[1])
+                        else -> top
+                    }
+                }
+            }
         }
-        return if (align == 0 && indentEm == null && aboveEm == null && belowEm == null) null
-        else ParaLayout(align, indentEm, aboveEm, belowEm)
+        if (props["float"] == "right") floatRight = true
+        return if (align == 0 && indentEm == null && aboveEm == null && belowEm == null && !floatRight) null
+        else ParaLayout(align, indentEm, aboveEm, belowEm, floatRight)
     }
 
-    // 段级布局(解析产物;四期)
-    data class ParaLayout(val align: Int, val indentEm: Float?, val aboveEm: Float?, val belowEm: Float?)
+    // 段级布局(解析产物;四期 CSS 子集 + 六期 float 降级)
+    data class ParaLayout(
+        val align: Int,
+        val indentEm: Float?,
+        val aboveEm: Float?,
+        val belowEm: Float?,
+        val floatRight: Boolean = false
+    )
 
     // ---------- 段缓冲: 规整文本与 Run 边界一体化记录 ----------
     //
@@ -236,6 +269,8 @@ object HtmlTextExtractor {
         fun applyLayout(l: ParaLayout?) {
             if (l == null) return
             if (l.align != 0) paraAlign = l.align
+            // 六期 A3: float:right 降级——浮块整体靠右显示(子段未显式对齐时)
+            if (l.floatRight && paraAlign == 0) paraAlign = 2
             if (l.indentEm != null) paraIndentEm = l.indentEm
             if (l.aboveEm != null) paraAboveEm = l.aboveEm
             if (l.belowEm != null) paraBelowEm = l.belowEm

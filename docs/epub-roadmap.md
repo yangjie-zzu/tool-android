@@ -1,7 +1,25 @@
 # EPUB 原生支持 · 总体方案与剩余期数规划
 
-> 状态基线:2026-10(v1.2.1)。一/二/三/四期与五期(行内图片,图片型脚注角标)均已完成;
+> 状态基线:2026-10(v1.2.2)。一/二/三/四/五期与六期(外部 CSS+float 降级+负 margin)均已完成;
 > 书签与全文搜索未做(方案保留在三期章节)。本文档记录已完成架构与剩余项实施方案。
+
+## 六期 · 设计页排版支持(已完成,随 v1.2.2)
+
+真书扉页(title.xhtml)暴露:□true/or/√false 选择框松散左对齐,与原书"右浮紧凑小框"设计不符。
+三项能力(方案分析见对话记录,组合约 90 行,不触碰分页核心):
+
+- **A1 外部 CSS**:`extract(file)` 收集 `<link rel="stylesheet">` 指向的 CSS 文件(相对文档文件解析,
+  单层引用,2MB 上限,缺失宽容跳过)→ 喂给既有 parseStyleBlock。真实 EPUB 样式主要在外部 CSS,
+  此项让全书 class 排版(text-align/indent/margin)整体生效。
+- **A2 负 margin**:段前额外距允许负值(margin 简写按 CSS 语义取上/下),下限 clamp 为
+  抵消全局段前距(不侵蚀行高本体,防文字重叠)。
+- **A3 float 降级**:`float:right` 的块标记为右对齐独立块(子段未显式对齐时 align=2;
+  显式 text-align 优先),无文字环绕(完整 float 需区域约束分页,500+ 行不划算)。
+
+章文件版本 v6(解析期能力升级——v5 书的 align 缺 float 识别结果,旧书打开自动升级重提取);
+`BREAK_STRATEGY_VERSION 13`。
+验收:真书 title 页"□true(右)/or(中,外部 CSS)/√false(右)"贴近原书设计;v6 样本书
+(link CSS+float+负 margin)三项生效;负 margin 提取/float 识别/外部 CSS 读取单测覆盖;零崩溃。
 
 ## 五期 · 行内图片(已完成,随 v1.2.1)
 

@@ -411,17 +411,20 @@ object BookPager {
                 while (rangeCursor < paraRanges.size && paraRanges[rangeCursor].first != s) rangeCursor++
             }
             val bookExtra = if (isParaStart && rangeCursor < extraAbove.size) extraAbove[rangeCursor] else 0f
+            // 六期 A2: 负 margin 最多抵消全局段前距(不侵蚀行高本体,防文字重叠)
+            val bookGrid = PaginationEngine.gridCeil(bookExtra, Typography.GRID_PX)
+                .coerceAtLeast(-paraAbove)
             val (pitch, ascentAbs) = when (kind) {
                 LineKind.BLANK -> LineGrid.blankPitch(Typography.GRID_PX) to bodyAscentAbs
                 LineKind.TITLE -> titlePitch to (titleAscentAbs + titleShift)
                 LineKind.BODY -> {
                     val above = if (isParaStart) {
-                        paraAbove + PaginationEngine.gridCeil(bookExtra, Typography.GRID_PX)
+                        paraAbove + bookGrid
                     } else 0
                     above + bodyPitch to (bodyAscentAbs + bodyShift)
                 }
             }
-            lines += TextLine(s, e, kind, isParaStart, pitch, if (isParaStart) paraAbove + PaginationEngine.gridCeil(bookExtra, Typography.GRID_PX) else 0, ascentAbs)
+            lines += TextLine(s, e, kind, isParaStart, pitch, if (isParaStart) paraAbove + bookGrid else 0, ascentAbs)
         }
 
         // 图片行占位: 按 U+FFFC 单字符定位该段的行,按版心宽等比换算显示尺寸,
@@ -447,7 +450,9 @@ object BookPager {
             }
             imageSizes[pi] = size
             val old = lines[li]
+            // 六期 A2: 负 margin 同样 clamp(不侵蚀行高)
             val bookExtraGrid = PaginationEngine.gridCeil(extraAbove[pi], Typography.GRID_PX)
+                .coerceAtLeast(-paraAbove)
             val imgPitch = old.paraAbove + bookExtraGrid + PaginationEngine.gridCeil(size.height.toFloat(), Typography.GRID_PX)
             lines[li] = TextLine(old.start, old.end, old.kind, old.isParaStart, imgPitch, old.paraAbove + bookExtraGrid, 0)
         }
