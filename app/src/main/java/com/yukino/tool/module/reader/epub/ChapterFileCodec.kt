@@ -72,9 +72,9 @@ object ChapterFileCodec {
         file.writeText(json.encodeToString(ChapterDto.serializer(), dto))
     }
 
-    // 六期格式版本: 外部 CSS/float 降级/负 margin(解析期能力,v4 书的 align 缺 float 识别结果)。
-    // 低版本文件打开时自动升级重提取
-    const val FORMAT_VERSION = 6
+    // 七期格式版本: CSS 选择器完整化(元素/复合/后代/子代)/class 规则 run 级属性/ruby 注音
+    // (解析期能力,v6 书缺这些识别结果)。低版本文件打开时自动升级重提取
+    const val FORMAT_VERSION = 7
 
     fun read(file: File): Pair<List<Paragraph>, Map<String, String>> {
         val text = file.readText()

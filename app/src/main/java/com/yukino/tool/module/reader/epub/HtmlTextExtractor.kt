@@ -56,8 +56,8 @@ object HtmlTextExtractor {
 
     fun extract(file: File, docDir: String = ""): ExtractResult {
         val doc = Jsoup.parse(file, "UTF-8")
-        // <style> 通常在 head(body() 拿不到),从整个文档收集 class 规则
-        val cssRules = HashMap<String, Map<String, String>>()
+        // <style> 通常在 head(body() 拿不到),从整个文档收集规则
+        val cssRules = ArrayList<CssRule>()
         for (style in doc.select("style")) {
             mergeCssRules(cssRules, parseStyleBlock(style.data()))
         }
@@ -90,7 +90,7 @@ object HtmlTextExtractor {
 
     fun extract(body: Element, docDir: String = ""): ExtractResult = extract(body, docDir, null)
 
-    fun extract(body: Element, docDir: String = "", cssRulesIn: Map<String, Map<String, String>>?): ExtractResult {
+    fun extract(body: Element, docDir: String = "", cssRulesIn: List<CssRule>?): ExtractResult {
         // 预扫描 noteref 引用的 fragment: id 命中的元素即脚注容器(宽容覆盖无类型标记的脚注)
         val noteRefs = LinkedHashSet<String>()
         for (a in body.select("a[href]")) {
@@ -100,8 +100,8 @@ object HtmlTextExtractor {
             }
         }
         // body 内联的 <style> 也收集(测试入口 parseBodyFragment 场景);外部传入的规则优先合并
-        val cssRules = HashMap<String, Map<String, String>>()
-        if (cssRulesIn != null) cssRules.putAll(cssRulesIn)
+        val cssRules = ArrayList<CssRule>()
+        if (cssRulesIn != null) cssRules.addAll(cssRulesIn)
         for (style in body.select("style")) {
             mergeCssRules(cssRules, parseStyleBlock(style.data()))
         }
@@ -120,59 +120,145 @@ object HtmlTextExtractor {
         return a.attr("class").lowercase().split(' ').any { it == "noteref" }
     }
 
-    // ---------- 四期 CSS 子集 ----------
-    // 范围: text-align(center/right) / text-indent(em) / margin-top/bottom(em)。
-    // 来源: <style> 块的单类名选择器 + 元素 style 属性(style 优先);其余属性/选择器忽略。
+    // ---------- CSS 规则(七期起选择器完整化) ----------
+    // 支持的选择器形态(书内 CSS 出现过的全部形态):
+    //   ".cls"(类) / "tag"(单元素) / "tag.cls"(复合) / "A B"(后代) / "A > B"(子代),
+    //   逗号列表逐个认。伪类/属性/id 选择器不认(整条选择器跳过,同规则其余逗号项保留)。
+    // 层叠: specificity(元素 < 类 < 复合/链) 升序稳定合并,同 specificity 源序后者覆盖;
+    //   style 属性最高(在 propsFor 内最后并入)。
 
-    // <style> 内容 → 规则表(class → 属性表)。只认选择器恰为单个类名(如 ".center");
-    // 逗号列表逐个认;去注释;声明按 ';' 切
-    internal fun parseStyleBlock(css: String): Map<String, Map<String, String>> {
-        val out = HashMap<String, Map<String, String>>()
+    // 简单选择器: 标签名与/或类名
+    data class SimpleSel(val tag: String?, val cls: String?)
+
+    // 完整选择器: 简单选择器链(从祖先到自身) + 子代组合器位置(childAt 含 i 表示
+    // chain[i] 与 chain[i+1] 之间是 '>', 否则是后代空格)
+    data class RuleSelector(val chain: List<SimpleSel>, val childAt: Set<Int> = emptySet())
+
+    data class CssRule(val sel: RuleSelector, val props: Map<String, String>, val specificity: Int)
+
+    // specificity: 每个含 tag 的简单选择器 +1, 每个含类的 +10(与 CSS 优先级同构的简化)
+    private fun specificityOf(chain: List<SimpleSel>): Int =
+        chain.sumOf { (if (it.tag != null) 1 else 0) + (if (it.cls != null) 10 else 0) }
+
+    private val SEL_NAME = Regex("^[a-zA-Z][a-zA-Z0-9-]*$")
+
+    // 解析单个简单选择器段("p" / ".cls" / "p.cls");含 #id/[attr]/:pseudo/* 等不支持语法返回 null
+    private fun parseSimpleSel(part: String): SimpleSel? {
+        var tag: String? = null
+        var cls: String? = null
+        // 拆 tag 与 .cls: 首段为 tag(若非 '.' 开头), 其后每 '.xxx' 为类
+        val pieces = part.split('.')
+        for ((i, p) in pieces.withIndex()) {
+            if (p.isEmpty()) {
+                if (i != 0) return null   // "a..b" 非法; ".cls" 的首空段合法
+                continue
+            }
+            if (!SEL_NAME.matches(p)) return null
+            if (i == 0 && !part.startsWith(".")) tag = p.lowercase() else cls = p.lowercase()
+        }
+        if (tag == null && cls == null) return null
+        return SimpleSel(tag, cls)
+    }
+
+    // 解析完整选择器("li ul li.c-rules" / "dl.logo-maker > dt");不支持返回 null
+    private fun parseSelector(sel: String): RuleSelector? {
+        val s = sel.trim()
+        if (s.isEmpty()) return null
+        val chain = ArrayList<SimpleSel>()
+        val childAt = HashSet<Int>()
+        // 按 '>' 切分, 段间记录子代组合器
+        val childParts = s.split('>')
+        for ((ci, cp) in childParts.withIndex()) {
+            if (ci > 0) childAt.add(chain.size - 1)   // chain 末元素与下一段之间为 '>'
+            for (part in cp.trim().split(Regex("\\s+"))) {
+                if (part.isEmpty()) continue
+                val simple = parseSimpleSel(part) ?: return null
+                chain.add(simple)
+            }
+        }
+        if (chain.isEmpty()) return null
+        return RuleSelector(chain, childAt)
+    }
+
+    // 声明块("k: v; k2: v2 !important") → 属性表(小写, 剥 !important)
+    internal fun parseDeclarations(text: String): Map<String, String> {
+        val props = HashMap<String, String>()
+        for (decl in text.split(';')) {
+            val i = decl.indexOf(':')
+            if (i > 0) {
+                val k = decl.substring(0, i).trim().lowercase()
+                var v = decl.substring(i + 1).trim().lowercase()
+                if (v.endsWith("!important")) v = v.removeSuffix("!important").trim()
+                if (k.isNotEmpty() && v.isNotEmpty()) props[k] = v
+            }
+        }
+        return props
+    }
+
+    // <style> 内容 → 规则列表。去注释;声明按 ';' 切;@font-face 等非选择器规则
+    // 因 '@' 不合选择器语法自然跳过(字体映射由批次三单独解析)
+    internal fun parseStyleBlock(css: String): List<CssRule> {
+        val out = ArrayList<CssRule>()
         val noComment = css.replace(Regex("/\\*.*?\\*/", RegexOption.DOT_MATCHES_ALL), "")
         for (rule in noComment.split('}')) {
             val brace = rule.indexOf('{')
             if (brace < 0) continue
-            val selectors = rule.substring(0, brace).split(',').map { it.trim() }
-            val props = HashMap<String, String>()
-            for (decl in rule.substring(brace + 1).split(';')) {
-                val i = decl.indexOf(':')
-                if (i > 0) {
-                    val k = decl.substring(0, i).trim().lowercase()
-                    val v = decl.substring(i + 1).trim().lowercase()
-                    if (k.isNotEmpty() && v.isNotEmpty()) props[k] = v
-                }
-            }
+            val props = parseDeclarations(rule.substring(brace + 1))
             if (props.isEmpty()) continue
-            for (sel in selectors) {
-                if (sel.length > 1 && sel.startsWith(".") && !sel.substring(1).any { !it.isLetterOrDigit() && it != '-' && it != '_' }) {
-                    out.putIfAbsent(sel.substring(1), props)
-                }
+            for (selText in rule.substring(0, brace).split(',')) {
+                val sel = parseSelector(selText) ?: continue
+                out += CssRule(sel, props, specificityOf(sel.chain))
             }
         }
         return out
     }
 
-    // 合并规则表(后者覆盖前者)
-    internal fun mergeCssRules(dst: MutableMap<String, Map<String, String>>, src: Map<String, Map<String, String>>) {
-        src.forEach { (k, v) -> dst[k] = dst[k]?.plus(v) ?: v }
+    // 合并规则列表(保序追加)
+    internal fun mergeCssRules(dst: MutableList<CssRule>, src: List<CssRule>) {
+        dst.addAll(src)
     }
 
-    // 元素命中的 class 规则 + style 属性 → 合并属性表(style 优先)
-    internal fun propsFor(node: Element, cssRules: Map<String, Map<String, String>>): Map<String, String> {
-        var props: Map<String, String>? = null
-        for (c in node.attr("class").lowercase().split(' ')) {
-            cssRules[c]?.let { props = props?.plus(it) ?: it }
+    // 简单选择器是否命中元素
+    private fun matchSimple(el: Element, s: SimpleSel): Boolean {
+        if (s.tag != null && el.tagName().lowercase() != s.tag) return false
+        if (s.cls != null && el.classNames().none { it.lowercase() == s.cls }) return false
+        return true
+    }
+
+    // 选择器命中判定: 自身须命中链尾, 向上逐级找祖先命中链前项(子代组合器限父级)。
+    // 后代链用贪心(每级任取一命中祖先), 不做完整回溯——降级渲染对极少数误报宽容
+    private fun selectorMatches(el: Element, sel: RuleSelector): Boolean {
+        if (!matchSimple(el, sel.chain.last())) return false
+        var cur = el
+        for (i in sel.chain.size - 2 downTo 0) {
+            if (i in sel.childAt) {
+                val p = cur.parent() as? Element ?: return false
+                if (!matchSimple(p, sel.chain[i])) return false
+                cur = p
+            } else {
+                var p = cur.parent() as? Element
+                var found = false
+                while (p != null) {
+                    if (matchSimple(p, sel.chain[i])) { found = true; break }
+                    p = p.parent() as? Element
+                }
+                if (!found) return false
+            }
         }
+        return true
+    }
+
+    // 元素命中的全部规则按 specificity 稳定升序合并,再并 style 属性(最高)
+    internal fun propsFor(node: Element, cssRules: List<CssRule>): Map<String, String> {
+        var props: Map<String, String>? = null
+        cssRules.asSequence()
+            .filter { selectorMatches(node, it.sel) }
+            .sortedBy { it.specificity }   // stable: 同优先级保持源序
+            .forEach { props = props?.plus(it.props) ?: it.props }
         val inline = node.attr("style").trim()
         if (inline.isNotEmpty()) {
-            val inlineProps = HashMap<String, String>()
-            for (decl in inline.split(';')) {
-                val i = decl.indexOf(':')
-                if (i > 0) {
-                    inlineProps[decl.substring(0, i).trim().lowercase()] = decl.substring(i + 1).trim().lowercase()
-                }
-            }
-            props = props?.plus(inlineProps) ?: inlineProps
+            val inlineProps = parseDeclarations(inline)
+            if (inlineProps.isNotEmpty()) props = props?.plus(inlineProps) ?: inlineProps
         }
         return props ?: emptyMap()
     }
@@ -245,6 +331,9 @@ object HtmlTextExtractor {
         private val pendingNotes = ArrayList<NoteAnchor>()
         private val pendingInline = ArrayList<com.yukino.tool.module.reader.common.InlineImg>()
         val notes = LinkedHashMap<String, String>()
+
+        // 当前段缓冲写入位置(ruby 等需要记录基文本区间)
+        fun cursor(): Int = sb.length
 
         // 段级排版上下文(CSS 继承简化: 子元素未设用父值,设了覆盖;离开元素恢复快照)
         var paraAlign = 0
@@ -376,16 +465,18 @@ object HtmlTextExtractor {
 
     // ---------- 树遍历 ----------
 
-    private fun walk(node: Node, b: Builder, counters: ArrayDeque<Int?>, noteIds: Set<String>, cssRules: Map<String, Map<String, String>>) {
+    private fun walk(node: Node, b: Builder, counters: ArrayDeque<Int?>, noteIds: Set<String>, cssRules: List<CssRule>) {
         when (node) {
             is TextNode -> b.appendText(node.text())
             is Element -> walkElement(node, b, counters, noteIds, cssRules)
         }
     }
 
-    private fun walkElement(node: Element, b: Builder, counters: ArrayDeque<Int?>, noteIds: Set<String>, cssRules: Map<String, Map<String, String>>) {
+    private fun walkElement(node: Element, b: Builder, counters: ArrayDeque<Int?>, noteIds: Set<String>, cssRules: List<CssRule>) {
         val name = node.tagName().lowercase()
         if (name in SKIP) return
+        // ruby 注音文本(rt 及 rp 括号)不进正文: rt 的内容由 ruby 分支提入脚注表
+        if (name == "rt" || name == "rp") return
 
         // 脚注内容容器: 不进正文流,文本提入 notes 表
         val id = node.attr("id").trim()
@@ -428,21 +519,38 @@ object HtmlTextExtractor {
             return
         }
 
-        // style 属性近似解析(CSS 继承语义的简化: 作用于本元素的全部子孙文本)
-        val attrStyle = parseStyleAttr(node.attr("style"))
+        // CSS 规则(类/元素/复合选择器) + style 属性 → 合并属性表;run 级样式作用于本元素全部子孙
+        val props = propsFor(node, cssRules)
         val saved = b.curStyle
-        if (attrStyle != 0) b.curStyle = saved or attrStyle
+        b.curStyle = saved or runStyleFromProps(props)
         if (id.isNotEmpty()) b.openAnchors.addLast(id)
 
-        // 四期 CSS 子集: 段级排版属性(class 规则 + style 属性,style 优先;子未设用父,离开恢复)
+        // 段级排版属性(子未设用父,离开恢复)
         val savedLayout = b.snapshotLayout()
-        b.applyLayout(parseParaLayout(propsFor(node, cssRules)))
+        b.applyLayout(parseParaLayout(props))
 
         try {
             when {
                 name == "br" -> b.flush()
                 name == "img" -> { b.flush(); emitImage(node, b) }
                 name == "table" -> { b.flush(); emitTable(node, b) }
+                name == "ruby" -> {
+                    // 七期: 基文本进正文(行内不断段), rt 音译提入脚注表并在基文本区间挂可点锚点
+                    val rt = node.children()
+                        .filter { it.tagName().lowercase() == "rt" }
+                        .joinToString(" ") { it.text() }.trim()
+                    val start = b.cursor()
+                    for (c in node.childNodes()) {
+                        if (c is Element && c.tagName().lowercase().let { it == "rt" || it == "rp" }) continue
+                        walk(c, b, counters, noteIds, cssRules)
+                    }
+                    val end = b.cursor()
+                    if (rt.isNotEmpty() && end > start) {
+                        val key = "ruby-" + Integer.toHexString(System.identityHashCode(node))
+                        b.addNote(key, rt)
+                        b.pendingNote(start, end, key)
+                    }
+                }
                 name.length == 2 && name[0] == 'h' && name[1] in '1'..'6' -> {
                     // 标题段: 记 heading 级别(h2 拆章依据)
                     b.flush()
@@ -452,7 +560,7 @@ object HtmlTextExtractor {
                     b.pendingHeading = 0
                 }
                 INLINE_STYLE.containsKey(name) -> {
-                    b.curStyle = saved or attrStyle or (INLINE_STYLE[name] ?: 0)
+                    b.curStyle = saved or runStyleFromProps(props) or (INLINE_STYLE[name] ?: 0)
                     for (c in node.childNodes()) walk(c, b, counters, noteIds, cssRules)
                 }
                 name == "ol" -> { counters.addLast(0); walkBlock(node, b, counters, noteIds, cssRules); counters.removeLast() }
@@ -485,7 +593,7 @@ object HtmlTextExtractor {
     }
 
     // 块级元素: 前后都是段落边界
-    private fun walkBlock(node: Element, b: Builder, counters: ArrayDeque<Int?>, noteIds: Set<String>, cssRules: Map<String, Map<String, String>>) {
+    private fun walkBlock(node: Element, b: Builder, counters: ArrayDeque<Int?>, noteIds: Set<String>, cssRules: List<CssRule>) {
         b.flush()
         for (c in node.childNodes()) walk(c, b, counters, noteIds, cssRules)
         b.flush()
@@ -522,16 +630,24 @@ object HtmlTextExtractor {
     }
 
     // 内联 style 属性 → 样式位(宽容匹配,认不出的属性忽略——产品原则: 书内样式不干扰全局阅读设置)
-    internal fun parseStyleAttr(style: String): Int {
-        if (style.isBlank()) return 0
+    internal fun parseStyleAttr(style: String): Int = runStyleFromProps(parseDeclarations(style))
+
+    // 合并属性表(class/元素规则 + style 属性) → Run 样式位。七期起 class 规则的
+    // run 级属性(font-weight/font-style/text-decoration/vertical-align super|sub)同样生效
+    internal fun runStyleFromProps(props: Map<String, String>): Int {
         var s = 0
-        val norm = style.lowercase().replace("\"", "'")
-        if (Regex("font-weight\\s*:\\s*(bold|[7-9]00)").containsMatchIn(norm)) s = s or RunStyle.BOLD
-        if (Regex("font-style\\s*:\\s*(italic|oblique)").containsMatchIn(norm)) s = s or RunStyle.ITALIC
-        if (Regex("text-decoration[^;]*underline").containsMatchIn(norm)) s = s or RunStyle.UNDERLINE
-        if (Regex("text-decoration[^;]*line-through").containsMatchIn(norm)) s = s or RunStyle.STRIKE
-        if (Regex("vertical-align\\s*:\\s*super").containsMatchIn(norm)) s = s or RunStyle.SUP
-        if (Regex("vertical-align\\s*:\\s*sub").containsMatchIn(norm)) s = s or RunStyle.SUB
+        val fw = props["font-weight"]
+        if (fw == "bold" || Regex("^[7-9]00$").matches(fw ?: "")) s = s or RunStyle.BOLD
+        val fs = props["font-style"]
+        if (fs == "italic" || fs == "oblique") s = s or RunStyle.ITALIC
+        props["text-decoration"]?.let {
+            if ("underline" in it) s = s or RunStyle.UNDERLINE
+            if ("line-through" in it) s = s or RunStyle.STRIKE
+        }
+        when (props["vertical-align"]) {
+            "super" -> s = s or RunStyle.SUP
+            "sub" -> s = s or RunStyle.SUB
+        }
         return s
     }
 }

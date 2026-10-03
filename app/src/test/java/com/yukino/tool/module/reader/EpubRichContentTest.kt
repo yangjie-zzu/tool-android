@@ -366,17 +366,127 @@ class EpubRichContentTest {
     // ---- 四期: CSS 子集 / h2 拆章 / 排版属性 ----
 
     @Test
-    fun `class样式表解析_仅认单类名选择器`() {
+    fun `CSS选择器解析_类元素复合后代子代_id与at规则跳过`() {
         val css = """
             /* 注释 .fake { text-align: right } */
             .center { text-align: center; color: red }
             div.note, .indent-2 { text-indent: 2em }
             #id-sel { text-align: right }
+            p { margin-top: 0.4em }
+            ul.contents { text-indent: 0em }
+            li ul li.c-rules { margin-left: -1em }
+            dl.logo-maker > dt { font-size: 15px }
+            @font-face { font-family: title }
         """.trimIndent()
         val rules = HtmlTextExtractor.parseStyleBlock(css)
-        assertEquals(setOf("center", "indent-2"), rules.keys)
-        assertEquals("center", rules["center"]!!["text-align"])
-        assertEquals("2em", rules["indent-2"]!!["text-indent"])
+        // #id-sel 与 @font-face 跳过;div.note 与 .indent-2 是两条独立规则
+        assertEquals(7, rules.size)
+        fun plain(tag: String?, cls: String?) = com.yukino.tool.module.reader.epub.HtmlTextExtractor.SimpleSel(tag, cls)
+        val bySpec = rules.associate { it.specificity to it }
+        // 单元素 / 单类 / 复合(tag.cls) / 后代链 / 子代链
+        assertEquals(plain("p", null), rules.first { it.specificity == 1 }.sel.chain.last())
+        assertEquals(plain(null, "center"), rules.first { it.specificity == 10 }.sel.chain.last())
+        assertEquals(plain("div", "note"), rules.first { it.specificity == 11 }.sel.chain.last())
+        val desc = rules.first { it.sel.chain.size == 3 }
+        assertEquals(listOf(plain("li", null), plain("ul", null), plain("li", "c-rules")), desc.sel.chain)
+        assertTrue(desc.sel.childAt.isEmpty())
+        val child = rules.first { it.sel.childAt.isNotEmpty() }
+        assertEquals(listOf(plain("dl", "logo-maker"), plain("dt", null)), child.sel.chain)
+        assertEquals(setOf(0), child.sel.childAt)
+    }
+
+    // ---- 七期: ruby 注音 / class 规则 Run 级属性 / 元素与复合选择器生效 ----
+
+    @Test
+    fun `ruby基文本进正文_rt音译入脚注表并挂锚点`() {
+        val r = extractFull(
+            "<p>得了<ruby>疱疹<rt>herpes</rt></ruby>很痛。</p>"
+        )
+        assertEquals(1, r.paragraphs.size)
+        val p = r.paragraphs[0]
+        assertEquals("得了疱疹很痛。", p.text)   // 注音不混入正文
+        assertEquals(1, p.notes.size)
+        assertEquals("herpes", r.footnotes[p.notes[0].noteId])
+        // 锚点区间 = 基文本"疱疹"在段内坐标 [2,4)
+        assertEquals(2, p.notes[0].start)
+        assertEquals(4, p.notes[0].end)
+    }
+
+    @Test
+    fun `ruby无rt或rp括号内容剥离`() {
+        val r = extractFull("<p><ruby>漢字<rp>(</rp><rt>かんじ</rt><rp>)</rp></ruby>です</p>")
+        assertEquals("漢字です", r.paragraphs[0].text)
+        assertEquals("かんじ", r.footnotes.values.first())
+    }
+
+    @Test
+    fun `class规则的Run级属性生效`() {
+        val html = """
+            <style>.bold { font-weight: bold } .ita { font-style: italic }
+            .postil-b { vertical-align: super; font-weight: bold }</style>
+            <p class="bold">整段加粗</p>
+            <p><span class="ita">斜体</span><span class="postil-b">注</span></p>
+        """.trimIndent()
+        val paras = extractHtml(html)
+        assertEquals(2, paras.size)
+        assertTrue(paras[0].runs.isNotEmpty() && paras[0].runs.all { it.style and RunStyle.BOLD != 0 })
+        assertEquals(RunStyle.ITALIC, paras[1].runs[0].style and RunStyle.ITALIC)
+        val s = paras[1].runs[1].style
+        assertEquals(RunStyle.SUP or RunStyle.BOLD, s and (RunStyle.SUP or RunStyle.BOLD))
+    }
+
+    @Test
+    fun `元素选择器生效且被类与style按优先级覆盖`() {
+        val html = """
+            <style>p { text-indent: 2em; text-align: justify }
+            .center { text-align: center }</style>
+            <p>元素规则缩进</p>
+            <p class="center">类覆盖元素对齐</p>
+            <p style="text-indent: 0">style覆盖元素缩进</p>
+        """.trimIndent()
+        val paras = extractHtml(html)
+        assertEquals(2f, paras[0].indentEm)          // p 元素规则
+        assertEquals(1, paras[1].align)              // .center(类,spec 10) 覆盖 p(spec 1)
+        assertEquals(0f, paras[2].indentEm)          // style 属性最高
+    }
+
+    @Test
+    fun `复合与后代子代选择器命中`() {
+        val html = """
+            <style>ul.contents { text-indent: 0em }
+            li ul li.c-rules { margin-top: -0.5em }
+            ul.direct > li { margin-top: 1em }</style>
+            <div class="contents">div不命中ul.contents</div>
+            <ul class="contents"><li>外层
+              <ul><li class="c-rules">深层规则项</li></ul></li></ul>
+            <ul class="direct"><li>直接子li</li>
+              <ul><li>深层li</li></ul></ul>
+        """.trimIndent()
+        val paras = extractHtml(html)
+        assertNull(paras[0].indentEm)                // div.contents 不命中 ul.contents
+        assertEquals(0f, paras[1].indentEm)          // ul.contents 命中
+        // li.c-rules: 命中后代链(祖先链 ul→li)
+        val deep = paras.first { it.text.contains("深层规则项") }
+        assertEquals(-0.5f, deep.spaceAboveEm)
+        val direct = paras.first { it.text.contains("直接子li") }
+        assertEquals(1f, direct.spaceAboveEm)        // 子代: li 是 ul.direct 直接子级
+        val nested = paras.first { it.text.contains("深层li") }
+        assertNull(nested.spaceAboveEm)              // 内层 ul 下的 li 不命中 '>' 直接子代
+    }
+
+    @Test
+    fun `important声明剥离后正常解析`() {
+        val html = "<style>sup { vertical-align: super!important; font-size: 0.75em }</style>" +
+            "<p>注<sup>1</sup>尾</p>"
+        val paras = extractHtml(html)
+        val supRun = paras[0].runs.single { it.style != 0 }
+        assertEquals(RunStyle.SUP, supRun.style and RunStyle.SUP)
+    }
+
+    @Test
+    fun `important保留在值中时em解析失败被宽容忽略`() {
+        assertEquals("2em", HtmlTextExtractor.parseDeclarations("text-indent: 2em !important")["text-indent"])
+        assertEquals("super", HtmlTextExtractor.parseDeclarations("vertical-align:super!important")["vertical-align"])
     }
 
     @Test
@@ -529,8 +639,11 @@ class EpubRichContentTest {
         assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v5))   // 五期缺外部CSS/float识别
         val v6 = File.createTempFile("v6ch", ".txt")
         v6.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":6}""")
-        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v6))
-        legacy.delete(); v2.delete(); v4.delete(); v5.delete(); v6.delete()
+        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v6))   // 六期缺七期选择器/ruby识别
+        val v7 = File.createTempFile("v7ch", ".txt")
+        v7.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":7}""")
+        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v7))
+        legacy.delete(); v2.delete(); v4.delete(); v5.delete(); v6.delete(); v7.delete()
     }
 
     // ---- 老书升级: 章号映射(顺序保持的标题匹配) ----
