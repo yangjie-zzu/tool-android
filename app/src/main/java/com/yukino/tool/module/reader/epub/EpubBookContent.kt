@@ -66,14 +66,14 @@ class EpubBookContent(
                             p.text, p.runs, p.kind, java.io.File(chapterDir, p.imageRef!!).absolutePath,
                             p.anchor, p.notes, p.align, p.indentEm, p.spaceAboveEm, p.spaceBelowEm,
                             p.heading, inline, p.marginLeftEm, p.marginRightEm, p.widthEm,
-                            p.widthCenter, p.lineSpacingMult, boxAbs(p.boxStyle)
+                            p.widthAlign, p.lineSpacingMult, boxAbs(p.boxStyle)
                         )
                     } else if (inline !== p.inlineImages || p.boxStyle != boxAbs(p.boxStyle)) {
                         com.yukino.tool.module.reader.common.Paragraph(
                             p.text, p.runs, p.kind, p.imageRef,
                             p.anchor, p.notes, p.align, p.indentEm, p.spaceAboveEm, p.spaceBelowEm,
                             p.heading, inline, p.marginLeftEm, p.marginRightEm, p.widthEm,
-                            p.widthCenter, p.lineSpacingMult, boxAbs(p.boxStyle)
+                            p.widthAlign, p.lineSpacingMult, boxAbs(p.boxStyle)
                         )
                     } else p
                 }
@@ -97,7 +97,7 @@ class EpubBookContent(
     ): com.yukino.tool.module.reader.common.Paragraph =
         com.yukino.tool.module.reader.common.Paragraph(
             text, runs, kind, imageRef, anchor, notes, align, indentEm, spaceAboveEm, spaceBelowEm,
-            heading, inlineImages, marginLeftEm, marginRightEm, widthEm, widthCenter, lineSpacingMult, bs
+            heading, inlineImages, marginLeftEm, marginRightEm, widthEm, widthAlign, lineSpacingMult, bs
         )
 
     // 章内锚点 → 投影偏移: 扫段落 anchor 匹配,偏移 = 前序段长累计(与 bodyText 同构)

@@ -317,7 +317,7 @@ object ChapterComposer {
 
     // Run 样式位 → 字符样式 span(度量用;基线偏移/颜色/阴影/字体由绘制层处理)。
     // sizeEm 非空加 RelativeSizeSpan(断行按 run 字号测宽,行高随行内最大字号)
-    private fun applyRunSpan(sb: SpannableStringBuilder, s: Int, e: Int, style: Int, sizeEm: Float? = null) {
+    internal fun applyRunSpan(sb: SpannableStringBuilder, s: Int, e: Int, style: Int, sizeEm: Float? = null) {
         val flags = Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
         if (sizeEm != null && sizeEm != 1f) {
             sb.setSpan(RelativeSizeSpan(sizeEm), s, e, flags)
@@ -777,15 +777,19 @@ object BookPager {
         var mr = p.marginRightEm?.px(fontPx, tw) ?: 0f
         val w = p.widthEm?.px(fontPx, tw)
         if (w != null && w < tw) {
-            if (p.widthCenter) {
-                ml = (tw - w) / 2f
-                mr = tw - ml - w
-            } else {
-                mr = (tw - ml - w).coerceAtLeast(0f)
+            when {
+                p.floatSide == 1 -> { ml = tw - w; mr = 0f }   // float:right: 盒贴右缘
+                p.floatSide == 2 -> { ml = 0f; mr = tw - w }   // float:left: 盒靠左缘
+                p.widthAlign == 1 -> { ml = (tw - w) / 2f; mr = tw - ml - w }
+                p.widthAlign == 2 -> { ml = tw - w; mr = 0f }  // 左 auto: 贴右缘
+                p.widthAlign == 3 -> { ml = 0f; mr = tw - w }  // 右 auto: 靠左缘
+                else -> mr = (tw - ml - w).coerceAtLeast(0f)
             }
         }
-        ml = ml.coerceIn(0f, tw * 0.45f)   // 防病态: 缩进不吞没行
-        mr = mr.coerceIn(0f, tw * 0.45f)
+        // 防病态: 缩进不吞没行;盒定位场景(float/贴边)的偏移天然占版心大半,放宽到 85%
+        val cap = if (p.floatSide != 0 || p.widthAlign == 2 || p.widthAlign == 3) 0.85f else 0.45f
+        ml = ml.coerceIn(0f, tw * cap)
+        mr = mr.coerceIn(0f, tw * cap)
         return ParaMetrics(ml, mr, tw - ml - mr, mr > 0.5f)
     }
 
@@ -805,15 +809,22 @@ object BookPager {
         val padV = fontPx * 0.18f
         val gap = if (td.collapse) 0f else td.spacingEm * fontPx
         val lineH = fontPx * 1.35f
-        // 1. 列宽
+        // 1. 列宽: td width 提示优先(固定),未提示列按内容自然宽;总宽超版心整体压缩
         val widths = FloatArray(td.cols)
+        val hinted = BooleanArray(td.cols)
+        td.colWidths.forEachIndexed { c, hint ->
+            if (c < td.cols && hint != null) {
+                widths[c] = hint.px(fontPx, availWidth).coerceAtLeast(1f)
+                hinted[c] = true
+            }
+        }
         for (cell in td.cells) {
             val boldFactor = if (cell.header) 1.06f else 1f
             val natural = measure(cell.text) * boldFactor + padH * 2f
-            val per = natural / cell.colSpan
-            for (c in cell.col until minOf(cell.col + cell.colSpan, td.cols)) {
-                widths[c] = maxOf(widths[c], per)
-            }
+            val free = (cell.col until minOf(cell.col + cell.colSpan, td.cols)).filter { !hinted[it] }
+            if (free.isEmpty()) continue
+            val per = natural / free.size
+            for (c in free) widths[c] = maxOf(widths[c], per)
         }
         val gapTotal = gap * (td.cols + 1)
         val naturalSum = widths.sum() + gapTotal
@@ -935,6 +946,11 @@ object BookPager {
     private fun overrideLayout(para: Paragraph, pm: ParaMetrics, typo: ResolvedTypography): StaticLayout {
         val paint = TextPaint(TextPaint.ANTI_ALIAS_FLAG).apply { textSize = typo.fontPx }
         val csb = SpannableStringBuilder(para.text)
+        // 修复: 补齐 run 字号/样式 span——缺 span 时按 1.0 字号量宽、绘制按实际字号画,
+        // 定宽盒内大字号标题因此溢出盒缘(七期验证发现的溢出根因)
+        for (run in para.runs) {
+            if (run.end > run.start) ChapterComposer.applyRunSpan(csb, run.start, run.end, run.style, run.sizeEm)
+        }
         val indentPx = ChapterComposer.paraIndentPx(para, typo)
         if (indentPx > 0f && para.align != 1 && para.align != 2) {
             csb.setSpan(
@@ -1193,9 +1209,28 @@ object BookPager {
                 val br = edge(1)?.widthEm ?: 0f
                 val bb = edge(2)?.widthEm ?: 0f
                 val bl = edge(3)?.widthEm ?: 0f
-                val left = (pm.mlPx - style.padLeftEm * fontPx - bl * fontPx).coerceAtLeast(0f)
-                val right = (typo.textWidth - pm.mrPx - style.padRightEm * fontPx - br * fontPx)
-                    .coerceAtMost(typo.textWidth.toFloat())
+                val tw = typo.textWidth.toFloat()
+                // 批次四修复: 盒自身 width/margin 定位(段落继承的 ml/mr 含 padding 与
+                // 居中偏移的复合语义,反推矩形会左右不对称)——盒有 width 时直接按盒定位
+                var left: Float
+                var right: Float
+                val boxW = style.widthCss?.px(fontPx, tw)
+                if (boxW != null && boxW < tw) {
+                    val mlB = style.marginLeft?.px(fontPx, tw) ?: 0f
+                    val mrB = style.marginRight?.px(fontPx, tw) ?: 0f
+                    when (style.marginAuto) {
+                        1 -> { left = (tw - boxW) / 2f + mlB; right = left + boxW }
+                        2 -> { right = tw - mrB; left = right - boxW }
+                        3 -> { left = mlB; right = left + boxW }
+                        else -> { left = mlB; right = if (mrB > 0f) tw - mrB else left + boxW }
+                    }
+                } else {
+                    left = pm.mlPx
+                    right = tw - pm.mrPx
+                }
+                // CSS width = 内容宽 → 边框盒外扩 padding+border
+                left = (left - style.padLeftEm * fontPx - bl * fontPx).coerceAtLeast(0f)
+                right = (right + style.padRightEm * fontPx + br * fontPx).coerceAtMost(tw)
                 val top = (paraTop[fp] ?: 0f) - style.padTopEm * fontPx - bt * fontPx
                 var bottom = (paraBottom[lp] ?: 0f) + style.padBottomEm * fontPx + bb * fontPx
                 // 批次四c: 固定高盒——矩形高不小于固定高(内容垂直居中已由排版期偏移)

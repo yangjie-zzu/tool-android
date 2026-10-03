@@ -81,6 +81,10 @@ data class BoxStyle(
     val shadow: Boolean = false,
     val heightCss: CssLen? = null,    // 批次四c: 固定高(盒矩形高 = max(内容高,固定高),内容垂直居中)
     val rotateDeg: Float? = null,     // 批次四d: transform rotate(度,绘制层盒中心旋转)
+    val widthCss: CssLen? = null,     // 批次四修复: 盒自身内容宽(盒矩形由此定位,区别于段落继承折行宽)
+    val marginAuto: Int = 0,          // 盒自身 margin auto 定位: 1 居中(双 auto) 2 贴右(左 auto) 3 贴左(右 auto)
+    val marginLeft: CssLen? = null,   // 盒自身 margin-left(非 auto 值)
+    val marginRight: CssLen? = null,  // 盒自身 margin-right(非 auto 值)
     val padTopEm: Float = 0f,
     val padBottomEm: Float = 0f,
     val padLeftEm: Float = 0f,
@@ -114,7 +118,8 @@ class TableData(
     val cols: Int,
     val cells: List<TableCell>,
     val collapse: Boolean = true,     // border-collapse: true 合并边框;false 分离(border-spacing 生效)
-    val spacingEm: Float = 0f         // border-spacing(em,collapse=false 时)
+    val spacingEm: Float = 0f,        // border-spacing(em,collapse=false 时)
+    val colWidths: List<CssLen?> = emptyList()  // 批次四修复: td width 提示(列 → 宽,空 = 未提示)
 )
 
 // 段落级书内排版(四期 CSS 子集;七期扩展):
@@ -141,7 +146,7 @@ class Paragraph(
     val marginLeftEm: CssLen? = null,
     val marginRightEm: CssLen? = null,
     val widthEm: CssLen? = null,
-    val widthCenter: Boolean = false,   // 定宽且左右 margin auto → 排版期整体居中
+    val widthAlign: Int = 0,            // 定宽对齐(margin auto 语义): 1=居中(双 auto) 2=贴右(左 auto) 3=贴左(右 auto)
     val lineSpacingMult: Float? = null,
     val boxStyle: BoxStyle? = null,
     val table: TableData? = null,     // 七期批次四: 表格段(投影 U+FFFC 占位,真渲染)

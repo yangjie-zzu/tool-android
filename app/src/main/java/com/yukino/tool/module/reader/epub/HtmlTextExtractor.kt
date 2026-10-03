@@ -302,7 +302,7 @@ object HtmlTextExtractor {
         var lineMult: Float? = null
         var floatRight = false
         var floatLeft = false
-        var widthCenter = false
+        var widthAlign = 0
         var breakAll = false
         when (props["text-align"]) {
             "center" -> align = 1
@@ -330,7 +330,7 @@ object HtmlTextExtractor {
         }
         props["line-height"]?.let { lineMult = lineHeightVal(it) }
         // margin 简写: 单值(四边)/两值(上下 左右)/三值(上 左右 下)/四值(上 右 下 左);
-        // auto 在左右位且定宽时 = 居中(widthCenter 置位),无定宽视 0
+        // 定宽时 margin auto 按 CSS 语义定位: 双 auto=居中, 左 auto=贴右, 右 auto=贴左
         props["margin"]?.trim()?.split(Regex("\\s+"))?.let { parts ->
             fun at(i: Int) = if (i < parts.size) parts[i] else ""
             CssLen.parse(at(0))?.let { if (above == null) above = it }
@@ -345,15 +345,26 @@ object HtmlTextExtractor {
                 parts.size >= 2 -> listOf(at(1), at(1))
                 else -> listOf(at(0), at(0))
             }
-            var center = false
+            var autoL = false
+            var autoR = false
             if (left == null) {
-                if (lr[0] == "auto") center = true else CssLen.parse(lr[0])?.let { left = it }
+                if (lr[0] == "auto") autoL = true else CssLen.parse(lr[0])?.let { left = it }
             }
             if (right == null) {
-                if (lr[1] == "auto") center = true else CssLen.parse(lr[1])?.let { right = it }
+                if (lr[1] == "auto") autoR = true else CssLen.parse(lr[1])?.let { right = it }
             }
-            if (center && width != null) widthCenter = true
+            if (width != null) {
+                widthAlign = when {
+                    autoL && autoR -> 1
+                    autoL -> 2          // 左 auto: 盒推到右缘
+                    autoR -> 3          // 右 auto: 盒靠左缘
+                    else -> widthAlign
+                }
+            }
         }
+        // 分边长属性 margin-left/right: auto 同样是定位语义(单边 auto + 定宽)
+        if (props["margin-left"] == "auto" && width != null) widthAlign = 2
+        if (props["margin-right"] == "auto" && width != null) widthAlign = 3
         val wb = props["word-break"]
         if (wb == "break-all") breakAll = true
         if (props["word-wrap"] == "break-word" || props["overflow-wrap"] == "break-word") breakAll = true
@@ -362,7 +373,7 @@ object HtmlTextExtractor {
         val any = align != 0 || indentEm != null || above != null || below != null ||
             left != null || right != null || width != null || lineMult != null || floatRight || floatLeft || breakAll
         return if (!any) null
-        else ParaLayout(align, indentEm, above, below, left, right, width, lineMult, floatRight, widthCenter, floatLeft, breakAll)
+        else ParaLayout(align, indentEm, above, below, left, right, width, lineMult, floatRight, widthAlign, floatLeft, breakAll)
     }
 
     // 已有值保留(先到先得,style 属性在 propsFor 已覆盖同 key),避免简写反向覆盖长属性
@@ -536,6 +547,22 @@ object HtmlTextExtractor {
         val radius = props["border-radius"]?.trim()?.split(Regex("\\s+"))?.firstOrNull()?.let { CssLen.parse(it) }
         // 批次四c: 固定高;批次四d: transform: rotate(Ndeg)
         val heightCss = props["height"]?.let { CssLen.parse(it) }?.takeIf { it.v > 0 }
+        // 批次四修复: 盒自身 width 与 margin(auto 定位语义)
+        val boxWidth = props["width"]?.let { CssLen.parse(it) }?.takeIf { it.v > 0 }
+        var boxMarginAuto = 0
+        var boxMarginLeft: CssLen? = props["margin-left"]?.let { CssLen.parse(it) }
+        var boxMarginRight: CssLen? = props["margin-right"]?.let { CssLen.parse(it) }
+        if (props["margin-left"] == "auto" || props["margin-right"] == "auto") {
+            val al = props["margin-left"] == "auto"
+            val ar = props["margin-right"] == "auto"
+            boxMarginAuto = when {
+                al && ar -> 1
+                al -> 2
+                else -> 3
+            }
+            if (al) boxMarginLeft = null
+            if (ar) boxMarginRight = null
+        }
         val rotateDeg = props["transform"]?.let { tf ->
             Regex("rotate\\((-?[\\d.]+)deg\\)").find(tf)?.groupValues?.get(1)?.toFloatOrNull()
         }
@@ -558,10 +585,11 @@ object HtmlTextExtractor {
         val hasEdges = edges.any { it.widthEm > 0f && it.style > 0 }
         if (bg == null && bgImage == null && radius == null && !shadow && !hasEdges &&
             padTop == 0f && padBottom == 0f && padLeft == 0f && padRight == 0f &&
-            heightCss == null && rotateDeg == null
+            heightCss == null && rotateDeg == null && boxWidth == null && boxMarginAuto == 0
         ) return null
         return BoxStyle(
             bg, bgImage, radius, shadow, heightCss, rotateDeg,
+            boxWidth, boxMarginAuto, boxMarginLeft, boxMarginRight,
             padTop, padBottom, padLeft, padRight, edges
         )
     }
@@ -577,7 +605,7 @@ object HtmlTextExtractor {
         val widthEm: CssLen? = null,
         val lineMult: Float? = null,
         val floatRight: Boolean = false,
-        val widthCenter: Boolean = false,
+        val widthAlign: Int = 0,
         val floatLeft: Boolean = false,
         val breakAll: Boolean = false
     )
@@ -640,16 +668,16 @@ object HtmlTextExtractor {
         var paraLeftEm: CssLen? = null
         var paraRightEm: CssLen? = null
         var paraWidthEm: CssLen? = null
-        var paraWidthCenter = false
         var paraLineMult: Float? = null
         var paraFloatSide = 0
+        var paraWidthAlign = 0
         var paraBreakAll = false
         var pendingHeading = 0
 
         // 快照/恢复排版上下文(元素进出)
         fun snapshotLayout(): Array<Any?> = arrayOf(
             paraAlign, paraIndentEm, paraAboveEm, paraBelowEm,
-            paraLeftEm, paraRightEm, paraWidthEm, paraWidthCenter, paraLineMult, paraFloatSide, paraBreakAll
+            paraLeftEm, paraRightEm, paraWidthEm, paraWidthAlign, paraLineMult, paraFloatSide, paraBreakAll
         )
 
         fun restoreLayout(s: Array<Any?>) {
@@ -660,7 +688,7 @@ object HtmlTextExtractor {
             paraLeftEm = s[4] as CssLen?
             paraRightEm = s[5] as CssLen?
             paraWidthEm = s[6] as CssLen?
-            paraWidthCenter = s[7] as Boolean
+            paraWidthAlign = s[7] as Int
             paraLineMult = s[8] as Float?
             paraFloatSide = s[9] as Int
             paraBreakAll = s[10] as Boolean
@@ -677,7 +705,7 @@ object HtmlTextExtractor {
             if (l.leftEm != null) paraLeftEm = l.leftEm
             if (l.rightEm != null) paraRightEm = l.rightEm
             if (l.widthEm != null) paraWidthEm = l.widthEm
-            if (l.widthCenter) paraWidthCenter = true
+            if (l.widthAlign != 0) paraWidthAlign = l.widthAlign
             if (l.lineMult != null) paraLineMult = l.lineMult
             paraFloatSide = when {
                 l.floatRight -> 1
@@ -685,6 +713,7 @@ object HtmlTextExtractor {
                 else -> paraFloatSide
             }
             if (l.breakAll) paraBreakAll = true
+            if (l.widthAlign != 0) paraWidthAlign = l.widthAlign
         }
 
         // 段落产出时的整段左右缩进: 直接用上下文值——祖先盒/元素的 padding 已在
@@ -752,7 +781,7 @@ object HtmlTextExtractor {
                     marginLeftEm = effectiveLeft(),
                     marginRightEm = effectiveRight(),
                     widthEm = paraWidthEm,
-                    widthCenter = paraWidthCenter,
+                    widthAlign = paraWidthAlign,
                     lineSpacingMult = paraLineMult,
                     boxStyle = boxStack.lastOrNull(),
                     floatSide = paraFloatSide,
@@ -793,7 +822,7 @@ object HtmlTextExtractor {
                 marginLeftEm = effectiveLeft(),
                 marginRightEm = effectiveRight(),
                 widthEm = width ?: paraWidthEm,
-                widthCenter = paraWidthCenter,
+                widthAlign = paraWidthAlign,
                 boxStyle = boxStack.lastOrNull(),
                 floatSide = paraFloatSide,
                 breakAll = paraBreakAll
@@ -991,6 +1020,7 @@ object HtmlTextExtractor {
         }
         val occupied = HashMap<Int, MutableSet<Int>>()   // row -> 被上方 rowspan 占用的列
         val cells = ArrayList<TableCell>()
+        val colHints = HashMap<Int, com.yukino.tool.module.reader.common.CssLen>()  // 批次四修复: td width 提示
         var rowCount = 0
         var colCount = 0
         val trs = node.select("tr")
@@ -1004,8 +1034,14 @@ object HtmlTextExtractor {
                 val cs = cellEl.attr("colspan").toIntOrNull()?.coerceIn(1, 64) ?: 1
                 for (dr in 0 until rs) occupied.getOrPut(ri + dr) { HashSet() }.also { it.addAll(c until c + cs) }
                 val (text, runs) = extractCellContent(cellEl, b, cssRules, noteIds)
+                val props = propsFor(cellEl, cssRules)
+                // td style/class 的 width 列宽提示(单列格,同列取首次)
+                if ((cellEl.attr("colspan").toIntOrNull() ?: 1) <= 1) {
+                    com.yukino.tool.module.reader.common.CssLen.parse(props["width"] ?: "")?.let {
+                        colHints.putIfAbsent(c, it)
+                    }
+                }
                 if (text.isNotBlank() || tag == "th") {
-                    val props = propsFor(cellEl, cssRules)
                     val pl = parseParaLayout(props)
                     val vAlign = when (props["vertical-align"]) {
                         "top" -> 0; "bottom" -> 2; else -> 1
@@ -1036,7 +1072,8 @@ object HtmlTextExtractor {
             TableData(
                 rows = rowCount, cols = colCount, cells = cells,
                 collapse = props["border-collapse"]?.trim() != "separate",
-                spacingEm = CssLen.parse(props["border-spacing"] ?: "")?.let { if (it.pct) 0f else it.v } ?: 0f
+                spacingEm = CssLen.parse(props["border-spacing"] ?: "")?.let { if (it.pct) 0f else it.v } ?: 0f,
+                colWidths = (0 until colCount).map { colHints[it] }
             )
         )
     }

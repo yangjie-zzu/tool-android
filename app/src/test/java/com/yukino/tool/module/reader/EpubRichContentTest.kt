@@ -761,8 +761,11 @@ class EpubRichContentTest {
         assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v10b))   // 批次四a 缺装饰盒
         val v12 = File.createTempFile("v12ch", ".txt")
         v12.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":12}""")
-        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v12))
-        legacy.delete(); v2.delete(); v4.delete(); v5.delete(); v6.delete(); v7.delete(); v8.delete(); v9.delete(); v10b.delete(); v11.delete(); v12.delete()
+        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v12))   // 缺盒自身定位/列宽提示
+        val v13 = File.createTempFile("v13ch", ".txt")
+        v13.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":13}""")
+        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v13))
+        legacy.delete(); v2.delete(); v4.delete(); v5.delete(); v6.delete(); v7.delete(); v8.delete(); v9.delete(); v10b.delete(); v11.delete(); v12.delete(); v13.delete()
     }
 
     // ---- 老书升级: 章号映射(顺序保持的标题匹配) ----
@@ -947,9 +950,15 @@ class EpubRichContentTest {
     }
 
     @Test
-    fun `margin简写auto定宽居中标记`() {
-        val l = HtmlTextExtractor.parseParaLayout(mapOf("margin" to "3% auto", "width" to "24em"))
-        assertTrue(l!!.widthCenter)
+    fun `margin简写auto定位语义`() {
+        // 双 auto = 居中
+        assertEquals(1, HtmlTextExtractor.parseParaLayout(mapOf("margin" to "3% auto", "width" to "24em"))!!.widthAlign)
+        // 右 auto = 贴左(CSS: margin-right:auto 把剩余空间分给右边)
+        assertEquals(3, HtmlTextExtractor.parseParaLayout(mapOf("margin" to "-1.7em 0.3em 0 auto", "width" to "1em"))!!.widthAlign)
+        // 左 auto = 贴右
+        assertEquals(2, HtmlTextExtractor.parseParaLayout(mapOf("margin" to "0 auto 0 2em", "width" to "10em"))!!.widthAlign)
+        // 分边属性 auto 同义
+        assertEquals(2, HtmlTextExtractor.parseParaLayout(mapOf("margin-left" to "auto", "width" to "10em"))!!.widthAlign)
     }
 
     @Test
@@ -1040,7 +1049,7 @@ class EpubRichContentTest {
             )
         )
         val paras = listOf(
-            Paragraph("定宽段", widthEm = CssLen(24f), widthCenter = true, marginLeftEm = CssLen(2f),
+            Paragraph("定宽段", widthEm = CssLen(24f), widthAlign = 1, marginLeftEm = CssLen(2f),
                 marginRightEm = CssLen(3f), lineSpacingMult = 1.2f,
                 spaceAboveEm = CssLen(10f, pct = true), boxStyle = box)
         )
@@ -1048,7 +1057,7 @@ class EpubRichContentTest {
         val (read, _) = ChapterFileCodec.read(f)
         val p = read[0]
         assertEquals(CssLen(24f), p.widthEm)
-        assertTrue(p.widthCenter)
+        assertEquals(1, p.widthAlign)
         assertEquals(CssLen(2f), p.marginLeftEm)
         assertEquals(CssLen(3f), p.marginRightEm)
         assertEquals(1.2f, p.lineSpacingMult)
@@ -1067,10 +1076,16 @@ class EpubRichContentTest {
         // margin auto + width → 居中: 左右留白对称,需独立断行(定宽取版心 1/3)
         val wEm = typo.textWidth / 3f / typo.fontPx
         val pm = BookPager.paraMetrics(
-            Paragraph("x", widthEm = CssLen(wEm), widthCenter = true), typo
+            Paragraph("x", widthEm = CssLen(wEm), widthAlign = 1), typo
         )
         assertEquals(typo.textWidth.toFloat() / 2f - wEm * typo.fontPx / 2f, pm.mlPx, 0.01f)
         assertTrue(pm.needsOverride)
+        // 左 auto(贴右): ml = 版心 - 内容宽
+        val pmR = BookPager.paraMetrics(
+            Paragraph("x", widthEm = CssLen(wEm), widthAlign = 2), typo
+        )
+        assertEquals(typo.textWidth - wEm * typo.fontPx, pmR.mlPx, 0.01f)
+        assertEquals(0f, pmR.mrPx)
         // margin-left only → 无右缩进,主 layout 断行(leading margin 机制)
         val pm2 = BookPager.paraMetrics(Paragraph("x", marginLeftEm = CssLen(2f)), typo)
         assertEquals(2f * typo.fontPx, pm2.mlPx, 0.01f)
