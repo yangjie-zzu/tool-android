@@ -290,7 +290,7 @@ object EpubImporter {
                         val f = chapterOutFile(chapters.size)
                         f.parentFile?.mkdirs()
                         // 脚注表按文档全量随每小节落盘(noteId 全文档唯一,角标可能跨小节)
-                        ChapterFileCodec.write(f, section.paras, extracted.footnotes)
+                        ChapterFileCodec.write(f, section.paras, extracted.footnotes, extracted.fonts)
                         // 投影长度 = 各段 text 之和 + 段间换行(与 bodyText joinToString 同构)
                         val bodyLen = section.paras.sumOf { it.text.length.toLong() } + (section.paras.size - 1)
                         val secTitle = (section.h2Text ?: displayTitle).take(MAX_TITLE_LEN)

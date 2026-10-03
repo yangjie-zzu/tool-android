@@ -46,7 +46,8 @@ object ChapterFileCodec {
     @Serializable
     private data class ParagraphDto(
         val t: String,
-        val r: List<Int> = emptyList(),
+        val r: List<Int> = emptyList(),      // v<=8: 扁平三元组 [s,e,style]
+        val rr: List<RunDto> = emptyList(),  // v9: 对象化 runs(字号/颜色/阴影/字体)
         val img: String? = null,
         val a: String? = null,
         val n: List<NoteAnchorDto> = emptyList(),
@@ -65,16 +66,33 @@ object ChapterFileCodec {
     )
 
     @Serializable
+    private data class RunDto(
+        val s: Int, val e: Int,
+        val st: Int = 0,
+        val sz: Float? = null,    // 七期批次三: 字号倍率(em)
+        val co: Long? = null,     // 书内颜色 ARGB
+        val sh: Boolean = false,  // text-shadow
+        val fo: Int? = null       // fonts 表下标
+    )
+
+    @Serializable
     private data class ChapterDto(
         val p: List<ParagraphDto>,
         val notes: Map<String, String> = emptyMap(),
-        val boxes: Map<Int, BoxDto> = emptyMap(),  // 七期: 盒样式表(段落 b 下标引用)
-        val v: Int = 0   // 格式版本: 8 = 七期(盒样式/左右缩进/行距/显式对齐);旧文件缺省 0
+        val boxes: Map<Int, BoxDto> = emptyMap(),   // 七期: 盒样式表(段落 b 下标引用)
+        val fonts: Map<Int, String> = emptyMap(),   // 七期批次三: 字体表(下标 → family 名)
+        val fontPaths: Map<String, String> = emptyMap(),  // family → 字体文件相对路径
+        val v: Int = 0   // 格式版本: 9 = 七期批次三(对象化 runs);旧文件缺省 0
     )
 
     private val json = Json { ignoreUnknownKeys = true }
 
-    fun write(file: File, paragraphs: List<Paragraph>, footnotes: Map<String, String> = emptyMap()) {
+    fun write(
+        file: File,
+        paragraphs: List<Paragraph>,
+        footnotes: Map<String, String> = emptyMap(),
+        fonts: Map<String, String> = emptyMap()   // 七期: family → 字体文件相对路径
+    ) {
         // 盒样式表: 按 BoxStyle 去重(相邻段落共享同一实例,序列化后经 equals 聚合还原同组)
         val boxIndex = LinkedHashMap<com.yukino.tool.module.reader.common.BoxStyle, Int>()
         val boxes = ArrayList<BoxDto>()
@@ -91,10 +109,11 @@ object ChapterFileCodec {
                 id
             }
         val dtos = paragraphs.map { p ->
-            val r = ArrayList<Int>(p.runs.size * 3)
-            for (run in p.runs) { r += run.start; r += run.end; r += run.style }
+            val rr = p.runs.map {
+                RunDto(it.start, it.end, it.style, it.sizeEm, it.color, it.shadow, it.fontId)
+            }
             ParagraphDto(
-                t = p.text, r = r,
+                t = p.text, rr = rr,
                 img = if (p.isImage) p.imageRef else null,
                 a = p.anchor,
                 n = p.notes.map { NoteAnchorDto(it.start, it.end, it.noteId) },
@@ -115,15 +134,17 @@ object ChapterFileCodec {
         val dto = ChapterDto(
             p = dtos, notes = footnotes,
             boxes = boxes.indices.associate { it to boxes[it] },
+            fonts = fonts.entries.withIndex().associate { (i, e) -> i to e.key },
+            fontPaths = fonts,
             v = FORMAT_VERSION
         )
         file.writeText(json.encodeToString(ChapterDto.serializer(), dto))
     }
 
-    // 七期批次二格式版本: 盒样式(底色/边框/圆角/阴影/背景图)/左右缩进/定宽/段级行距/
-    // 显式 left/justify 对齐(解析与排版期能力,v7 书缺这些识别结果)。
+    // 七期批次三格式版本: 对象化 runs(字号倍率/颜色/阴影/@font-face 字体下标)。
+    // fonts 表 value 存 family 名,实际字体文件路径由内容源按书籍 CSS @font-face 解析。
     // 低版本文件打开时自动升级重提取
-    const val FORMAT_VERSION = 8
+    const val FORMAT_VERSION = 9
 
     private fun BoxDto.toBoxStyle() = com.yukino.tool.module.reader.common.BoxStyle(
         bg = bg, bgImage = bgImg,
@@ -135,7 +156,15 @@ object ChapterFileCodec {
 
     private fun CssLenDto.toCssLen() = com.yukino.tool.module.reader.common.CssLen(v, pct)
 
-    fun read(file: File): Pair<List<Paragraph>, Map<String, String>> {
+    // 读结果: 段落 + 脚注 + 字体表(下标 → family)+ family → 字体文件相对路径
+    data class ReadResult(
+        val paragraphs: List<Paragraph>,
+        val notes: Map<String, String>,
+        val fonts: Map<Int, String>,
+        val fontPaths: Map<String, String> = emptyMap()
+    )
+
+    fun read(file: File): ReadResult {
         val text = file.readText()
         val trimmed = text.trimStart()
         if (trimmed.startsWith("{")) {
@@ -143,26 +172,34 @@ object ChapterFileCodec {
             runCatching {
                 val dto = json.decodeFromString(ChapterDto.serializer(), text)
                 val boxStyles = dto.boxes.mapValues { it.value.toBoxStyle() }
-                return dto.p.map { it.toParagraph(boxStyles) } to dto.notes
+                return ReadResult(dto.p.map { it.toParagraph(boxStyles, dto.fonts) }, dto.notes, dto.fonts, dto.fontPaths)
             }
         }
         if (trimmed.startsWith("[")) {
             // 二期数组格式
             runCatching {
                 val parsed = json.decodeFromString(ListSerializer(ParagraphDto.serializer()), text)
-                return parsed.map { it.toParagraph(emptyMap()) } to emptyMap()
+                return ReadResult(parsed.map { it.toParagraph(emptyMap(), emptyMap()) }, emptyMap(), emptyMap())
             }
         }
         // 一期纯文本回退
-        return text.split('\n').map { Paragraph(it) } to emptyMap()
+        return ReadResult(text.split('\n').map { Paragraph(it) }, emptyMap(), emptyMap())
     }
 
-    private fun ParagraphDto.toParagraph(boxStyles: Map<Int, com.yukino.tool.module.reader.common.BoxStyle>): Paragraph {
-        val runs = ArrayList<Run>(r.size / 3)
-        var i = 0
-        while (i + 2 < r.size) {
-            runs += Run(r[i], r[i + 1], r[i + 2])
-            i += 3
+    private fun ParagraphDto.toParagraph(
+        boxStyles: Map<Int, com.yukino.tool.module.reader.common.BoxStyle>,
+        fontIds: Map<Int, String>
+    ): Paragraph {
+        val runs = if (rr.isNotEmpty()) {
+            rr.map { Run(it.s, it.e, it.st, it.sz, it.co, it.sh, it.fo) }
+        } else {
+            val rs = ArrayList<Run>(r.size / 3)
+            var i = 0
+            while (i + 2 < r.size) {
+                rs += Run(r[i], r[i + 1], r[i + 2])
+                i += 3
+            }
+            rs
         }
         val inlines = ii.map { InlineImg(it.s, it.ref) }
         if (img != null) {

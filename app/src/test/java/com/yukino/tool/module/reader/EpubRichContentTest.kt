@@ -646,8 +646,11 @@ class EpubRichContentTest {
         assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v7))   // 七期批次一缺盒样式
         val v8 = File.createTempFile("v8ch", ".txt")
         v8.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":8}""")
-        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v8))
-        legacy.delete(); v2.delete(); v4.delete(); v5.delete(); v6.delete(); v7.delete(); v8.delete()
+        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v8))   // 批次二缺对象化 runs
+        val v9 = File.createTempFile("v9ch", ".txt")
+        v9.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":9}""")
+        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v9))
+        legacy.delete(); v2.delete(); v4.delete(); v5.delete(); v6.delete(); v7.delete(); v8.delete(); v9.delete()
     }
 
     // ---- 老书升级: 章号映射(顺序保持的标题匹配) ----
@@ -965,5 +968,110 @@ class EpubRichContentTest {
         val pm3 = BookPager.paraMetrics(Paragraph("x"), typo)
         assertEquals(typo.textWidth.toFloat(), pm3.availWidth, 0.01f)
         assertTrue(!pm3.needsOverride)
+    }
+
+    // ---- 七期批次三: 字号/颜色/阴影/字体/图片定宽 ----
+
+    @Test
+    fun `fontSize与color与shadow提取`() {
+        assertEquals(0.75f, HtmlTextExtractor.fontSizeEm("0.75em")!!)
+        assertEquals(0.75f, HtmlTextExtractor.fontSizeEm("12px")!!)
+        assertEquals(0.8f, HtmlTextExtractor.fontSizeEm("80%")!!)
+        assertEquals(1.5f, HtmlTextExtractor.fontSizeEm("x-large")!!)
+        assertEquals(2f, HtmlTextExtractor.fontSizeEm("xx-large")!!)
+        assertNull(HtmlTextExtractor.fontSizeEm("larger"))
+        val ctx = HtmlTextExtractor.runDecoFromProps(
+            mapOf("font-size" to "1.1em", "color" to "#ff0000", "text-shadow" to "1px 1px 2px #000")
+        )
+        assertEquals(1.1f, ctx.sizeEm!!)
+        assertEquals(0xFFFF0000L, ctx.color)
+        assertTrue(ctx.shadow)
+    }
+
+    @Test
+    fun `class规则字号颜色生效且回落继承`() {
+        val html = """
+            <style>.em08 { font-size: 0.8em } .co1 { color: #FF0000 }
+            .co4 { color: #00CACA; text-shadow: 1px 1px 2px #000; font-weight: bold }</style>
+            <p class="em08">小字整段</p>
+            <p>普通<span class="co1">红字</span>后缀</p>
+            <p class="co4">彩字阴影加粗</p>
+        """.trimIndent()
+        val paras = extractHtml(html)
+        assertTrue(paras[0].runs.all { it.sizeEm == 0.8f })
+        // 内层 span 的 color 覆盖,前后缀无 color
+        assertEquals(0xFFFF0000L, paras[1].runs.first { it.color != null }.color)
+        assertTrue(paras[1].runs.any { it.color == null })
+        val c4 = paras[2].runs.first()
+        assertEquals(0xFF00CACAL, c4.color)
+        assertTrue(c4.shadow)
+        assertEquals(RunStyle.BOLD, c4.style and RunStyle.BOLD)
+    }
+
+    @Test
+    fun `fontFamily解析与fontface收集`() {
+        assertEquals("title", HtmlTextExtractor.fontFamilyName("title"))
+        assertEquals("tt1", HtmlTextExtractor.fontFamilyName("\"tt1\", serif"))
+        val faces = HtmlTextExtractor.parseFontFaces(
+            "@font-face { font-family: \"title\";\n src: url(../Fonts/title.ttf); }\n" +
+                "@font-face { font-family: tt2; src:url(\"../Fonts/tt2.ttf\"); }"
+        )
+        assertEquals("../Fonts/title.ttf", faces["title"])
+        assertEquals("../Fonts/tt2.ttf", faces["tt2"])
+    }
+
+    @Test
+    fun `外部CSS的字体与字号随class生效`() {
+        val dir = File.createTempFile("cssdir3", "").let { it.delete(); it.mkdirs(); it }
+        val fonts = File(dir, "Fonts").mkdirs(); assertTrue(fonts || File(dir, "Fonts").isDirectory)
+        val css = File(dir, "style.css")
+        css.writeText(
+            "@font-face { font-family: title; src: url(Fonts/title.ttf); }\n" +
+                ".title { font-family: title; font-size: 1.5em; color: #8118D3 }"
+        )
+        val html = File(dir, "ch.xhtml")
+        html.writeText("<html><head><link href=\"style.css\" rel=\"stylesheet\"/></head>" +
+            "<body><p class=\"title\">标题字</p></body></html>")
+        val r = HtmlTextExtractor.extract(html, "")
+        val run = r.paragraphs[0].runs.first()
+        assertEquals(1.5f, run.sizeEm)
+        assertEquals(0xFF8118D3L, run.color)
+        assertEquals(0, run.fontId)   // family 登记 fonts 表首项
+        assertEquals("title", r.fonts.keys.first())
+        html.delete(); css.delete(); File(dir, "Fonts").delete(); dir.delete()
+    }
+
+    @Test
+    fun `九期章文件对象化runs往返`() {
+        val f = File.createTempFile("ch_v9", ".txt")
+        val paras = listOf(
+            Paragraph("大小颜色", listOf(
+                Run(0, 1, 0, sizeEm = 0.75f),
+                Run(1, 2, RunStyle.BOLD, color = 0xFF00CACAL, shadow = true, fontId = 1)
+            ))
+        )
+        ChapterFileCodec.write(f, paras, fonts = mapOf("title" to "Fonts/title.ttf", "tt1" to "Fonts/tt1.ttf"))
+        val read = ChapterFileCodec.read(f)
+        val runs = read.paragraphs[0].runs
+        assertEquals(0.75f, runs[0].sizeEm)
+        assertNull(runs[0].color)
+        assertEquals(RunStyle.BOLD, runs[1].style and RunStyle.BOLD)
+        assertEquals(0xFF00CACAL, runs[1].color)
+        assertTrue(runs[1].shadow)
+        assertEquals(1, runs[1].fontId)
+        assertEquals("tt1", read.fonts[1])
+        assertEquals("Fonts/title.ttf", read.fontPaths["title"])
+        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(f))
+        f.delete()
+    }
+
+    @Test
+    fun `v8扁平runs章文件兼容读`() {
+        val f = File.createTempFile("ch_v8compat", ".txt")
+        f.writeText("""{"p":[{"t":"AB","r":[0,1,1,1,2,0]}],"notes":{},"v":8}""")
+        val read = ChapterFileCodec.read(f)
+        assertEquals(listOf(Run(0, 1, 1), Run(1, 2, 0)), read.paragraphs[0].runs)
+        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(f))
+        f.delete()
     }
 }

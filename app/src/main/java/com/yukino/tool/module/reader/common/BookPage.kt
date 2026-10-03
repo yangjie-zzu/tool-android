@@ -66,14 +66,25 @@ class ChapterLines(
     val paraRanges: List<IntRange> = emptyList(), // 各段在 composed 中的区间(正文区,不含换行)
     val imageDrawSizes: Map<Int, ImageSize> = emptyMap(), // 图片段显示尺寸(px,paraIndex → 尺寸)
     val inlineSizes: Map<String, ImageSize> = emptyMap(), // 五期: 行内图片显示尺寸(ref → 尺寸)
-    val overrideLines: Map<Int, List<IntRange>> = emptyMap() // 七期: 右缩进/定宽段的独立断行(paraIndex → composed 行区间)
+    val overrideLines: Map<Int, List<IntRange>> = emptyMap(), // 七期: 右缩进/定宽段的独立断行(paraIndex → composed 行区间)
+    val fontIds: Map<Int, String> = emptyMap(),   // 七期批次三: run.fontId → family
+    val fontFiles: Map<String, String> = emptyMap() // family → 字体文件绝对路径
 )
 
 // 图片行的显示尺寸(版心坐标系;按版心宽等比缩放,超高图缩到一页内)
 class ImageSize(val width: Int, val height: Int)
 
-// 行内样式段(相对行文本坐标)。绘制层按段切 paint;与两端对齐拉伸分段正交组合
-class LineStyle(val start: Int, val end: Int, val style: Int)
+// 行内样式段(相对行文本坐标)。绘制层按段切 paint;与两端对齐拉伸分段正交组合。
+// 七期批次三: sizeEm 字号倍率/color 书内前景色/shadow text-shadow/font 字体 family
+class LineStyle(
+    val start: Int,
+    val end: Int,
+    val style: Int,
+    val sizeEm: Float? = null,
+    val color: Long? = null,
+    val shadow: Boolean = false,
+    val font: String? = null
+)
 
 // 可绘制的行(物化产物,坐标相对版心左上角)。基线布局在物化时算好,绘制层只做平移与 drawText
 class DrawLine(
@@ -116,6 +127,7 @@ class BookPage(
     val footerLabel: String,      // 空串不画
     val lines: List<DrawLine> = emptyList(),   // 正文页的行(相对版心顶的基线坐标)
     val boxes: List<DrawBox> = emptyList(),    // 七期: 盒组矩形(画在文字下层)
+    val fontFiles: Map<String, String> = emptyMap(),  // 七期批次三: family → 字体文件路径(绘制层加载 Typeface)
     val virtualLayout: StaticLayout? = null,   // 封面/封底: 居中布局,与 lines 二选一
     val coverImage: String? = null,            // 封面页: 封面图路径(与 virtualLayout 二选一,优先图)
     val coverWidth: Int = 0,                   // 封面显示尺寸(物化时按版心宽等比换算;0 = 未就绪)
@@ -165,7 +177,7 @@ object ChapterComposer {
             val paraStart = pos
             sb.append(p.text)
             for (run in p.runs) {
-                if (run.end > run.start) applyRunSpan(sb, pos + run.start, pos + run.end, run.style)
+                if (run.end > run.start) applyRunSpan(sb, pos + run.start, pos + run.end, run.style, run.sizeEm)
             }
             // 五期: 行内图片占位符度量 span
             if (p.inlineImages.isNotEmpty() && imageBounds != null) {
@@ -260,9 +272,13 @@ object ChapterComposer {
     fun compose(title: String, body: String, typo: ResolvedTypography): Spanned =
         compose(title, body.split('\n').map { Paragraph(it) }, typo)
 
-    // Run 样式位 → 字符样式 span(度量用;基线偏移类由绘制层处理)
-    private fun applyRunSpan(sb: SpannableStringBuilder, s: Int, e: Int, style: Int) {
+    // Run 样式位 → 字符样式 span(度量用;基线偏移/颜色/阴影/字体由绘制层处理)。
+    // sizeEm 非空加 RelativeSizeSpan(断行按 run 字号测宽,行高随行内最大字号)
+    private fun applyRunSpan(sb: SpannableStringBuilder, s: Int, e: Int, style: Int, sizeEm: Float? = null) {
         val flags = Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+        if (sizeEm != null && sizeEm != 1f) {
+            sb.setSpan(RelativeSizeSpan(sizeEm), s, e, flags)
+        }
         val bold = style and RunStyle.BOLD != 0
         val italic = style and RunStyle.ITALIC != 0
         if (bold || italic) {
@@ -376,6 +392,7 @@ object BookPager {
         val doc = content.chapterDoc(chapterIndex)
         val title = content.chapterTitle(chapterIndex)
         val (paras, stripped) = ChapterComposer.stripLeadingTitleParas(doc.paragraphs, title)
+
         val composed = ChapterComposer.compose(title, paras, typo, imageBounds = { ref -> content.imageBounds(ref) })
         val bodyStart = ChapterComposer.bodyStart(title.length)
         val measure = Typography.buildLayout(composed, typo)
@@ -519,10 +536,13 @@ object BookPager {
             val li = lines.indexOfFirst { it.start == rng.first && it.end == rng.first + 1 }
             if (li < 0) continue
             val bounds = content.imageBounds(para.imageRef ?: "")
+            // 七期批次三: style/class width 定宽(有效范围 [1, 版心宽]),等比缩放
+            val targetW = para.widthEm?.px(typo.fontPx, typo.textWidth.toFloat())?.roundToInt()
+                ?.takeIf { it in 1..typo.textWidth }
             val size = if (bounds == null || bounds.width() <= 0 || bounds.height() <= 0) {
-                ImageSize(typo.textWidth, typo.fontPx.toInt() * 3)   // 坏图占位 3 行高,可见可感知
+                ImageSize(targetW ?: typo.textWidth, typo.fontPx.toInt() * 3)   // 坏图占位 3 行高,可见可感知
             } else {
-                val w = typo.textWidth
+                val w = targetW ?: typo.textWidth
                 var h = (w.toFloat() * bounds.height() / bounds.width()).roundToInt().coerceAtLeast(1)
                 var dw = w
                 if (h > typo.textHeight) {
@@ -554,7 +574,7 @@ object BookPager {
 
         return ChapterLines(
             composed, bodyStart, content.chapterStart(chapterIndex) + stripped, lines,
-            paras, paraRanges, imageSizes, inlineSizes, overrides
+            paras, paraRanges, imageSizes, inlineSizes, overrides, doc.fontIds, doc.fontFiles
         )
     }
 
@@ -686,7 +706,7 @@ object BookPager {
         val drawn = drawLinesWithBoxes(cl, slice, typo, measure = { paint.measureText(it) }, chapterStartGlobal = chapterStartGlobal)
         return BookPage(
             spec, spec.chapterTitle, label,
-            drawn.lines, drawn.boxes
+            drawn.lines, drawn.boxes, cl.fontFiles
         )
     }
 
@@ -878,9 +898,15 @@ object BookPager {
         for (run in para.runs) {
             val s = maxOf(run.start, off)
             val e = minOf(run.end, off + (b - a))
-            if (s < e) out += LineStyle(s - off, e - off, run.style)
+            if (s < e) out += LineStyle(
+                s - off, e - off, run.style,
+                run.sizeEm, run.color, run.shadow, run.fontId?.let { cl.fontIds[it] }
+            )
         }
-        if (out.isEmpty() || out.all { it.style == 0 }) return null
+        if (out.isEmpty() || out.all {
+                it.style == 0 && it.sizeEm == null && it.color == null && !it.shadow && it.font == null
+            }
+        ) return null
         return out
     }
 

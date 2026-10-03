@@ -56,14 +56,20 @@ object HtmlTextExtractor {
     private const val TABLE_PLACEHOLDER = "[表格内容，建议使用原版式查看]"
 
     // 解析产物: 段落序列 + 章级脚注内容表(noteId → 纯文本)
-    class ExtractResult(val paragraphs: List<Paragraph>, val footnotes: Map<String, String>)
+    class ExtractResult(
+        val paragraphs: List<Paragraph>,
+        val footnotes: Map<String, String>,
+        val fonts: Map<String, String> = emptyMap()   // 七期: @font-face family -> 字体文件相对路径
+    )
 
     fun extract(file: File, docDir: String = ""): ExtractResult {
         val doc = Jsoup.parse(file, "UTF-8")
-        // <style> 通常在 head(body() 拿不到),从整个文档收集规则
+        // <style> 通常在 head(body() 拿不到),从整个文档收集规则与 @font-face
         val cssRules = ArrayList<CssRule>()
+        val fontFaces = HashMap<String, String>()
         for (style in doc.select("style")) {
             mergeCssRules(cssRules, parseStyleBlock(style.data()))
+            mergeFontFaces(fontFaces, parseFontFaces(style.data()))
         }
         // 六期 A1: 外部 CSS 文件(<link rel="stylesheet">,真实 EPUB 样式的主要载体)。
         // 相对文档文件解析;单层引用不追 import;大小上限 2MB 防病态;缺失/失败宽容跳过
@@ -75,10 +81,11 @@ object HtmlTextExtractor {
                 val f = File(file.parentFile, percentDecode(href))
                 if (f.exists() && f.isFile && f.length() in 1..2_000_000L) {
                     mergeCssRules(cssRules, parseStyleBlock(f.readText()))
+                    mergeFontFaces(fontFaces, parseFontFaces(f.readText()))
                 }
             }
         }
-        return extract(doc.body(), docDir, cssRules)
+        return extract(doc.body(), docDir, cssRules, fontFaces)
     }
 
     // 文档内首个标题(h1..h6,按序),供章节名兜底;无标题返回 null
@@ -92,9 +99,9 @@ object HtmlTextExtractor {
         return null
     }
 
-    fun extract(body: Element, docDir: String = ""): ExtractResult = extract(body, docDir, null)
+    fun extract(body: Element, docDir: String = ""): ExtractResult = extract(body, docDir, null, null)
 
-    fun extract(body: Element, docDir: String = "", cssRulesIn: List<CssRule>?): ExtractResult {
+    fun extract(body: Element, docDir: String = "", cssRulesIn: List<CssRule>?, fontsIn: Map<String, String>? = null): ExtractResult {
         // 预扫描 noteref 引用的 fragment: id 命中的元素即脚注容器(宽容覆盖无类型标记的脚注)
         val noteRefs = LinkedHashSet<String>()
         for (a in body.select("a[href]")) {
@@ -112,7 +119,7 @@ object HtmlTextExtractor {
         val b = Builder(docDir)
         walk(body, b, ArrayDeque(), noteRefs, cssRules)
         b.flush()
-        return ExtractResult(b.result(), b.notes)
+        return ExtractResult(b.result(), b.notes, fontsIn ?: emptyMap())
     }
 
     // noteref 判定(保守: 仅显式标记;EPUB2 无标记内链不识别以免误伤普通链接)
@@ -191,7 +198,10 @@ object HtmlTextExtractor {
             val i = decl.indexOf(':')
             if (i > 0) {
                 val k = decl.substring(0, i).trim().lowercase()
-                var v = decl.substring(i + 1).trim().lowercase()
+                var v = decl.substring(i + 1).trim()
+                // 值统一小写(CSS 关键词不敏感),但 url(...) 内路径大小写敏感(EPUB 解压路径)原样保留
+                val lower = v.lowercase()
+                v = if (lower.startsWith("url(")) "url(" + v.substring(4) else lower
                 if (v.endsWith("!important")) v = v.removeSuffix("!important").trim()
                 if (k.isNotEmpty() && v.isNotEmpty()) props[k] = v
             }
@@ -560,16 +570,45 @@ object HtmlTextExtractor {
     // 空格与实字符都按"落盘时刻"的当前样式记入 Run;相邻同样式 Run 天然合为一段。
     // 锚点: openAnchors 为当前打开的带 id 元素(最早优先),段落收口时消费最早者;
     // 角标: noteref 文本落盘区间记入 pendingNotes,随段落收口转段内坐标
-    internal class Builder(val docDir: String) {
+    internal class Builder(val docDir: String, fontsIn: Map<String, String>? = null) {
+
+        // 七期: 字体表(family → 相对路径,章文件顶层持久化)与 family → 下标映射。
+        // 预收集的 @font-face 先登记,walk 中新见 family 动态追加(兜底)
+        val fonts = LinkedHashMap<String, String>()
+        private val fontIds = HashMap<String, Int>()
+
+        init {
+            fontsIn?.forEach { (k, v) -> registerFont(k.lowercase(), v) }
+        }
+
+        private fun registerFont(family: String, path: String): Int {
+            fontIds[family]?.let { return it }
+            val id = fonts.size
+            fonts[family] = path
+            fontIds[family] = id
+            return id
+        }
+
+        fun fontIdOf(family: String?): Int? {
+            family ?: return null
+            return fontIds[family.lowercase()] ?: registerFont(family.lowercase(), "")
+        }
         private val out = ArrayList<Paragraph>()
         private val sb = StringBuilder()
         private val runs = ArrayList<Run>()
-        var curStyle = 0
+
+        // 当前 Run 装饰上下文(七期批次三: 样式位+字号倍率+颜色+阴影+字体下标)
+        var cur: RunCtx = RunCtx()
         private var pendingSpace = false
         val openAnchors = ArrayDeque<String>()
         private val pendingNotes = ArrayList<NoteAnchor>()
         private val pendingInline = ArrayList<com.yukino.tool.module.reader.common.InlineImg>()
         val notes = LinkedHashMap<String, String>()
+
+        // 盒上下文栈: 带盒样式的块元素覆盖期间,其覆盖的段落归属该盒(最内层优先)
+        val boxStack = ArrayDeque<com.yukino.tool.module.reader.common.BoxStyle>()
+
+        fun result(): List<Paragraph> = out
 
         // 当前段缓冲写入位置(ruby 等需要记录基文本区间)
         fun cursor(): Int = sb.length
@@ -585,11 +624,6 @@ object HtmlTextExtractor {
         var paraWidthCenter = false
         var paraLineMult: Float? = null
         var pendingHeading = 0
-
-        // 盒上下文栈: 带盒样式的块元素覆盖期间,其覆盖的段落归属该盒(最内层优先)
-        val boxStack = ArrayDeque<com.yukino.tool.module.reader.common.BoxStyle>()
-
-        fun result(): List<Paragraph> = out
 
         // 快照/恢复排版上下文(元素进出)
         fun snapshotLayout(): Array<Any?> = arrayOf(
@@ -636,8 +670,13 @@ object HtmlTextExtractor {
             c.code in 0x2E80..0x9FFF || c.code in 0x3000..0x303F || c.code in 0xFF00..0xFFEF
 
         private fun openRun() {
+            val fid = fontIdOf(cur.font)
             val last = runs.lastOrNull()
-            if (last == null || last.style != curStyle) runs += Run(sb.length, sb.length, curStyle)
+            if (last == null || last.style != cur.style || last.sizeEm != cur.sizeEm ||
+                last.color != cur.color || last.shadow != cur.shadow || last.fontId != fid
+            ) {
+                runs += Run(sb.length, sb.length, cur.style, cur.sizeEm, cur.color, cur.shadow, fid)
+            }
         }
 
         // 返回实字符落盘区间(规整可能丢字符: 段首空白/CJK 粘连空格)
@@ -669,7 +708,7 @@ object HtmlTextExtractor {
         fun flush() {
             if (sb.isNotBlank()) {
                 var rs = runs.filter { it.end > it.start }
-                if (rs.all { it.style == 0 }) rs = emptyList()
+                if (rs.all { it.style == 0 && it.sizeEm == null && it.color == null && !it.shadow && it.fontId == null }) rs = emptyList()
                 val inPara = pendingNotes.filter { it.end > it.start }
                 out += Paragraph(
                     sb.toString(), rs,
@@ -697,7 +736,7 @@ object HtmlTextExtractor {
             pendingSpace = false
         }
 
-        fun addImage(ref: String) {
+        fun addImage(ref: String, width: CssLen? = null) {
             out += Paragraph(
                 IMAGE_PLACEHOLDER, emptyList(), ParaKind.IMAGE, imageRef = ref,
                 anchor = openAnchors.firstOrNull()?.also { openAnchors.removeFirst() },
@@ -706,7 +745,7 @@ object HtmlTextExtractor {
                 spaceBelowEm = paraBelowEm,
                 marginLeftEm = effectiveLeft(),
                 marginRightEm = effectiveRight(),
-                widthEm = paraWidthEm,
+                widthEm = width ?: paraWidthEm,
                 widthCenter = paraWidthCenter,
                 boxStyle = boxStack.lastOrNull()
             )
@@ -774,10 +813,10 @@ object HtmlTextExtractor {
             if (frag.isNullOrBlank()) return
             val label = node.text()
             if (label.isNotBlank()) {
-                val saved = b.curStyle
-                b.curStyle = saved or RunStyle.SUP
+                val saved = b.cur
+                b.cur = saved.copy(style = saved.style or RunStyle.SUP)
                 val (s, e) = b.appendTextTracked(label)
-                b.curStyle = saved
+                b.cur = saved
                 if (e > s) b.pendingNote(s, e, frag)
             } else {
                 val img = node.selectFirst("img")
@@ -798,8 +837,8 @@ object HtmlTextExtractor {
 
         // CSS 规则(类/元素/复合选择器) + style 属性 → 合并属性表;run 级样式作用于本元素全部子孙
         val props = propsFor(node, cssRules)
-        val saved = b.curStyle
-        b.curStyle = saved or runStyleFromProps(props)
+        val saved = b.cur
+        b.cur = mergeRunCtx(saved, runDecoFromProps(props))
         if (id.isNotEmpty()) b.openAnchors.addLast(id)
 
         // 段级排版属性(子未设用父,离开恢复)
@@ -813,7 +852,7 @@ object HtmlTextExtractor {
         try {
             when {
                 name == "br" -> b.flush()
-                name == "img" -> { b.flush(); emitImage(node, b) }
+                name == "img" -> { b.flush(); emitImage(node, b, cssRules) }
                 name == "table" -> { b.flush(); emitTable(node, b) }
                 name == "ruby" -> {
                     // 七期: 基文本进正文(行内不断段), rt 音译提入脚注表并在基文本区间挂可点锚点
@@ -841,7 +880,7 @@ object HtmlTextExtractor {
                     b.pendingHeading = 0
                 }
                 INLINE_STYLE.containsKey(name) -> {
-                    b.curStyle = saved or runStyleFromProps(props) or (INLINE_STYLE[name] ?: 0)
+                    b.cur = saved.copy(style = saved.style or runDecoFromProps(props).style or (INLINE_STYLE[name] ?: 0))
                     for (c in node.childNodes()) walk(c, b, counters, noteIds, cssRules)
                 }
                 name == "ol" -> { counters.addLast(0); walkBlock(node, b, counters, noteIds, cssRules); counters.removeLast() }
@@ -864,7 +903,7 @@ object HtmlTextExtractor {
         } finally {
             if (id.isNotEmpty()) b.openAnchors.removeId(id)
             if (box != null) b.boxStack.removeLast()
-            b.curStyle = saved
+            b.cur = saved
             b.restoreLayout(savedLayout)
         }
     }
@@ -881,12 +920,16 @@ object HtmlTextExtractor {
         b.flush()
     }
 
-    // img: 任何位置独立成图片段(外部 URL/data URI 忽略——外部资源不入正文)
-    private fun emitImage(node: Element, b: Builder) {
+    // img: 任何位置独立成图片段(外部 URL/data URI 忽略——外部资源不入正文)。
+    // 七期: style/class 的 width 定宽随段落(物化期按目标宽等比缩放)
+    private fun emitImage(node: Element, b: Builder, cssRules: List<CssRule>) {
         val src = node.attr("src").trim()
         if (src.isEmpty() || src.startsWith("http", true) || src.startsWith("data:")) return
         val ref = resolveHref(b.docDir, percentDecode(src))
-        if (ref.isNotBlank()) b.addImage(ref)
+        if (ref.isNotBlank()) {
+            val w = CssLen.parse(propsFor(node, cssRules)["width"] ?: "")
+            b.addImage(ref, w)
+        }
     }
 
     // 表格: 含跨行跨列或嵌套的复杂表出占位段;简单表逐行"单元格 | 单元格"
@@ -911,25 +954,78 @@ object HtmlTextExtractor {
         return cjkGlue.replace(ws.replace(s, " ").trim(), "")
     }
 
-    // 内联 style 属性 → 样式位(宽容匹配,认不出的属性忽略——产品原则: 书内样式不干扰全局阅读设置)
-    internal fun parseStyleAttr(style: String): Int = runStyleFromProps(parseDeclarations(style))
+    // 内联 style 属性 → 样式位(宽容匹配;保留供测试与外部调用)
+    internal fun parseStyleAttr(style: String): Int = runDecoFromProps(parseDeclarations(style)).style
 
-    // 合并属性表(class/元素规则 + style 属性) → Run 样式位。七期起 class 规则的
-    // run 级属性(font-weight/font-style/text-decoration/vertical-align super|sub)同样生效
-    internal fun runStyleFromProps(props: Map<String, String>): Int {
-        var s = 0
+    // 合并属性表(class/元素规则 + style 属性) → Run 装饰。七期批次三: font-size(倍率)/
+    // color/text-shadow/font-family 一并提取;class 规则与 style 属性同路
+    internal fun runDecoFromProps(props: Map<String, String>): RunCtx {
+        var style = 0
         val fw = props["font-weight"]
-        if (fw == "bold" || Regex("^[7-9]00$").matches(fw ?: "")) s = s or RunStyle.BOLD
+        if (fw == "bold" || Regex("^[7-9]00$").matches(fw ?: "")) style = style or RunStyle.BOLD
         val fs = props["font-style"]
-        if (fs == "italic" || fs == "oblique") s = s or RunStyle.ITALIC
+        if (fs == "italic" || fs == "oblique") style = style or RunStyle.ITALIC
         props["text-decoration"]?.let {
-            if ("underline" in it) s = s or RunStyle.UNDERLINE
-            if ("line-through" in it) s = s or RunStyle.STRIKE
+            if ("underline" in it) style = style or RunStyle.UNDERLINE
+            if ("line-through" in it) style = style or RunStyle.STRIKE
         }
         when (props["vertical-align"]) {
-            "super" -> s = s or RunStyle.SUP
-            "sub" -> s = s or RunStyle.SUB
+            "super" -> style = style or RunStyle.SUP
+            "sub" -> style = style or RunStyle.SUB
         }
-        return s
+        val size = props["font-size"]?.let { fontSizeEm(it) }
+        val color = props["color"]?.let { parseColor(it) }
+        val shadow = props["text-shadow"]?.let { it.trim().lowercase() != "none" } == true
+        val font = props["font-family"]?.let { fontFamilyName(it) }
+        return RunCtx(style, size, color, shadow, font)
+    }
+
+    // font-size → 相对字号倍率(em 值/px÷16/百分比/CSS 关键词;larger/smaller 忽略)
+    internal fun fontSizeEm(v: String): Float? {
+        CssLen.parse(v)?.let { return if (it.pct) it.v / 100f else it.v }
+        return when (v.trim().lowercase()) {
+            "xx-small" -> 0.583f; "x-small" -> 0.7f; "small" -> 0.8f
+            "medium" -> 1f; "large" -> 1.2f; "x-large" -> 1.5f; "xx-large" -> 2f; "xxx-large" -> 2.4f
+            else -> null
+        }
+    }
+
+    // font-family 值取首个族名(去引号;"title", serif → title)
+    internal fun fontFamilyName(v: String): String? =
+        v.split(',').firstOrNull()?.trim()?.trim('"', '\'')?.takeIf { it.isNotEmpty() }
+
+    // 上下文合并: 新装饰的非空字段覆盖(未设字段保持继承值)
+    internal fun mergeRunCtx(base: RunCtx, deco: RunCtx): RunCtx = RunCtx(
+        style = base.style or deco.style,
+        sizeEm = deco.sizeEm ?: base.sizeEm,
+        color = deco.color ?: base.color,
+        shadow = deco.shadow || base.shadow,
+        font = deco.font ?: base.font
+    )
+
+    // @font-face 块 → family → 字体文件相对路径(src url)
+    internal fun parseFontFaces(css: String): Map<String, String> {
+        val out = HashMap<String, String>()
+        val noComment = css.replace(Regex("/\\*.*?\\*/", RegexOption.DOT_MATCHES_ALL), "")
+        for (m in Regex("@font-face\\s*\\{([^}]*)\\}").findAll(noComment)) {
+            val decls = parseDeclarations(m.groupValues[1])
+            val family = decls["font-family"]?.let { fontFamilyName(it) } ?: continue
+            val src = decls["src"]?.let { parseUrlValue(it) } ?: continue
+            out[family.lowercase()] = src
+        }
+        return out
+    }
+
+    internal fun mergeFontFaces(dst: MutableMap<String, String>, src: Map<String, String>) {
+        dst.putAll(src)
     }
 }
+
+// Run 装饰上下文(解析期快照/合并的单位);font 为 family 名(落盘时经 Builder 转字体表下标)
+internal data class RunCtx(
+    val style: Int = 0,
+    val sizeEm: Float? = null,
+    val color: Long? = null,
+    val shadow: Boolean = false,
+    val font: String? = null
+)

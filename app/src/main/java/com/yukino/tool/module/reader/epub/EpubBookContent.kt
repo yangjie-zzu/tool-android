@@ -24,6 +24,12 @@ class EpubBookContent(
 
     override fun chapterStart(index: Int): Long = chapters[index].startChar
 
+    // 七期批次三: 全书字体文件表(family → 绝对路径;打开各章时按章内 fontPaths 逐章合并)
+    private val fontFiles = HashMap<String, String>()
+
+    // family → 字体文件绝对路径(未知 family 返回 null,绘制回落默认字体)
+    fun fontFile(family: String): String? = synchronized(fontFiles) { fontFiles[family] }
+
     // 章文档缓存: 与 BookPager 的行模型缓存独立(此处省重复磁盘读,后者省重复断行)
     private val docCache = object : LinkedHashMap<Int, ChapterDocument>(4, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Int, ChapterDocument>) = size > 4
@@ -32,7 +38,18 @@ class EpubBookContent(
     override fun chapterDoc(index: Int): ChapterDocument = synchronized(this) {
         docCache.getOrPut(index) {
             val f = java.io.File(chapterDir, "chapters/ch_%04d.txt".format(index))
-            val (paras, footnotes) = ChapterFileCodec.read(f)
+            val read = ChapterFileCodec.read(f)
+            val paras = read.paragraphs
+            val footnotes = read.notes
+            // 七期批次三: 章内字体表(family → 相对路径)绝对化(重复登记幂等,首见为准)
+            val docFontFiles = LinkedHashMap<String, String>()
+            synchronized(fontFiles) {
+                for ((family, rel) in read.fontPaths) {
+                    val abs = if (rel.startsWith("/")) rel else java.io.File(chapterDir, rel).absolutePath
+                    docFontFiles[family] = abs
+                    if (!fontFiles.containsKey(family)) fontFiles[family] = abs
+                }
+            }
             // 图片相对路径 → 绝对路径(一次转换,排版/渲染零路径解析;块级 imageRef 与行内 inlineImages 同规则)
             val needResolve = paras.any { it.isImage || it.inlineImages.isNotEmpty() }
             val resolved = if (needResolve) {
@@ -63,7 +80,7 @@ class EpubBookContent(
             } else if (paras.any { it.boxStyle != boxAbs(it.boxStyle) }) {
                 paras.map { it.copyBox(boxAbs(it.boxStyle)) }
             } else paras
-            ChapterDocument(chapters[index].title, resolved, footnotes)
+            ChapterDocument(chapters[index].title, resolved, footnotes, read.fonts, docFontFiles)
         }
     }
 

@@ -15,8 +15,19 @@ object RunStyle {
 }
 
 // 段内 [start, end) 区间(纯文本投影坐标)的样式;style 为 RunStyle 位或。
-// 段内排序不重叠、相邻同样式已合并(解析侧保证)
-data class Run(val start: Int, val end: Int, val style: Int)
+// 段内排序不重叠、相邻同样式已合并(解析侧保证)。
+// 七期批次三: sizeEm 相对字号倍率(font-size,CSS 关键词/px 已折 em 倍率),
+// color 书内前景色(ARGB,夜间主题绘制层做亮度适配),shadow text-shadow(固定近似参数),
+// fontId 章级字体表下标(@font-face 的 font-family)——四者 null/0 = 跟随全局
+data class Run(
+    val start: Int,
+    val end: Int,
+    val style: Int,
+    val sizeEm: Float? = null,
+    val color: Long? = null,
+    val shadow: Boolean = false,
+    val fontId: Int? = null
+)
 
 enum class ParaKind { TEXT, IMAGE }
 
@@ -116,7 +127,9 @@ class Paragraph(
 class ChapterDocument(
     val title: String,
     val paragraphs: List<Paragraph>,
-    val footnotes: Map<String, String> = emptyMap()
+    val footnotes: Map<String, String> = emptyMap(),
+    val fontIds: Map<Int, String> = emptyMap(),       // 七期: run.fontId → family
+    val fontFiles: Map<String, String> = emptyMap()   // family → 字体文件绝对路径
 ) {
     val bodyText: String get() = paragraphs.joinToString("\n") { it.text }
 }

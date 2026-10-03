@@ -66,8 +66,28 @@ class ReaderPageView(context: Context) : View(context) {
     private val imagePaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
     private val timeFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
 
-    // 样式段衍生 paint(style 位 → paint;configurePaints 时整体失效重建)。title 位参与 key
-    private val stylePaints = android.util.SparseArray<android.text.TextPaint>()
+    // 样式段衍生 paint(样式段全特征 → paint;configurePaints 时整体失效重建)。
+    // 七期批次三: 字号倍率/颜色/阴影/字体参与 key
+    private data class PaintKey(
+        val title: Boolean, val style: Int, val sizeEm: Float?,
+        val color: Long?, val shadow: Boolean, val font: String?
+    )
+    private val stylePaints = HashMap<PaintKey, android.text.TextPaint>()
+
+    // @font-face 字体缓存(family → Typeface;加载失败记录避免反复读盘)与设置 paint
+    private val typefaceCache = HashMap<String, android.graphics.Typeface>()
+    private val failedFonts = HashSet<String>()
+    private fun typefaceFor(family: String, path: String): android.graphics.Typeface? {
+        typefaceCache[family]?.let { return it }
+        if (family in failedFonts) return null
+        val tf = runCatching { android.graphics.Typeface.createFromFile(path) }.getOrNull()
+        if (tf == null) {
+            failedFonts.add(family)
+            return null
+        }
+        typefaceCache[family] = tf
+        return tf
+    }
 
     // 图片缓存: imageRef → 解码 Bitmap(LRU,总字节超限逐出最老;换书/版式变化不失效——
     // 同一路径解码结果不变,翻页反复命中)。解码单线程后台,未命中画占位框,完成后重绘
@@ -388,21 +408,35 @@ class ReaderPageView(context: Context) : View(context) {
 
     // ---------- 富文本与图片绘制(二期) ----------
 
-    // 样式段衍生 paint: 相对 base 调整字形/字号(key 含 title 位,两套 base 不串)
-    private fun stylePaintFor(base: android.text.TextPaint, title: Boolean, style: Int): android.text.TextPaint {
-        val key = style or (if (title) 1 shl 24 else 0)
-        stylePaints.get(key)?.let { return it }
+    // 样式段衍生 paint: 相对 base 调整字形/字号/颜色/阴影/字体。
+    // 字号 = base × 书内倍率 ×(上下标再乘 0.65);颜色夜间主题做亮度适配;
+    // 书内字体(@font-face)与粗斜位组合;阴影近似 text-shadow(1px 1px 微光晕)
+    private fun stylePaintFor(base: android.text.TextPaint, title: Boolean, st: LineStyle): android.text.TextPaint {
+        val key = PaintKey(title, st.style, st.sizeEm, st.color, st.shadow, st.font)
+        stylePaints[key]?.let { return it }
         val p = android.text.TextPaint(base)
-        val bold = style and RunStyle.BOLD != 0
-        val italic = style and RunStyle.ITALIC != 0
+        val bold = st.style and RunStyle.BOLD != 0
+        val italic = st.style and RunStyle.ITALIC != 0
+        val bookFace = st.font?.let { fam -> page?.fontFiles?.get(fam)?.let { typefaceFor(fam, it) } }
         p.typeface = when {
+            bookFace != null && bold && italic -> Typeface.create(bookFace, Typeface.BOLD_ITALIC)
+            bookFace != null && bold -> Typeface.create(bookFace, Typeface.BOLD)
+            bookFace != null && italic -> Typeface.create(bookFace, Typeface.ITALIC)
+            bookFace != null -> bookFace
             bold && italic -> Typeface.create(base.typeface, Typeface.BOLD_ITALIC)
             bold -> Typeface.create(base.typeface, Typeface.BOLD)
             italic -> Typeface.create(base.typeface, Typeface.ITALIC)
             else -> base.typeface
         }
-        if (style and (RunStyle.SUP or RunStyle.SUB) != 0) p.textSize = base.textSize * ChapterComposer.SUP_SUB_SCALE
-        stylePaints.put(key, p)
+        var size = base.textSize
+        st.sizeEm?.let { size *= it }
+        if (st.style and (RunStyle.SUP or RunStyle.SUB) != 0) size *= ChapterComposer.SUP_SUB_SCALE
+        p.textSize = size
+        st.color?.let { c -> p.color = adaptColor(c, typo?.night == true).toInt() }
+        if (st.shadow) {
+            p.setShadowLayer(size * 0.08f, 1f, 1f, 0xB3000000.toInt())
+        }
+        stylePaints[key] = p
         return p
     }
 
@@ -425,8 +459,10 @@ class ReaderPageView(context: Context) : View(context) {
         fun paintAt(charIdx: Int): android.text.TextPaint {
             if (styles != null) {
                 for (st in styles) {
-                    if (charIdx >= st.start && charIdx < st.end && st.style != 0) {
-                        return stylePaintFor(base, ln.title, st.style)
+                    if (charIdx >= st.start && charIdx < st.end &&
+                        (st.style != 0 || st.sizeEm != null || st.color != null || st.shadow || st.font != null)
+                    ) {
+                        return stylePaintFor(base, ln.title, st)
                     }
                 }
             }
@@ -436,7 +472,9 @@ class ReaderPageView(context: Context) : View(context) {
         fun dyAt(charIdx: Int): Float {
             if (styles != null) {
                 for (st in styles) {
-                    if (charIdx >= st.start && charIdx < st.end) return baselineShift(st.style, base.textSize)
+                    if (charIdx >= st.start && charIdx < st.end) {
+                        return baselineShift(st.style, paintAt(charIdx).textSize)
+                    }
                 }
             }
             return 0f
@@ -496,8 +534,8 @@ class ReaderPageView(context: Context) : View(context) {
     private fun drawStyledLine(canvas: Canvas, ln: DrawLine, base: android.text.TextPaint) {        val styles = ln.styles ?: return
         val full = ln.text
         for (st in styles) {
-            val p = stylePaintFor(base, ln.title, st.style)
-            val dy = baselineShift(st.style, base.textSize)
+            val p = stylePaintFor(base, ln.title, st)
+            val dy = baselineShift(st.style, p.textSize)
             val underline = st.style and RunStyle.UNDERLINE != 0
             val strike = st.style and RunStyle.STRIKE != 0
             val segs = ln.segments
@@ -506,7 +544,7 @@ class ReaderPageView(context: Context) : View(context) {
                 val x = ln.x + base.measureText(full, 0, st.start)
                 val sub = full.substring(st.start, st.end)
                 canvas.drawText(sub, x, ln.baseline + dy, p)
-                drawDecor(canvas, p, x, ln.baseline + dy, sub, underline, strike, base.textSize)
+                drawDecor(canvas, p, x, ln.baseline + dy, sub, underline, strike, p.textSize)
             } else {
                 var cursor = 0
                 for (seg in segs) {
@@ -519,7 +557,7 @@ class ReaderPageView(context: Context) : View(context) {
                     val x = ln.x + seg.x + p.measureText(seg.text, 0, a)
                     val sub = seg.text.substring(a, b)
                     canvas.drawText(sub, x, ln.baseline + dy, p)
-                    drawDecor(canvas, p, x, ln.baseline + dy, sub, underline, strike, base.textSize)
+                    drawDecor(canvas, p, x, ln.baseline + dy, sub, underline, strike, p.textSize)
                 }
             }
         }
