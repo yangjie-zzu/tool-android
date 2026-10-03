@@ -1213,6 +1213,9 @@ object BookPager {
             var accFirst = -1
             var accLast = -1
             var accStyle: BoxStyle? = null
+            // 已定位盒(嵌套子盒的定位基准)
+            class PlacedBox(val fp: Int, val lp: Int, val style: BoxStyle, val left: Float, val right: Float)
+            val placed = ArrayList<PlacedBox>()
             fun flushBox() {
                 val style = accStyle ?: return
                 val fp = accFirst
@@ -1229,27 +1232,47 @@ object BookPager {
                 val bl = edge(3)?.widthEm ?: 0f
                 val tw = typo.textWidth.toFloat()
                 // 批次四修复: 盒自身 width/margin 定位(段落继承的 ml/mr 含 padding 与
-                // 居中偏移的复合语义,反推矩形会左右不对称)——盒有 width 时直接按盒定位
+                // 居中偏移的复合语义,反推矩形会左右不对称)——盒有 width 时直接按盒定位。
+                // 嵌套盒(段落区间含于已定位父盒)相对父盒内容区定位;margin auto 与
+                // float:right/left 均在基准区内解析
+                var baseL = 0f
+                var baseR = tw
+                val parent = placed.lastOrNull { p ->
+                    p.fp < fp && p.lp > lp &&
+                        cl.paraRanges[p.fp].first <= cl.paraRanges[fpSafe].first &&
+                        cl.paraRanges[p.lp].last >= cl.paraRanges[lpSafe].last
+                }
+                if (parent != null) {
+                    val ps = parent.style
+                    baseL = parent.left + ps.padLeftEm * fontPx +
+                        (ps.edges.getOrNull(3)?.takeIf { it.widthEm > 0f && it.style > 0 }?.widthEm ?: 0f) * fontPx
+                    baseR = parent.right - ps.padRightEm * fontPx -
+                        (ps.edges.getOrNull(1)?.takeIf { it.widthEm > 0f && it.style > 0 }?.widthEm ?: 0f) * fontPx
+                }
+                val baseW = baseR - baseL
                 var left: Float
                 var right: Float
-                val boxW = style.widthCss?.px(fontPx, tw)
-                if (boxW != null && boxW < tw) {
-                    val mlB = style.marginLeft?.px(fontPx, tw) ?: 0f
-                    val mrB = style.marginRight?.px(fontPx, tw) ?: 0f
-                    when (style.marginAuto) {
-                        1 -> { left = (tw - boxW) / 2f + mlB; right = left + boxW }
-                        2 -> { right = tw - mrB; left = right - boxW }
-                        3 -> { left = mlB; right = left + boxW }
-                        // 双值非 auto: LTR 过约束忽略 margin-right, 盒从 margin-left 起排
-                        else -> { left = mlB; right = left + boxW }
+                val boxW = style.widthCss?.px(fontPx, baseW) ?: tw
+                val fSide = cl.paras[fpSafe].floatSide
+                if (boxW in 1f..baseW) {
+                    val mlB = style.marginLeft?.px(fontPx, baseW) ?: 0f
+                    val mrB = style.marginRight?.px(fontPx, baseW) ?: 0f
+                    when {
+                        style.marginAuto == 1 -> { left = baseL + (baseW - boxW) / 2f + mlB; right = left + boxW }
+                        style.marginAuto == 2 -> { right = baseR - mrB; left = right - boxW }
+                        style.marginAuto == 3 -> { left = baseL + mlB; right = left + boxW }
+                        fSide == 1 -> { right = baseR; left = right - boxW }   // float:right 贴右缘
+                        fSide == 2 -> { left = baseL; right = left + boxW }
+                        else -> { left = baseL + mlB; right = left + boxW }
                     }
                 } else {
-                    left = pm.mlPx
-                    right = tw - pm.mrPx
+                    left = baseL + pm.mlPx
+                    right = baseR - pm.mrPx
                 }
                 // CSS width = 内容宽 → 边框盒外扩 padding+border
                 left = (left - style.padLeftEm * fontPx - bl * fontPx).coerceAtLeast(0f)
                 right = (right + style.padRightEm * fontPx + br * fontPx).coerceAtMost(tw)
+                placed += PlacedBox(fp, lp, style, left, right)
                 val top = (paraTop[fp] ?: 0f) - style.padTopEm * fontPx - bt * fontPx
                 var bottom = (paraBottom[lp] ?: 0f) + style.padBottomEm * fontPx + bb * fontPx
                 // 批次四c: 固定高盒——矩形高不小于固定高(内容垂直居中已由排版期偏移)
@@ -1258,7 +1281,11 @@ object BookPager {
                 }
                 val topOpen = fp > 0 && cl.paras[fp - 1].boxStyle == style
                 val bottomOpen = lp < cl.paras.lastIndex && cl.paras[lp + 1].boxStyle == style
-                if (right > left) boxes += DrawBox(style, left, top, right, bottom, topOpen, bottomOpen)
+                if (right > left) {
+                    val db = DrawBox(style, left, top, right, bottom, topOpen, bottomOpen)
+                    boxes += db
+                    placed += PlacedBox(fp, lp, style, db.left, db.right)
+                }
             }
             for (pi in order) {
                 val style = cl.paras.getOrNull(pi)?.boxStyle
