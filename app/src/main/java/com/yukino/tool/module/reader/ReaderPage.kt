@@ -31,16 +31,22 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.List
+import androidx.compose.material.icons.rounded.Input
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -72,6 +78,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
@@ -167,6 +175,7 @@ fun ReaderScreen(
     var menuVisible by remember { mutableStateOf(false) }
     var showToc by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
+    var showJumpPage by remember { mutableStateOf(false) }
     // 跟手拖拽需要手势层直接驱动 View,持有实例引用
     val pageViewRef = remember { mutableStateOf<ReaderPageView?>(null) }
 
@@ -260,7 +269,7 @@ fun ReaderScreen(
         if (sp.isEmpty()) return@LaunchedEffect
         val idx = pageIndex.coerceIn(0, sp.lastIndex)
         currentBookPage = withContext(Dispatchers.Default) {
-            BookPager.materialize(cnt, sp[idx], t)
+            BookPager.materialize(cnt, sp[idx], t, idx, sp.size)
         }
     }
 
@@ -280,7 +289,7 @@ fun ReaderScreen(
                 val i = pageIndex + off
                 if (i !in sp.indices || neighborCache.containsKey(i)) continue
                 launch(Dispatchers.Default) {
-                    neighborCache[i] = BookPager.materialize(cnt, sp[i], t)
+                    neighborCache[i] = BookPager.materialize(cnt, sp[i], t, i, sp.size)
                 }
             }
         }
@@ -520,7 +529,7 @@ fun ReaderScreen(
         val target = livePageIndex + dir
         if (target !in sp.indices) return
         val neighbor = neighborCache.getOrPut(target) {
-            BookPager.materialize(cnt, sp[target], t)
+            BookPager.materialize(cnt, sp[target], t, target, sp.size)
         }
         // 与手势翻页同一套动画: 摆好拖拽层后提交收尾,整页顺势滑入/滑出
         pageViewRef.value?.let { v ->
@@ -762,7 +771,7 @@ fun ReaderScreen(
                     if (target !in sp.indices) return null
                     // 命中预物化缓存则零成本定向;未命中(理论上仅冷启动首拖)才同步兜底
                     val neighbor = neighborCache.getOrPut(target) {
-                        BookPager.materialize(cnt, sp[target], t)
+                        BookPager.materialize(cnt, sp[target], t, target, sp.size)
                     }
                     return DragSession(dir, target, cur, neighbor)
                 }
@@ -974,42 +983,48 @@ fun ReaderScreen(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 var sliderValue by remember(menuVisible) { mutableStateOf<Float?>(null) }
-                Slider(
-                    modifier = Modifier.fillMaxWidth(),
-                    value = sliderValue ?: percent.toFloat(),
-                    colors = SliderDefaults.colors(
-                        thumbColor = fgColor,
-                        activeTrackColor = fgColor,
-                        inactiveTrackColor = fgColor.copy(alpha = 0.22f)
-                    ),
-                    // 自绘轨道: M3 默认样式在滑块两侧留断口(gap),这里画无断口双
-                    // 色轨道,已拖实色/未拖 22% 透明
-                    track = { _ ->
-                        val f = (sliderValue ?: percent.toFloat()).toFloat().coerceIn(0f, 1f)
-                        Box(
-                            Modifier
-                                .fillMaxWidth()
-                                .height(6.dp)
-                                .clip(RoundedCornerShape(3.dp))
-                                .background(fgColor.copy(alpha = 0.22f))
-                        ) {
-                            if (f > 0f) {
-                                Box(
-                                    Modifier
-                                        .fillMaxWidth(f)
-                                        .height(6.dp)
-                                        .clip(RoundedCornerShape(3.dp))
-                                        .background(fgColor)
-                                )
-                            }
-                        }
-                    },
-                    onValueChange = { sliderValue = it },
-                    onValueChangeFinished = {
-                        sliderValue?.let { seekToPercent(it) }
-                        sliderValue = null
+                // 跳页调试入口: 进度条左侧图标,点击弹数字跳页弹窗
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = { showJumpPage = true }) {
+                        Icon(Icons.Rounded.Input, "跳页", tint = fgColor)
                     }
-                )
+                    Slider(
+                        modifier = Modifier.weight(1f),
+                        value = sliderValue ?: percent.toFloat(),
+                        colors = SliderDefaults.colors(
+                            thumbColor = fgColor,
+                            activeTrackColor = fgColor,
+                            inactiveTrackColor = fgColor.copy(alpha = 0.22f)
+                        ),
+                        // 自绘轨道: M3 默认样式在滑块两侧留断口(gap),这里画无断口双
+                        // 色轨道,已拖实色/未拖 22% 透明
+                        track = { _ ->
+                            val f = (sliderValue ?: percent.toFloat()).toFloat().coerceIn(0f, 1f)
+                            Box(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .height(6.dp)
+                                    .clip(RoundedCornerShape(3.dp))
+                                    .background(fgColor.copy(alpha = 0.22f))
+                            ) {
+                                if (f > 0f) {
+                                    Box(
+                                        Modifier
+                                            .fillMaxWidth(f)
+                                            .height(6.dp)
+                                            .clip(RoundedCornerShape(3.dp))
+                                            .background(fgColor)
+                                    )
+                                }
+                            }
+                        },
+                        onValueChange = { sliderValue = it },
+                        onValueChangeFinished = {
+                            sliderValue?.let { seekToPercent(it) }
+                            sliderValue = null
+                        }
+                    )
+                }
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
@@ -1056,6 +1071,54 @@ fun ReaderScreen(
                 }
             },
             onDismiss = { showToc = false }
+        )
+    }
+
+    // 跳页调试弹窗: 输入页码直达(与进度条/目录同一条页目录索引路径)
+    if (showJumpPage) {
+        val totalPages = specs?.size ?: 0
+        var input by remember(showJumpPage) { mutableStateOf((pageIndex + 1).toString()) }
+        val target = input.trim().toIntOrNull()
+        AlertDialog(
+            onDismissRequest = { showJumpPage = false },
+            title = { Text("跳页") },
+            text = {
+                Column {
+                    Text(
+                        "当前第 ${pageIndex + 1} 页 / 共 $totalPages 页",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = input,
+                        onValueChange = { s -> input = s.filter { it.isDigit() }.take(7) },
+                        singleLine = true,
+                        isError = target == null,
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Number,
+                            imeAction = ImeAction.Go
+                        ),
+                        keyboardActions = KeyboardActions(onGo = {
+                            if (target != null && totalPages > 0) {
+                                pageIndex = (target - 1).coerceIn(0, totalPages - 1)
+                                showJumpPage = false
+                            }
+                        })
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = target != null && totalPages > 0,
+                    onClick = {
+                        pageIndex = ((target ?: 1) - 1).coerceIn(0, totalPages - 1)
+                        showJumpPage = false
+                    }
+                ) { Text("跳转") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showJumpPage = false }) { Text("取消") }
+            }
         )
     }
 

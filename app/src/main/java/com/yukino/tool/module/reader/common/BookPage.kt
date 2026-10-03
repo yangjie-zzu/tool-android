@@ -1032,10 +1032,14 @@ object BookPager {
     // 物化一页。页 = 行窗口(与 buildSpecs 同一 paginate,页界一致),
     // 基线/缩进/两端对齐拉伸在物化时一次算好,绘制零计算。
     // 拖拽预览与落账共用物化结果,保证看到的==翻到的
+    // globalPageIndex/globalPageCount: 全书页序(页脚与跳页弹窗同一套页码);
+    // 缺省(-1)时页脚退回章内页码
     fun materialize(
         content: BookContent,
         spec: PageSpec,
-        typo: ResolvedTypography
+        typo: ResolvedTypography,
+        globalPageIndex: Int = -1,
+        globalPageCount: Int = -1
     ): BookPage {
         if (spec.kind != PageKind.CONTENT) {
             if (spec.kind == PageKind.COVER) {
@@ -1062,7 +1066,10 @@ object BookPager {
         val windows = paginate(cl, typo)
         val slice = windows[spec.chapterPageIndex.coerceIn(0, windows.lastIndex)]
         val percent = percentOf(content, spec)
-        val label = "${spec.chapterPageIndex + 1}/${spec.chapterPageCount} ${(percent * 100).roundToInt()}%"
+        val pagePart =
+            if (globalPageCount > 0) "${globalPageIndex + 1}/$globalPageCount"
+            else "${spec.chapterPageIndex + 1}/${spec.chapterPageCount}"
+        val label = "$pagePart ${(percent * 100).roundToInt()}%"
         val paint = TextPaint(TextPaint.ANTI_ALIAS_FLAG).apply { textSize = typo.fontPx }
         val chapterStartGlobal = content.chapterStart(idx)
         val drawn = drawLinesWithBoxes(cl, slice, typo, measure = { paint.measureText(it) }, chapterStartGlobal = chapterStartGlobal)
