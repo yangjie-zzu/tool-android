@@ -73,6 +73,7 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.SubcomposeLayout
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.positionInWindow
@@ -85,6 +86,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -1191,54 +1193,64 @@ fun ReaderScreen(
         }
     }
 
-    // 脚注就近卡片: 锚定角标显示——角标在上半屏时卡片放下方、下半屏时放上方(底边贴角标),
-    // 长脚注填满所在半屏区域内部滚动。scrim 层关闭,卡片自身消费点击;配色与菜单浮层同源
+    // 脚注就近卡片: 优先放在角标上方(底边贴角标), 上方空间放不下时落下方(顶边贴角标);
+    // 长脚注钳到所在区域内部滚动。SubcomposeLayout 先量内容实际高再定位, 无两帧回环。
+    // scrim 层关闭, 卡片自身消费点击; 配色与菜单浮层同源(跟随阅读主题)
     footnoteShow?.let { note ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .pointerInput(Unit) { detectTapGestures { footnoteShow = null } }
-        )
         val gapPx = with(density) { 20.dp.toPx() }
         val cardMarginPx = with(density) { 16.dp.toPx() }
-        val screenBottom = topInsetPx + (viewport?.height ?: 0)
-        val below = note.anchor.y < screenBottom / 2
-        val areaTop = if (below) note.anchor.y + gapPx else topInsetPx + gapPx
-        val areaBottom = if (below) screenBottom - gapPx else note.anchor.y - gapPx
-        val areaH = (areaBottom - areaTop).coerceAtLeast(0f)
-        Box(
-            modifier = Modifier
-                .offset { IntOffset(cardMarginPx.roundToInt(), areaTop.roundToInt()) }
-                .width(with(density) { ((viewport?.width ?: 0) - cardMarginPx * 2).toDp() })
-                .height(with(density) { areaH.toDp() })
-                .pointerInput(Unit) { detectTapGestures { } }
-        ) {
-            Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = menuBg,
-                tonalElevation = 0.dp,
-                shadowElevation = 8.dp,
-                modifier = Modifier
-                    .align(if (below) Alignment.TopStart else Alignment.BottomStart)
-                    .fillMaxWidth()
-                    .heightIn(max = with(density) { areaH.toDp() })
-            ) {
-                Column(
-                    Modifier.verticalScroll(rememberScrollState())
-                        .padding(horizontal = 16.dp, vertical = 12.dp)
+        SubcomposeLayout { constraints ->
+            val vw = viewport?.width ?: 0
+            val screenBottom = topInsetPx + (viewport?.height ?: 0)
+            val cardW = (vw - cardMarginPx * 2).roundToInt().coerceAtLeast(1)
+            val spaceAbove = (note.anchor.y - gapPx - topInsetPx).roundToInt().coerceAtLeast(0)
+            val spaceBelow = (screenBottom - gapPx - note.anchor.y).roundToInt().coerceAtLeast(0)
+            fun card(maxHp: Int) = subcompose(note.noteId) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = menuBg,
+                    tonalElevation = 0.dp,
+                    shadowElevation = 8.dp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = with(density) { maxHp.toDp() })
                 ) {
-                    Text(
-                        "脚注",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = fgColor
-                    )
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        note.text,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = fgColor
-                    )
+                    Column(
+                        Modifier.verticalScroll(rememberScrollState())
+                            .padding(horizontal = 16.dp, vertical = 12.dp)
+                    ) {
+                        Text(
+                            "脚注",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = fgColor
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            note.text,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = fgColor
+                        )
+                    }
                 }
+            }
+            val meas = Constraints(minWidth = cardW, maxWidth = cardW, minHeight = 0)
+            // 内容本高(上限整屏); 上方放得下优先上方, 否则下方; 超过所在区域再钳高滚动
+            val natural = card(maxHp = screenBottom).map { it.measure(meas.copy(maxHeight = screenBottom)) }
+            val contentH = natural.maxOf { it.height }
+            val useAbove = contentH <= spaceAbove
+            val areaMax = if (useAbove) spaceAbove else spaceBelow
+            val areaTop = if (useAbove) note.anchor.y - gapPx - contentH else note.anchor.y + gapPx
+            val placed = if (contentH > areaMax) {
+                card(maxHp = areaMax).map { it.measure(meas.copy(maxHeight = areaMax)) }
+            } else natural
+            layout(constraints.maxWidth, constraints.maxHeight) {
+                subcompose("scrim") {
+                    Box(
+                        Modifier.fillMaxSize()
+                            .pointerInput(Unit) { detectTapGestures { footnoteShow = null } }
+                    )
+                }.forEach { it.measure(constraints).place(0, 0) }
+                placed.forEach { it.place(cardMarginPx.roundToInt(), areaTop.roundToInt()) }
             }
         }
     }
