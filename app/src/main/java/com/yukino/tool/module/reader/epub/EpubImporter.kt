@@ -31,6 +31,13 @@ object EpubImporter {
     fun chapterFile(context: Context, bookId: String, index: Int): File =
         File(File(chapterDir(context, bookId), "chapters"), "ch_%04d.txt".format(index))
 
+    // 装饰章快照位图(离屏 WebView 渲染原书 xhtml 落盘的 WebP): 书目录 deco/ 下按章号命名
+    fun decoFileOf(chapterDir: File, index: Int): File =
+        File(File(chapterDir, "deco"), "ch_%04d.webp".format(index))
+
+    fun decoFile(context: Context, bookId: String, index: Int): File =
+        decoFileOf(chapterDir(context, bookId), index)
+
     // 装饰章判定: 章首段带装饰盒(boxStyle)的章为 CSS 排版页(扉页/封面等),
     // 阅读器排版引擎只做近似,这类章由 WebView 按原书样式呈现
     fun isDecorativeChapter(context: Context, bookId: String, index: Int): Boolean {

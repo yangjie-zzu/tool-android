@@ -205,6 +205,14 @@ interface BookContent {
     // 全书偏移处的脚注角标 → (noteId, 脚注内容);非角标位置返回 null。
     // 供点击命中: tap → 字符全书偏移 → 本查询
     fun footnoteAt(globalOffset: Long): Pair<String, String>? = null
+
+    // ---- 装饰章(七期): 章首段带装饰盒的 CSS 排版页,整章一页按快照位图呈现 ----
+
+    // 该章是否装饰章(分页语义: 整章一页不跨页;TXT 恒否)
+    fun isDecorative(chapterIndex: Int): Boolean = false
+
+    // 装饰章快照位图文件绝对路径;null = 未生成(页面临时以近似排版占位,生成完成后重物化)
+    fun decoSnapshot(chapterIndex: Int): String? = null
 }
 
 // TXT 内容源: 全书单文本流 + 章节偏移表切片。无章节书归一化为"整本单章"

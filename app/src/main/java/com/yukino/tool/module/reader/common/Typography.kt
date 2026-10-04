@@ -26,7 +26,8 @@ object Typography {
 
     // 断行/排版算法版本: 算法变化(如断行策略切换、行高贴合版心、页首豁免段前距)时 +1,使旧分页缓存失效
     // v15: 七期批次四 表格虚拟行/float 环绕避让/固定高盒偏移进入断行与分页
-    const val BREAK_STRATEGY_VERSION = 15
+    // v16: 装饰章整章一页(快照位图呈现),旧分页的装饰章多页切分全部失效重排
+    const val BREAK_STRATEGY_VERSION = 16
 
     // 行高/段前距取整粒度(px): 向上取整到它的整数倍,取整只增不减,字形不被裁
     const val GRID_PX = 1

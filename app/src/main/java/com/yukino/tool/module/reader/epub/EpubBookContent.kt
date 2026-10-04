@@ -136,6 +136,17 @@ class EpubBookContent(
         return null
     }
 
+    // ---- 装饰章(七期): 判定复用章文档缓存;快照落盘于书目录 deco/,按需存在性检查 ----
+
+    override fun isDecorative(chapterIndex: Int): Boolean =
+        chapterIndex in chapters.indices &&
+            chapterDoc(chapterIndex).paragraphs.firstOrNull()?.boxStyle != null
+
+    override fun decoSnapshot(chapterIndex: Int): String? {
+        if (!isDecorative(chapterIndex)) return null
+        return EpubImporter.decoFileOf(chapterDir, chapterIndex).takeIf { it.exists() }?.absolutePath
+    }
+
     // 图片像素尺寸: 位图只读文件头(decodeBounds),SVG 解析矢量尺寸;
     // 排版断行时按版心宽换算占位高
     override fun imageBounds(imageRef: String): android.graphics.Rect? = runCatching {

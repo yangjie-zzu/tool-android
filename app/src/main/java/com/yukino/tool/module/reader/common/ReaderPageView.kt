@@ -339,17 +339,28 @@ class ReaderPageView(context: Context) : View(context) {
         canvas.clipRect(offsetX, contentTop, offsetX + width, contentBottom)
         val cover = page.coverImage
         val virtual = page.virtualLayout
-        if (cover != null && page.coverWidth > 0 && page.coverHeight > 0) {
-            // 封面页: 图片在版心内等比居中(尺寸物化时按版心宽换算好)
-            val availH = height - topInsetPx - bottomInsetPx - 2 * pagePadPx
-            val x = offsetX + t.marginPx + (t.textWidth - page.coverWidth) / 2f
-            val y = contentTop + (availH - page.coverHeight) / 2f
-            drawBitmapFit(canvas, cover, x, y, page.coverWidth.toFloat(), page.coverHeight.toFloat())
-        } else if (virtual != null) {
-            val y = contentTop + (height - topInsetPx - bottomInsetPx - 2 * pagePadPx - virtual.height) / 2f
-            canvas.translate(offsetX + t.marginPx, y)
-            virtual.draw(canvas)
-        } else {
+        val deco = page.decoImage
+        when {
+            deco != null && page.decoWidth > 0 && page.decoHeight > 0 -> {
+                // 装饰章快照: 版心内等比居中(尺寸物化时按版心宽换算好);夜间套反色滤镜
+                val availH = height - topInsetPx - bottomInsetPx - 2 * pagePadPx
+                val x = offsetX + t.marginPx + (t.textWidth - page.decoWidth) / 2f
+                val y = contentTop + (availH - page.decoHeight) / 2f
+                drawDecoBitmap(canvas, deco, x, y, page.decoWidth.toFloat(), page.decoHeight.toFloat(), t.night)
+            }
+            cover != null && page.coverWidth > 0 && page.coverHeight > 0 -> {
+                // 封面页: 图片在版心内等比居中(尺寸物化时按版心宽换算好)
+                val availH = height - topInsetPx - bottomInsetPx - 2 * pagePadPx
+                val x = offsetX + t.marginPx + (t.textWidth - page.coverWidth) / 2f
+                val y = contentTop + (availH - page.coverHeight) / 2f
+                drawBitmapFit(canvas, cover, x, y, page.coverWidth.toFloat(), page.coverHeight.toFloat())
+            }
+            virtual != null -> {
+                val y = contentTop + (height - topInsetPx - bottomInsetPx - 2 * pagePadPx - virtual.height) / 2f
+                canvas.translate(offsetX + t.marginPx, y)
+                virtual.draw(canvas)
+            }
+            else -> {
             canvas.translate(offsetX + t.marginPx, contentTop)
             // 七期: 盒组矩形(底色/背景图/边框/圆角/阴影)画在文字下层
             for (b in page.boxes) drawBoxShape(canvas, b, t)
@@ -382,6 +393,7 @@ class ReaderPageView(context: Context) : View(context) {
                 for (r in rs) canvas.drawRoundRect(r, 6f, 6f, selPaint)
             }
         }
+        }
         canvas.restoreToCount(save2)
         // 跨页延续指示: 选区延伸到上/下一页时,在版心对应缘画一条窄条提示
         val rects = selRects
@@ -397,6 +409,48 @@ class ReaderPageView(context: Context) : View(context) {
             }
         }
         canvas.restoreToCount(save)
+    }
+
+    // 装饰章快照绘制: 与封面同族的 contain 绘制;夜间套原 WebView 呈现同参数的反色滤镜
+    private val decoPaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
+    private var nightDecoFilter: android.graphics.ColorFilter? = null
+
+    private fun drawDecoBitmap(canvas: Canvas, ref: String, x: Float, y: Float, w: Float, h: Float, night: Boolean) {
+        val bmp = imageFor(ref, w.toInt(), h.toInt())
+        if (bmp == null) {
+            drawPlaceholder(canvas, x, y, w, h)
+            return
+        }
+        if (night) {
+            if (nightDecoFilter == null) nightDecoFilter = android.graphics.ColorMatrixColorFilter(nightDecoMatrix())
+            decoPaint.colorFilter = nightDecoFilter
+        } else {
+            decoPaint.colorFilter = null
+        }
+        canvas.drawBitmap(bmp, null, android.graphics.RectF(x, y, x + w, y + h), decoPaint)
+    }
+
+    // invert(0.92) × hue-rotate(180°): 白底变暗、彩色近似保留(与原 WebView 滤镜同参数)
+    private fun nightDecoMatrix(): android.graphics.ColorMatrix {
+        val inv = android.graphics.ColorMatrix(
+            floatArrayOf(
+                -0.84f, 0f, 0f, 0f, 234.6f,
+                0f, -0.84f, 0f, 0f, 234.6f,
+                0f, 0f, -0.84f, 0f, 234.6f,
+                0f, 0f, 0f, 1f, 0f
+            )
+        )
+        val c = -1f   // cos(180°)
+        val hue = android.graphics.ColorMatrix(
+            floatArrayOf(
+                0.213f + 0.787f * c, 0.715f - 0.715f * c, 0.072f - 0.072f * c, 0f, 0f,
+                0.213f - 0.213f * c, 0.715f + 0.285f * c, 0.072f - 0.072f * c, 0f, 0f,
+                0.213f - 0.213f * c, 0.715f - 0.715f * c, 0.072f + 0.928f * c, 0f, 0f,
+                0f, 0f, 0f, 1f, 0f
+            )
+        )
+        hue.setConcat(hue, inv)   // 先反色再转色相
+        return hue
     }
 
     // 落影: 画在滑动页右缘外侧的下层露出区,越贴近页缘越深;纵贯整个屏幕高度

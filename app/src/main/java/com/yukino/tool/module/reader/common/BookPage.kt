@@ -175,7 +175,10 @@ class BookPage(
     val virtualLayout: StaticLayout? = null,   // 封面/封底: 居中布局,与 lines 二选一
     val coverImage: String? = null,            // 封面页: 封面图路径(与 virtualLayout 二选一,优先图)
     val coverWidth: Int = 0,                   // 封面显示尺寸(物化时按版心宽等比换算;0 = 未就绪)
-    val coverHeight: Int = 0
+    val coverHeight: Int = 0,
+    val decoImage: String? = null,             // 装饰章: 整页快照位图路径(优先于 lines 绘制)
+    val decoWidth: Int = 0,                    // 装饰快照显示尺寸(物化时按版心宽等比换算;0 = 未就绪)
+    val decoHeight: Int = 0
 )
 
 // 行网格高度计算(纯函数,本地单测覆盖): 行距增量加在行下方,段前距加在行上方
@@ -1051,11 +1054,19 @@ object BookPager {
     internal fun paraStart(composed: CharSequence, s: Int, bodyStart: Int): Boolean =
         s >= bodyStart && (s == bodyStart || composed[s - 1] == '\n')
 
-    // 章 → 页窗口: 网格化行高切页(页首首个非空行豁免段前距)+ 裁掉尾部空白页
-    private fun paginate(cl: ChapterLines, typo: ResolvedTypography): List<PageSlice> =
-        PaginationEngine.trimTrailingBlank(
-            PaginationEngine.splitPages(cl.lines, typo.textHeight)
-        ) { w -> (w.startLine until w.endLineExclusive).all { cl.lines[it].kind == LineKind.BLANK } }
+    // 章 → 页窗口: 网格化行高切页(页首首个非空行豁免段前距)+ 裁掉尾部空白页。
+    // 装饰章(章首段带装饰盒): 整章一页——页面按快照位图整体呈现,内容不跨页切分
+    internal fun paginate(cl: ChapterLines, typo: ResolvedTypography): List<PageSlice> =
+        if (isDecorative(cl)) {
+            listOf(PageSlice(0, cl.lines.size))
+        } else {
+            PaginationEngine.trimTrailingBlank(
+                PaginationEngine.splitPages(cl.lines, typo.textHeight)
+            ) { w -> (w.startLine until w.endLineExclusive).all { cl.lines[it].kind == LineKind.BLANK } }
+        }
+
+    // 装饰章判定(章模型,纯函数): 章首段带装饰盒即 CSS 排版页
+    internal fun isDecorative(cl: ChapterLines): Boolean = cl.paras.firstOrNull()?.boxStyle != null
 
     // 页窗口 → 页描述。页首行在标题区内(章首页)锚定章起点;正文页从正文零点换算
     private fun specsOf(
@@ -1112,6 +1123,27 @@ object BookPager {
             return BookPage(spec, "", "", virtualLayout = Typography.buildVirtualLayout(text, typo))
         }
         val idx = spec.chapterIndex.coerceIn(0, content.chapterCount - 1)
+        // 装饰章: 整页快照位图(尺寸按版心宽等比换算,超高缩到一页内;与封面页同一 contain 语义)。
+        // 快照未生成时返回 null 走下方近似排版占位,生成完成后调用方重物化换真身
+        content.decoSnapshot(idx)?.let { path ->
+            val bounds = content.imageBounds(path)
+            if (bounds != null && bounds.width() > 0 && bounds.height() > 0) {
+                var dw = typo.textWidth
+                var dh = (dw.toFloat() * bounds.height() / bounds.width()).roundToInt().coerceAtLeast(1)
+                if (dh > typo.textHeight) {
+                    dh = typo.textHeight
+                    dw = (dh.toFloat() * bounds.width() / bounds.height()).roundToInt().coerceAtLeast(1)
+                }
+                val percent = percentOf(content, spec)
+                val pagePart =
+                    if (globalPageCount > 0) "${globalPageIndex + 1}/$globalPageCount"
+                    else "${spec.chapterPageIndex + 1}/${spec.chapterPageCount}"
+                return BookPage(
+                    spec, spec.chapterTitle, "$pagePart ${(percent * 100).roundToInt()}%",
+                    decoImage = path, decoWidth = dw, decoHeight = dh
+                )
+            }
+        }
         val cl = chapterLines(content, idx, typo)
         val windows = paginate(cl, typo)
         val slice = windows[spec.chapterPageIndex.coerceIn(0, windows.lastIndex)]
