@@ -483,11 +483,13 @@ class EpubRichContentTest {
             @font-face { font-family: title }
         """.trimIndent()
         val rules = HtmlTextExtractor.parseStyleBlock(css)
-        // #id-sel 与 @font-face 跳过;div.note 与 .indent-2 是两条独立规则
-        assertEquals(7, rules.size)
-        fun plain(tag: String?, cls: String?) = com.yukino.tool.module.reader.epub.HtmlTextExtractor.SimpleSel(tag, cls)
-        val bySpec = rules.associate { it.specificity to it }
-        // 单元素 / 单类 / 复合(tag.cls) / 后代链 / 子代链
+        // @font-face 跳过;#id-sel 自 v18 起解析为 spec=100 规则;div.note 与 .indent-2 独立
+        assertEquals(8, rules.size)
+        fun plain(tag: String?, cls: String?) =
+            com.yukino.tool.module.reader.epub.HtmlTextExtractor.SimpleSel(
+                tag, if (cls == null) emptySet() else setOf(cls)
+            )
+        // 单元素 / 单类 / 复合(tag.cls) / 后代链 / 子代链 / id
         assertEquals(plain("p", null), rules.first { it.specificity == 1 }.sel.chain.last())
         assertEquals(plain(null, "center"), rules.first { it.specificity == 10 }.sel.chain.last())
         assertEquals(plain("div", "note"), rules.first { it.specificity == 11 }.sel.chain.last())
@@ -497,6 +499,8 @@ class EpubRichContentTest {
         val child = rules.first { it.sel.childAt.isNotEmpty() }
         assertEquals(listOf(plain("dl", "logo-maker"), plain("dt", null)), child.sel.chain)
         assertEquals(setOf(0), child.sel.childAt)
+        val idRule = rules.first { it.sel.chain.last().id == "id-sel" }
+        assertEquals(100, idRule.specificity)
     }
 
     // ---- 七期: ruby 注音 / class 规则 Run 级属性 / 元素与复合选择器生效 ----
@@ -599,7 +603,7 @@ class EpubRichContentTest {
         assertEquals(1, l1!!.align)
         val l2 = HtmlTextExtractor.parseParaLayout(mapOf("text-align" to "right", "text-indent" to "0"))
         assertEquals(2, l2!!.align)
-        assertEquals(0f, l2.indentEm)
+        assertEquals(CssLen(0f), l2.indentCss)
         val l3 = HtmlTextExtractor.parseParaLayout(mapOf("margin-top" to "1.5em", "margin-bottom" to "2em"))
         assertEquals(CssLen(1.5f), l3!!.aboveEm)
         assertEquals(CssLen(2f), l3.belowEm)
@@ -1260,5 +1264,215 @@ class EpubRichContentTest {
         assertTrue(read.paragraphs[1].breakAll)
         assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(f))
         f.delete()
+    }
+
+    // ---- 选择器完整化: #id / [attr] / * / 多类 ----
+
+    @Test
+    fun `id选择器命中且specificity覆盖类与元素`() {
+        val paras = extractHtml(
+            "<style>#intro{color:#123456}.intro{color:#654321}p{color:#111111}</style>" +
+                "<p class=\"intro\" id=\"intro\">ab</p><p class=\"intro\">cd</p><p>ef</p>"
+        )
+        assertEquals(0xFF123456L, paras[0].runs[0].color)
+        assertEquals(0xFF654321L, paras[1].runs[0].color)
+        assertEquals(0xFF111111L, paras[2].runs[0].color)
+    }
+
+    @Test
+    fun `属性选择器各操作符`() {
+        val html = "<style>" +
+            "p[data-x]{color:#010101}" +          // 存在
+            "td[colspan=\"2\"]{color:#020202}" +  // =
+            "p[class~=\"bb\"]{color:#030303}" +   // ~= 词列表
+            "a[lang|=\"zh\"]{color:#040404}" +    // |= 连字号前缀
+            "a[href^=\"https\"]{color:#050505}" + // ^=
+            "a[href\$=\".png\"]{color:#060606}" + // $=
+            "p[title*=\"ell\"]{color:#070707}" +  // *= 子串
+            "</style>" +
+            "<p data-x=\"1\" class=\"aa bb cc\" title=\"hello\">词</p>" +
+            "<a href=\"https://x/y.png\" lang=\"zh-CN\">链</a>" +
+            "<table><tr><td colspan=\"2\">格</td></tr></table>"
+        val paras = extractHtml(html)
+        // p: 存在 + ~= + *= 全命中 → 最高优先为源序末条(#070707)
+        assertEquals(0xFF070707L, paras[0].runs[0].color)
+        // a: |= 与 ^= $= 命中 → 源序末条 #060606
+        assertEquals(0xFF060606L, paras[1].runs[0].color)
+        // td = 命中
+        assertEquals(0xFF020202L, paras[2].table!!.cells[0].runs[0].color)
+    }
+
+    @Test
+    fun `通配与多类选择器`() {
+        val paras = extractHtml(
+            "<style>*{color:#0a0a0a}.a.b{color:#0b0b0b}.only{color:#0c0c0c}</style>" +
+                "<p class=\"a b\">ab</p><p class=\"a\">cd</p><p>ef</p><div class=\"only\">gh</div>"
+        )
+        assertEquals(0xFF0B0B0BL, paras[0].runs[0].color)   // .a.b(20) > *(0)
+        assertEquals(0xFF0A0A0AL, paras[1].runs[0].color)   // 仅 *
+        assertEquals(0xFF0A0A0AL, paras[2].runs[0].color)
+        assertEquals(0xFF0C0C0CL, paras[3].runs[0].color)
+    }
+
+    @Test
+    fun `子代选择器带id与属性仍解析`() {
+        val paras = extractHtml(
+            "<style>div > p#k{color:#0d0d0d}</style><div><p id=\"k\">内</p></div><p id=\"k\">外</p>"
+        )
+        assertEquals(0xFF0D0D0DL, paras[0].runs[0].color)   // div 子代命中
+        assertNull(paras[1].runs[0].color)                  // body 直下的 p#k 无 div 父,不命中
+    }
+
+    // ---- 颜色: rgb/rgba(既有) + 命名色全表 + border 简写函数色含空格 ----
+
+    @Test
+    fun `命名色全表抽查`() {
+        assertEquals(0xFF663399L, HtmlTextExtractor.parseColor("rebeccapurple"))
+        assertEquals(0xFF2F4F4FL, HtmlTextExtractor.parseColor("darkslategray"))
+        assertEquals(0xFF2F4F4FL, HtmlTextExtractor.parseColor("darkslategrey"))
+        assertEquals(0xFFFF69B4L, HtmlTextExtractor.parseColor("hotpink"))
+        assertEquals(0xFFFFFFE0L, HtmlTextExtractor.parseColor("lightyellow"))
+        assertEquals(0xFF7FFFD4L, HtmlTextExtractor.parseColor("aquamarine"))
+    }
+
+    @Test
+    fun `border简写带空格rgb颜色不被拆坏`() {
+        val edges = HtmlTextExtractor.parseEdges(HtmlTextExtractor.parseDeclarations("border: 1px solid rgb(0, 0, 0)"))
+        assertEquals(0xFF000000L, edges[0].color)
+        assertEquals(1f / 16f, edges[0].widthEm, 1e-5f)
+        assertEquals(1, edges[0].style)
+    }
+
+    @Test
+    fun `样式规则里的rgb颜色经选择器生效`() {
+        val paras = extractHtml("<style>.c1{color:rgb(51, 17, 34);border-bottom:2px solid rgba(0, 0, 0, 0.4)}</style><p class=\"c1\">ab</p>")
+        assertEquals(0xFF331122L, paras[0].runs[0].color)
+        assertEquals(0x66000000L, paras[0].boxStyle!!.edges[2].color)   // bottom = 四边下标 2
+    }
+
+    // ---- 首行缩进 px/% ----
+
+    @Test
+    fun `首行缩进支持px与百分比与零`() {
+        val p1 = extractHtml("<p style=\"text-indent:32px\">ab</p>")[0]
+        assertEquals(CssLen(2f, false), p1.indentCss)
+        val p2 = extractHtml("<p style=\"text-indent:10%\">ab</p>")[0]
+        assertEquals(CssLen(10f, true), p2.indentCss)
+        val p3 = extractHtml("<p style=\"text-indent:0\">ab</p>")[0]
+        assertEquals(CssLen(0f, false), p3.indentCss)
+        val p4 = extractHtml("<style>p{text-indent:1.5em}</style><p>ab</p>")[0]
+        assertEquals(CssLen(1.5f, false), p4.indentCss)
+    }
+
+    @Test
+    fun `缩进字段章文件往返且v18不再升级`() {
+        val f = File.createTempFile("ch_v18", ".txt")
+        val td = com.yukino.tool.module.reader.common.TableData(
+            rows = 1, cols = 1,
+            cells = listOf(com.yukino.tool.module.reader.common.TableCell(0, 0, text = "格", imgRef = "d/i.png"))
+        )
+        val paras = listOf(
+            Paragraph("缩进段", indentCss = CssLen(2f, false)),
+            Paragraph(HtmlTextExtractor.IMAGE_PLACEHOLDER, kind = ParaKind.TABLE, table = td)
+        )
+        ChapterFileCodec.write(f, paras)
+        val read = ChapterFileCodec.read(f)
+        assertEquals(CssLen(2f, false), read.paragraphs[0].indentCss)
+        assertEquals("d/i.png", read.paragraphs[0].table!!.cells[0].imgRef)
+        assertTrue(!ChapterFileCodec.needsUpgrade(f))
+        // 降版本号模拟旧缓存: 可读但触发重提取
+        f.writeText(f.readText().replace("\"v\": 18", "\"v\": 17").replace("\"v\":18", "\"v\":17"))
+        assertTrue(ChapterFileCodec.needsUpgrade(f))
+        f.delete()
+    }
+
+    // ---- larger/smaller 相对字号 ----
+
+    @Test
+    fun `larger与smaller相对父字号复合`() {
+        val paras = extractHtml(
+            "<div style=\"font-size:1.5em\"><p>先<span style=\"font-size:larger\">大</span>" +
+                "<span style=\"font-size:smaller\">小</span></p></div>"
+        )
+        val runs = paras[0].runs
+        assertEquals(1.8f, runs.first { "大" == paras[0].text.substring(it.start, it.end) }.sizeEm!!, 1e-4f)
+        assertEquals(1.25f, runs.first { "小" == paras[0].text.substring(it.start, it.end) }.sizeEm!!, 1e-4f)
+        assertEquals(1.5f, runs.first { "先" == paras[0].text.substring(it.start, it.end) }.sizeEm!!, 1e-4f)
+    }
+
+    // ---- data URI 图片 ----
+
+    @Test
+    fun `dataURI图片经sink落盘接入ref`() {
+        val seen = ArrayList<Pair<String, String>>()
+        val paras = HtmlTextExtractor.extract(
+            Jsoup.parseBodyFragment("<p><img src=\"data:image/png;base64,iVBORw0KGgo=\"></p>").body(),
+            "", null, null
+        ) { mime, b64 -> seen += mime to b64; "datauri/x.png" }.paragraphs
+        assertEquals(listOf("image/png" to "iVBORw0KGgo="), seen)
+        assertEquals("datauri/x.png", paras[0].imageRef)
+    }
+
+    @Test
+    fun `dataURI无sink或拒收仍忽略`() {
+        val dropped = extractHtml("<p><img src=\"data:image/png;base64,iVBORw0KGgo=\"></p>")
+        assertTrue(dropped.isEmpty() || !dropped[0].isImage)
+        val rejected = HtmlTextExtractor.extract(
+            Jsoup.parseBodyFragment("<p><img src=\"data:image/png;base64,iVBORw0KGgo=\"></p>").body(),
+            "", null, null
+        ) { _, _ -> "" }.paragraphs
+        assertTrue(rejected.isEmpty() || !rejected[0].isImage)
+        // 非 base64 形态不进 sink
+        val notB64 = ArrayList<Pair<String, String>>()
+        HtmlTextExtractor.extract(
+            Jsoup.parseBodyFragment("<p><img src=\"data:image/svg+xml,%3Csvg%3E\"></p>").body(),
+            "", null, null
+        ) { m, b -> notB64 += m to b; "x" }
+        assertTrue(notB64.isEmpty())
+    }
+
+    // ---- 表格格内图片 ----
+
+    @Test
+    fun `表格格内图片提取与纯图格产出`() {
+        val paras = extractHtml("<table><tr><td><img src=\"pic/a.png\"></td><td>文字</td></tr></table>")
+        val td = paras[0].table!!
+        assertEquals(2, td.cells.size)
+        assertEquals("pic/a.png", td.cells[0].imgRef)
+        assertEquals("", td.cells[0].text)
+        assertNull(td.cells[1].imgRef)
+        assertEquals("文字", td.cells[1].text)
+    }
+
+    @Test
+    fun `格内图片尺寸等比钳高与占位`() {
+        val ci = BookPager.cellImgSize(200, 100, 100f, 300f, 20f)
+        assertEquals(100f, ci.width, 0.01f)
+        assertEquals(50f, ci.height, 0.01f)
+        val ci2 = BookPager.cellImgSize(100, 1000, 100f, 300f, 20f)
+        assertEquals(300f, ci2.height, 0.01f)
+        assertEquals(30f, ci2.width, 0.01f)
+        val ci3 = BookPager.cellImgSize(0, 0, 100f, 300f, 20f)
+        assertEquals(100f, ci3.width, 0.01f)
+        assertEquals(40f, ci3.height, 0.01f)
+    }
+
+    @Test
+    fun `格内图片占位高计入表格行高`() {
+        val typo = com.yukino.tool.module.reader.common.Typography.resolve(
+            2f, com.yukino.tool.module.reader.common.ReaderSettings(), 800, 1200
+        )
+        val td = com.yukino.tool.module.reader.common.TableData(
+            rows = 1, cols = 1,
+            cells = listOf(com.yukino.tool.module.reader.common.TableCell(0, 0, text = "x", imgRef = "p.png"))
+        )
+        // imageBounds 未注入 → 占位高 2*lineH;行高 ≥ 文本一行 + 图片两行
+        val tl2 = BookPager.layoutTable(
+            td, typo.textWidth.toFloat(), typo, { s -> s.length * 10f }
+        )
+        assertTrue(tl2.heights[0] >= 3 * tl2.lineH + tl2.padV * 2 - 1f)
+        val cb = tl2.cells[0]
+        assertEquals(2f * tl2.lineH, cb.img!!.height, 0.01f)
+        assertEquals(typo.textWidth.toFloat() - 2 * tl2.padH, cb.img!!.width, 1f)
     }
 }

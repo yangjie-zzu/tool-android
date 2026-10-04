@@ -35,11 +35,43 @@ object EpubImporter {
     // v2 = 自适应 CSS(border-box+max-width)与 JS 就绪探测的渲染语义, 旧代随渲染语义变更废弃
     private const val DECO_DIR = "deco_v2"
 
+    // data URI 图片落盘子目录(相对解压根)
+    private const val DATAURI_DIR = "datauri"
+
     fun decoFileOf(chapterDir: File, index: Int): File =
         File(File(chapterDir, DECO_DIR), "ch_%04d.webp".format(index))
 
     fun decoFile(context: Context, bookId: String, index: Int): File =
         decoFileOf(chapterDir(context, bookId), index)
+
+    // data URI 图片落盘: base64 解码写入解压根 datauri/(文件名 = 载荷 MD5,幂等),
+    // 返回相对解压根 ref;不认识的 mime/解码失败/写盘失败返回空串(该图忽略)
+    private fun dataUriSinkOf(root: File): HtmlTextExtractor.DataUriSink {
+        val dir = File(root, DATAURI_DIR)
+        return HtmlTextExtractor.DataUriSink { mime, payload ->
+            val ext = when (mime.substringBefore(';')) {
+                "image/png" -> "png"
+                "image/jpeg", "image/jpg" -> "jpg"
+                "image/gif" -> "gif"
+                "image/webp" -> "webp"
+                "image/svg+xml" -> "svg"
+                else -> return@DataUriSink ""
+            }
+            val bytes = runCatching { android.util.Base64.decode(payload, android.util.Base64.DEFAULT) }
+                .getOrNull() ?: return@DataUriSink ""
+            runCatching {
+                dir.mkdirs()
+                val name = md5Hex(payload) + "." + ext
+                val f = File(dir, name)
+                if (!f.exists() || f.length() != bytes.size.toLong()) f.writeBytes(bytes)
+                "$DATAURI_DIR/$name"
+            }.getOrDefault("")
+        }
+    }
+
+    private fun md5Hex(s: String): String =
+        java.security.MessageDigest.getInstance("MD5").digest(s.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
 
     // 装饰章判定: 章首段带装饰盒(boxStyle)的章为 CSS 排版页(扉页/封面等),
     // 阅读器排版引擎只做近似,这类章由 WebView 按原书样式呈现
@@ -346,7 +378,9 @@ object EpubImporter {
                     val docFile = File(outDir, resolveHref(opfDir, percentDecode(stripFragment(item.href).first)))
                     if (!docFile.exists()) continue
                     val key = resolveHref(opfDir, percentDecode(stripFragment(item.href).first))
-                    val extracted = HtmlTextExtractor.extract(docFile, key.substringBeforeLast('/', ""))
+                    val extracted = HtmlTextExtractor.extract(
+                        docFile, key.substringBeforeLast('/', ""), dataUriSinkOf(outDir)
+                    )
                     val paragraphs = extracted.paragraphs
                     if (paragraphs.isEmpty()) continue
                     if (isCoverDoc(paragraphs, coverAbs, outDir, docFile)) continue

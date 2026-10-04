@@ -57,6 +57,24 @@ object HtmlTextExtractor {
 
     private const val TABLE_PLACEHOLDER = "[表格内容，建议使用原版式查看]"
 
+    // data URI 图片落盘回调: (mime 小写, base64 载荷原文) → 解压根相对 ref;
+    // 返回空串 = 拒收(该图忽略)。null(未注入) = data URI 一律忽略(既有行为)
+    fun interface DataUriSink {
+        fun accept(mime: String, base64: String): String
+    }
+
+    // data:URI 拆解: "data:[mime];base64,payload" → (mime, payload);非 base64/形态不符 null
+    internal fun parseDataUri(src: String): Pair<String, String>? {
+        if (!src.startsWith("data:", true)) return null
+        val comma = src.indexOf(',')
+        if (comma < 0) return null
+        val head = src.substring(5, comma).lowercase()
+        val payload = src.substring(comma + 1)
+        if (!head.endsWith(";base64") || payload.isBlank()) return null
+        val mime = head.removeSuffix(";base64").ifBlank { "application/octet-stream" }
+        return mime to payload
+    }
+
     // 解析产物: 段落序列 + 章级脚注内容表(noteId → 纯文本)
     class ExtractResult(
         val paragraphs: List<Paragraph>,
@@ -64,7 +82,7 @@ object HtmlTextExtractor {
         val fonts: Map<String, String> = emptyMap()   // 七期: @font-face family -> 字体文件相对路径
     )
 
-    fun extract(file: File, docDir: String = ""): ExtractResult {
+    fun extract(file: File, docDir: String = "", dataUriSink: DataUriSink? = null): ExtractResult {
         val doc = Jsoup.parse(file, "UTF-8")
         // <style> 通常在 head(body() 拿不到),从整个文档收集规则与 @font-face
         val cssRules = ArrayList<CssRule>()
@@ -87,7 +105,7 @@ object HtmlTextExtractor {
                 }
             }
         }
-        return extract(doc.body(), docDir, cssRules, fontFaces)
+        return extract(doc.body(), docDir, cssRules, fontFaces, dataUriSink)
     }
 
     // 文档内首个标题(h1..h6,按序),供章节名兜底;无标题返回 null
@@ -103,7 +121,13 @@ object HtmlTextExtractor {
 
     fun extract(body: Element, docDir: String = ""): ExtractResult = extract(body, docDir, null, null)
 
-    fun extract(body: Element, docDir: String = "", cssRulesIn: List<CssRule>?, fontsIn: Map<String, String>? = null): ExtractResult {
+    fun extract(
+        body: Element,
+        docDir: String = "",
+        cssRulesIn: List<CssRule>?,
+        fontsIn: Map<String, String>? = null,
+        dataUriSink: DataUriSink? = null
+    ): ExtractResult {
         // 预扫描 noteref 引用的 fragment: id 命中的元素即脚注容器(宽容覆盖无类型标记的脚注)
         val noteRefs = LinkedHashSet<String>()
         for (a in body.select("a[href]")) {
@@ -118,7 +142,7 @@ object HtmlTextExtractor {
         for (style in body.select("style")) {
             mergeCssRules(cssRules, parseStyleBlock(style.data()))
         }
-        val b = Builder(docDir)
+        val b = Builder(docDir, null, dataUriSink)
         walk(body, b, ArrayDeque(), noteRefs, cssRules)
         b.flush()
         return ExtractResult(b.result(), b.notes, fontsIn ?: emptyMap())
@@ -136,12 +160,22 @@ object HtmlTextExtractor {
     // ---------- CSS 规则(七期起选择器完整化) ----------
     // 支持的选择器形态(书内 CSS 出现过的全部形态):
     //   ".cls"(类) / "tag"(单元素) / "tag.cls"(复合) / "A B"(后代) / "A > B"(子代),
-    //   逗号列表逐个认。伪类/属性/id 选择器不认(整条选择器跳过,同规则其余逗号项保留)。
-    // 层叠: specificity(元素 < 类 < 复合/链) 升序稳定合并,同 specificity 源序后者覆盖;
+    //   "#id" / "[attr]" / "[attr op value]"(op: = ~= |= ^= $= *=) / "*" 通配 /
+    //   多类 ".a.b" / 上述任意组合("p#x.y[z]"),逗号列表逐个认。
+    //   伪类(:hover 等)不认(整条选择器跳过,同规则其余逗号项保留)。
+    // 层叠: specificity(元素 1 < 类/属性 10 < id 100) 升序稳定合并,同 specificity 源序后者覆盖;
     //   style 属性最高(在 propsFor 内最后并入)。
 
-    // 简单选择器: 标签名与/或类名
-    data class SimpleSel(val tag: String?, val cls: String?)
+    // 属性选择器: op 0=存在 1== 2~=(词列表) 3|=(连字号前缀) 4^= 5$= 6*=(子串)
+    data class AttrSel(val name: String, val op: Int, val value: String)
+
+    // 简单选择器: 标签名(与/或)类/id/属性;tag=null = 任意标签(含 '*')
+    data class SimpleSel(
+        val tag: String? = null,
+        val classes: Set<String> = emptySet(),
+        val id: String? = null,
+        val attrs: List<AttrSel> = emptyList()
+    )
 
     // 完整选择器: 简单选择器链(从祖先到自身) + 子代组合器位置(childAt 含 i 表示
     // chain[i] 与 chain[i+1] 之间是 '>', 否则是后代空格)
@@ -149,28 +183,92 @@ object HtmlTextExtractor {
 
     data class CssRule(val sel: RuleSelector, val props: Map<String, String>, val specificity: Int)
 
-    // specificity: 每个含 tag 的简单选择器 +1, 每个含类的 +10(与 CSS 优先级同构的简化)
+    // specificity: 每个含 tag 的简单选择器 +1, 每个类/属性 +10, id +100(与 CSS 优先级同构的简化)
     private fun specificityOf(chain: List<SimpleSel>): Int =
-        chain.sumOf { (if (it.tag != null) 1 else 0) + (if (it.cls != null) 10 else 0) }
-
-    private val SEL_NAME = Regex("^[a-zA-Z][a-zA-Z0-9-]*$")
-
-    // 解析单个简单选择器段("p" / ".cls" / "p.cls");含 #id/[attr]/:pseudo/* 等不支持语法返回 null
-    private fun parseSimpleSel(part: String): SimpleSel? {
-        var tag: String? = null
-        var cls: String? = null
-        // 拆 tag 与 .cls: 首段为 tag(若非 '.' 开头), 其后每 '.xxx' 为类
-        val pieces = part.split('.')
-        for ((i, p) in pieces.withIndex()) {
-            if (p.isEmpty()) {
-                if (i != 0) return null   // "a..b" 非法; ".cls" 的首空段合法
-                continue
-            }
-            if (!SEL_NAME.matches(p)) return null
-            if (i == 0 && !part.startsWith(".")) tag = p.lowercase() else cls = p.lowercase()
+        chain.sumOf {
+            (if (it.tag != null) 1 else 0) + it.classes.size * 10 + it.attrs.size * 10 +
+                (if (it.id != null) 100 else 0)
         }
-        if (tag == null && cls == null) return null
-        return SimpleSel(tag, cls)
+
+    private val SEL_NAME = Regex("^[A-Za-z][A-Za-z0-9-]*$")
+    private val SEL_TOKEN = Regex("^[A-Za-z0-9_-]+")
+
+    // 解析单个简单选择器段("p" / ".cls" / "p#x.y[z=v]");含 :pseudo 等不支持语法返回 null
+    private fun parseSimpleSel(part: String): SimpleSel? {
+        val s = part.trim()
+        var tag: String? = null
+        val classes = LinkedHashSet<String>()
+        var id: String? = null
+        val attrs = ArrayList<AttrSel>()
+        var i = 0
+        while (i < s.length) {
+            when (s[i]) {
+                '*' -> { if (tag != null) return null; i++ }   // 通配: 不加约束
+                '#' -> {
+                    if (id != null) return null
+                    val m = SEL_TOKEN.find(s.substring(i + 1)) ?: return null
+                    id = m.value
+                    i += 1 + m.value.length
+                }
+                '.' -> {
+                    val m = SEL_TOKEN.find(s.substring(i + 1)) ?: return null   // "a..b" 非法
+                    classes += m.value.lowercase()
+                    i += 1 + m.value.length
+                }
+                '[' -> {
+                    val close = s.indexOf(']', i)
+                    if (close < 0) return null
+                    attrs += parseAttrSel(s.substring(i + 1, close)) ?: return null
+                    i = close + 1
+                }
+                else -> {
+                    // 裸 tag 只能出现在段首;其余位置出现裸字符(如 ":hover" 的 ':')即不认
+                    if (tag != null || classes.isNotEmpty() || id != null || attrs.isNotEmpty()) return null
+                    val m = SEL_NAME.find(s.substring(i)) ?: return null
+                    tag = m.value.lowercase()
+                    i += m.value.length
+                }
+            }
+        }
+        if (tag == null && classes.isEmpty() && id == null && attrs.isEmpty()) return null
+        return SimpleSel(tag, classes, id, attrs)
+    }
+
+    // 属性选择器内层("attr" / "attr=v" / "attr~=v"...);值可带单双引号
+    private fun parseAttrSel(inner: String): AttrSel? {
+        val t = inner.trim()
+        if (t.isEmpty()) return null
+        val m = Regex("^([A-Za-z_:][-A-Za-z0-9_:.]*)\\s*(?:([~|^$*]?=)(.*))?$").find(t) ?: return null
+        val name = m.groupValues[1].lowercase()
+        val opStr = m.groupValues[2]
+        if (opStr.isEmpty()) return AttrSel(name, 0, "")
+        var value = m.groupValues[3].trim()
+        if (value.length >= 2 && ((value.first() == '"' && value.last() == '"') || (value.first() == '\'' && value.last() == '\''))) {
+            value = value.substring(1, value.length - 1)
+        }
+        if (value.isEmpty()) return null
+        val op = when (opStr) {
+            "=" -> 1; "~=" -> 2; "|=" -> 3; "^=" -> 4; "$=" -> 5; "*=" -> 6
+            else -> return null
+        }
+        return AttrSel(name, op, value)
+    }
+
+    // 段内按空白拆简单选择器,'[...]' 内部不拆(属性值可含空格)
+    private fun splitSelParts(cp: String): List<String> {
+        val out = ArrayList<String>()
+        val sb = StringBuilder()
+        var inAttr = false
+        for (c in cp) {
+            when {
+                c == '[' -> { inAttr = true; sb.append(c) }
+                c == ']' -> { inAttr = false; sb.append(c) }
+                c.isWhitespace() && !inAttr -> { if (sb.isNotEmpty()) { out += sb.toString(); sb.clear() } }
+                else -> sb.append(c)
+            }
+        }
+        if (sb.isNotEmpty()) out += sb.toString()
+        return out
     }
 
     // 解析完整选择器("li ul li.c-rules" / "dl.logo-maker > dt");不支持返回 null
@@ -183,8 +281,7 @@ object HtmlTextExtractor {
         val childParts = s.split('>')
         for ((ci, cp) in childParts.withIndex()) {
             if (ci > 0) childAt.add(chain.size - 1)   // chain 末元素与下一段之间为 '>'
-            for (part in cp.trim().split(Regex("\\s+"))) {
-                if (part.isEmpty()) continue
+            for (part in splitSelParts(cp)) {
                 val simple = parseSimpleSel(part) ?: return null
                 chain.add(simple)
             }
@@ -237,8 +334,33 @@ object HtmlTextExtractor {
     // 简单选择器是否命中元素
     private fun matchSimple(el: Element, s: SimpleSel): Boolean {
         if (s.tag != null && el.tagName().lowercase() != s.tag) return false
-        if (s.cls != null && el.classNames().none { it.lowercase() == s.cls }) return false
+        if (s.classes.isNotEmpty()) {
+            val cls = el.classNames()
+            for (c in s.classes) if (cls.none { it.lowercase() == c }) return false
+        }
+        if (s.id != null && el.attr("id").trim() != s.id) return false
+        for (a in s.attrs) if (!attrMatches(el, a)) return false
         return true
+    }
+
+    // 属性匹配(HTML 属性名大小写不敏感,线性找同名属性;值匹配区分大小写)
+    private fun attrMatches(el: Element, a: AttrSel): Boolean {
+        var raw: String? = null
+        for (attr in el.attributes()) {
+            if (attr.key.lowercase() == a.name) { raw = attr.value; break }
+        }
+        raw ?: return false
+        val v = raw.trim()
+        return when (a.op) {
+            0 -> true
+            1 -> v == a.value
+            2 -> v.split(Regex("\\s+")).any { it == a.value }          // 空白分隔词列表
+            3 -> v == a.value || v.startsWith(a.value + "-")           // 连字号前缀(lang|=zh)
+            4 -> v.startsWith(a.value)
+            5 -> v.endsWith(a.value)
+            6 -> v.contains(a.value)
+            else -> false
+        }
     }
 
     // 选择器命中判定: 自身须命中链尾, 向上逐级找祖先命中链前项(子代组合器限父级)。
@@ -279,13 +401,6 @@ object HtmlTextExtractor {
         return props ?: emptyMap()
     }
 
-    // em 值解析("2em"/"1.5em"/"0" → em 数值;其他单位忽略)——首行缩进仍为 em-only
-    private fun emVal(v: String): Float? {
-        if (v == "0") return 0f
-        val m = Regex("^(-?[\\d.]+)em$").find(v.trim()) ?: return null
-        return m.groupValues[1].toFloatOrNull()
-    }
-
     // 排版属性 → 段级布局(仅取子集范围内属性;null = 未设置/跟随全局)。
     // 六期 A3: float:right 降级支持——块标记为右对齐独立块(无文字环绕,正文不避让);
     // float:left 等于默认流向,忽略。
@@ -293,7 +408,7 @@ object HtmlTextExtractor {
     // padding 四向; 显式 text-align left(3)/justify(4); width 定宽; line-height 段级行距
     internal fun parseParaLayout(props: Map<String, String>): ParaLayout? {
         var align = 0
-        var indentEm: Float? = null
+        var indentCss: CssLen? = null
         var above: CssLen? = null
         var below: CssLen? = null
         var left: CssLen? = null
@@ -310,7 +425,8 @@ object HtmlTextExtractor {
             "left" -> align = 3
             "justify" -> align = 4
         }
-        emVal(props["text-indent"] ?: "")?.let { indentEm = it }
+        // text-indent 全单位(em/px/%,% 相对包含块宽);0 = 显式关闭缩进
+        CssLen.parse(props["text-indent"] ?: "")?.let { indentCss = it }
         CssLen.parse(props["margin-top"] ?: "")?.let { above = it }
         CssLen.parse(props["margin-bottom"] ?: "")?.let { below = it }
         CssLen.parse(props["margin-left"] ?: "")?.let { left = it }
@@ -368,10 +484,10 @@ object HtmlTextExtractor {
         if (props["word-wrap"] == "break-word" || props["overflow-wrap"] == "break-word") breakAll = true
         if (props["float"] == "right") floatRight = true
         if (props["float"] == "left") floatLeft = true
-        val any = align != 0 || indentEm != null || above != null || below != null ||
+        val any = align != 0 || indentCss != null || above != null || below != null ||
             left != null || right != null || width != null || lineMult != null || floatRight || floatLeft || breakAll
         return if (!any) null
-        else ParaLayout(align, indentEm, above, below, left, right, width, lineMult, floatRight, widthAlign, floatLeft, breakAll)
+        else ParaLayout(align, indentCss, above, below, left, right, width, lineMult, floatRight, widthAlign, floatLeft, breakAll)
     }
 
     // 已有值保留(先到先得,style 属性在 propsFor 已覆盖同 key),避免简写反向覆盖长属性
@@ -437,13 +553,58 @@ object HtmlTextExtractor {
         return (a.toLong() shl 24) or (r.toLong() shl 16) or (g.toLong() shl 8) or b.toLong()
     }
 
+    // CSS 命名色全表(CSS Color Module 148 个,含 gray/grey 双拼与 rebeccapurple) + transparent
     private val NAMED_COLORS = mapOf(
-        "white" to 0xFFFFFFFFL, "black" to 0xFF000000L, "red" to 0xFFFF0000L, "green" to 0xFF008000L,
-        "blue" to 0xFF0000FFL, "gray" to 0xFF808080L, "grey" to 0xFF808080L, "silver" to 0xFFC0C0C0L,
-        "yellow" to 0xFFFFFF00L, "orange" to 0xFFFFA500L, "pink" to 0xFFFFC0CBL, "purple" to 0xFF800080L,
-        "navy" to 0xFF000080L, "teal" to 0xFF008080L, "olive" to 0xFF808000L, "lime" to 0xFF00FF00L,
-        "aqua" to 0xFF00FFFFL, "cyan" to 0xFF00FFFFL, "fuchsia" to 0xFFFF00FFL, "magenta" to 0xFFFF00FFL,
-        "maroon" to 0xFF800000L, "transparent" to 0x00000000L
+        "aliceblue" to 0xFFF0F8FFL, "antiquewhite" to 0xFFFAEBD7L, "aqua" to 0xFF00FFFFL,
+        "aquamarine" to 0xFF7FFFD4L, "azure" to 0xFFF0FFFFL, "beige" to 0xFFF5F5DCL,
+        "bisque" to 0xFFFFE4C4L, "black" to 0xFF000000L, "blanchedalmond" to 0xFFFFEBCDL,
+        "blue" to 0xFF0000FFL, "blueviolet" to 0xFF8A2BE2L, "brown" to 0xFFA52A2AL,
+        "burlywood" to 0xFFDEB887L, "cadetblue" to 0xFF5F9EA0L, "chartreuse" to 0xFF7FFF00L,
+        "chocolate" to 0xFFD2691EL, "coral" to 0xFFFF7F50L, "cornflowerblue" to 0xFF6495EDL,
+        "cornsilk" to 0xFFFFF8DCL, "crimson" to 0xFFDC143CL, "cyan" to 0xFF00FFFFL,
+        "darkblue" to 0xFF00008BL, "darkcyan" to 0xFF008B8BL, "darkgoldenrod" to 0xFFB8860BL,
+        "darkgray" to 0xFFA9A9A9L, "darkgreen" to 0xFF006400L, "darkgrey" to 0xFFA9A9A9L,
+        "darkkhaki" to 0xFFBDB76BL, "darkmagenta" to 0xFF8B008BL, "darkolivegreen" to 0xFF556B2FL,
+        "darkorange" to 0xFFFF8C00L, "darkorchid" to 0xFF9932CCL, "darkred" to 0xFF8B0000L,
+        "darksalmon" to 0xFFE9967AL, "darkseagreen" to 0xFF8FBC8FL, "darkslateblue" to 0xFF483D8BL,
+        "darkslategray" to 0xFF2F4F4FL, "darkslategrey" to 0xFF2F4F4FL, "darkturquoise" to 0xFF00CED1L,
+        "darkviolet" to 0xFF9400D3L, "deeppink" to 0xFFFF1493L, "deepskyblue" to 0xFF00BFFFL,
+        "dimgray" to 0xFF696969L, "dimgrey" to 0xFF696969L, "dodgerblue" to 0xFF1E90FFL,
+        "firebrick" to 0xFFB22222L, "floralwhite" to 0xFFFFFAF0L, "forestgreen" to 0xFF228B22L,
+        "fuchsia" to 0xFFFF00FFL, "gainsboro" to 0xFFDCDCDCL, "ghostwhite" to 0xFFF8F8FFL,
+        "gold" to 0xFFFFD700L, "goldenrod" to 0xFFDAA520L, "gray" to 0xFF808080L,
+        "green" to 0xFF008000L, "greenyellow" to 0xFFADFF2FL, "grey" to 0xFF808080L,
+        "honeydew" to 0xFFF0FFF0L, "hotpink" to 0xFFFF69B4L, "indianred" to 0xFFCD5C5CL,
+        "indigo" to 0xFF4B0082L, "ivory" to 0xFFFFFFF0L, "khaki" to 0xFFF0E68CL,
+        "lavender" to 0xFFE6E6FAL, "lavenderblush" to 0xFFFFF0F5L, "lawngreen" to 0xFF7CFC00L,
+        "lemonchiffon" to 0xFFFFFACDL, "lightblue" to 0xFFADD8E6L, "lightcoral" to 0xFFF08080L,
+        "lightcyan" to 0xFFE0FFFFL, "lightgoldenrodyellow" to 0xFFFAFAD2L, "lightgray" to 0xFFD3D3D3L,
+        "lightgreen" to 0xFF90EE90L, "lightgrey" to 0xFFD3D3D3L, "lightpink" to 0xFFFFB6C1L,
+        "lightsalmon" to 0xFFFFA07AL, "lightseagreen" to 0xFF20B2AAL, "lightskyblue" to 0xFF87CEFAL,
+        "lightslategray" to 0xFF778899L, "lightslategrey" to 0xFF778899L, "lightsteelblue" to 0xFFB0C4DEL,
+        "lightyellow" to 0xFFFFFFE0L, "lime" to 0xFF00FF00L, "limegreen" to 0xFF32CD32L,
+        "linen" to 0xFFFAF0E6L, "magenta" to 0xFFFF00FFL, "maroon" to 0xFF800000L,
+        "mediumaquamarine" to 0xFF66CDAAL, "mediumblue" to 0xFF0000CDL, "mediumorchid" to 0xFFBA55D3L,
+        "mediumpurple" to 0xFF9370DBL, "mediumseagreen" to 0xFF3CB371L, "mediumslateblue" to 0xFF7B68EEL,
+        "mediumspringgreen" to 0xFF00FA9AL, "mediumturquoise" to 0xFF48D1CCL, "mediumvioletred" to 0xFFC71585L,
+        "midnightblue" to 0xFF191970L, "mintcream" to 0xFFF5FFFAL, "mistyrose" to 0xFFFFE4E1L,
+        "moccasin" to 0xFFFFE4B5L, "navajowhite" to 0xFFFFDEADL, "navy" to 0xFF000080L,
+        "oldlace" to 0xFFFDF5E6L, "olive" to 0xFF808000L, "olivedrab" to 0xFF6B8E23L,
+        "orange" to 0xFFFFA500L, "orangered" to 0xFFFF4500L, "orchid" to 0xFFDA70D6L,
+        "palegoldenrod" to 0xFFEEE8AAL, "palegreen" to 0xFF98FB98L, "paleturquoise" to 0xFFAFEEEEL,
+        "palevioletred" to 0xFFDB7093L, "papayawhip" to 0xFFFFEFD5L, "peachpuff" to 0xFFFFDAB9L,
+        "peru" to 0xFFCD853FL, "pink" to 0xFFFFC0CBL, "plum" to 0xFFDDA0DDL,
+        "powderblue" to 0xFFB0E0E6L, "purple" to 0xFF800080L, "rebeccapurple" to 0xFF663399L,
+        "red" to 0xFFFF0000L, "rosybrown" to 0xFFBC8F8FL, "royalblue" to 0xFF4169E1L,
+        "saddlebrown" to 0xFF8B4513L, "salmon" to 0xFFFA8072L, "sandybrown" to 0xFFF4A460L,
+        "seagreen" to 0xFF2E8B57L, "seashell" to 0xFFFFF5EEL, "sienna" to 0xFFA0522DL,
+        "silver" to 0xFFC0C0C0L, "skyblue" to 0xFF87CEEBL, "slateblue" to 0xFF6A5ACDL,
+        "slategray" to 0xFF708090L, "slategrey" to 0xFF708090L, "snow" to 0xFFFFFAFAL,
+        "springgreen" to 0xFF00FF7FL, "steelblue" to 0xFF4682B4L, "tan" to 0xFFD2B48CL,
+        "teal" to 0xFF008080L, "thistle" to 0xFFD8BFD8L, "tomato" to 0xFFFF6347L,
+        "turquoise" to 0xFF40E0D0L, "violet" to 0xFFEE82EEL, "wheat" to 0xFFF5DEB3L,
+        "white" to 0xFFFFFFFFL, "whitesmoke" to 0xFFF5F5F5L, "yellow" to 0xFFFFFF00L,
+        "yellowgreen" to 0xFF9ACD32L, "transparent" to 0x00000000L
     )
 
     // border 系属性 → 四边样式(上右下左)。归并顺序(后者覆盖):
@@ -495,7 +656,9 @@ object HtmlTextExtractor {
         var w = 3f / 16f   // CSS 缺省 medium
         var style = 0
         var color = 0xFF000000L
-        for (tok in s.split(Regex("\\s+"))) {
+        // 函数式颜色(rgba?/hsla?)括号内可含空格,先压掉再按空白拆 token("rgb(0, 0, 0)" 不会被拆坏)
+        val packed = Regex("(rgba?|hsla?)\\([^)]*\\)").replace(s) { it.value.replace(Regex("\\s+"), "") }
+        for (tok in packed.split(Regex("\\s+"))) {
             val t = tok.lowercase()
             val bw = borderWidthEm(t)
             if (bw != null) { w = bw; continue }
@@ -503,7 +666,7 @@ object HtmlTextExtractor {
             if (bs > 0) { style = bs; continue }
             val c = parseColor(t)
             if (c != null) { color = c; continue }
-            // 认不出的 token(如 rgb 带空格被拆坏)宽容跳过
+            // 认不出的 token 宽容跳过
         }
         return EdgeStyle(w, style, color)
     }
@@ -603,7 +766,7 @@ object HtmlTextExtractor {
     // 段级布局(解析产物;七期起含左右缩进/定宽/行距/显式对齐)
     data class ParaLayout(
         val align: Int,
-        val indentEm: Float?,
+        val indentCss: CssLen?,
         val aboveEm: CssLen?,
         val belowEm: CssLen?,
         val leftEm: CssLen? = null,
@@ -623,7 +786,7 @@ object HtmlTextExtractor {
     // 空格与实字符都按"落盘时刻"的当前样式记入 Run;相邻同样式 Run 天然合为一段。
     // 锚点: openAnchors 为当前打开的带 id 元素(最早优先),段落收口时消费最早者;
     // 角标: noteref 文本落盘区间记入 pendingNotes,随段落收口转段内坐标
-    internal class Builder(val docDir: String, fontsIn: Map<String, String>? = null) {
+    internal class Builder(val docDir: String, fontsIn: Map<String, String>? = null, val dataUriSink: DataUriSink? = null) {
 
         // 七期: 字体表(family → 相对路径,章文件顶层持久化)与 family → 下标映射。
         // 预收集的 @font-face 先登记,walk 中新见 family 动态追加(兜底)
@@ -668,7 +831,7 @@ object HtmlTextExtractor {
 
         // 段级排版上下文(CSS 继承简化: 子元素未设用父值,设了覆盖;离开元素恢复快照)
         var paraAlign = 0
-        var paraIndentEm: Float? = null
+        var paraIndentCss: CssLen? = null
         var paraAboveEm: CssLen? = null
         var paraBelowEm: CssLen? = null
         var paraLeftEm: CssLen? = null
@@ -684,13 +847,13 @@ object HtmlTextExtractor {
 
         // 快照/恢复排版上下文(元素进出)
         fun snapshotLayout(): Array<Any?> = arrayOf(
-            paraAlign, paraIndentEm, paraAboveEm, paraBelowEm,
+            paraAlign, paraIndentCss, paraAboveEm, paraBelowEm,
             paraLeftEm, paraRightEm, paraWidthEm, paraWidthAlign, paraLineMult, paraFloatSide, paraBreakAll
         )
 
         fun restoreLayout(s: Array<Any?>) {
             paraAlign = s[0] as Int
-            paraIndentEm = s[1] as Float?
+            paraIndentCss = s[1] as CssLen?
             paraAboveEm = s[2] as CssLen?
             paraBelowEm = s[3] as CssLen?
             paraLeftEm = s[4] as CssLen?
@@ -707,7 +870,7 @@ object HtmlTextExtractor {
             if (l.align != 0) paraAlign = l.align
             // 六期 A3: float:right 降级——浮块整体靠右显示(子段未显式对齐时)
             if (l.floatRight && paraAlign == 0) paraAlign = 2
-            if (l.indentEm != null) paraIndentEm = l.indentEm
+            if (l.indentCss != null) paraIndentCss = l.indentCss
             if (l.aboveEm != null) paraAboveEm = l.aboveEm
             if (l.belowEm != null) paraBelowEm = l.belowEm
             if (l.leftEm != null) paraLeftEm = l.leftEm
@@ -781,7 +944,7 @@ object HtmlTextExtractor {
                     anchor = openAnchors.firstOrNull(),
                     notes = inPara,
                     align = paraAlign,
-                    indentEm = paraIndentEm,
+                    indentCss = paraIndentCss,
                     spaceAboveEm = paraAboveEm,
                     spaceBelowEm = paraBelowEm,
                     heading = pendingHeading,
@@ -908,15 +1071,12 @@ object HtmlTextExtractor {
                 if (e > s) b.pendingNote(s, e, frag)
             } else {
                 val img = node.selectFirst("img")
-                val src = img?.attr("src")?.trim() ?: ""
-                if (src.isNotEmpty() && !src.startsWith("http", true)) {
-                    val ref = resolveHref(b.docDir, percentDecode(src))
-                    if (ref.isNotBlank()) {
-                        val (s, e) = b.appendTextTracked(HtmlTextExtractor.IMAGE_PLACEHOLDER)
-                        if (e > s) {
-                            b.pendingNote(s, e, frag)
-                            b.pendingInline(s, ref)
-                        }
+                val ref = imageRefOf(img?.attr("src")?.trim() ?: "", b)
+                if (ref != null) {
+                    val (s, e) = b.appendTextTracked(HtmlTextExtractor.IMAGE_PLACEHOLDER)
+                    if (e > s) {
+                        b.pendingNote(s, e, frag)
+                        b.pendingInline(s, ref)
                     }
                 }
             }
@@ -926,7 +1086,14 @@ object HtmlTextExtractor {
         // CSS 规则(类/元素/复合选择器) + style 属性 → 合并属性表;run 级样式作用于本元素全部子孙
         val props = propsFor(node, cssRules)
         val saved = b.cur
-        b.cur = mergeRunCtx(saved, runDecoFromProps(props))
+        var deco = runDecoFromProps(props)
+        // font-size: larger/smaller 相对父字号(CSS 规范比值 1.2);其余 font-size 形态
+        // 走绝对倍率(既有简化,不做 em 链式复合)
+        when (props["font-size"]?.trim()?.lowercase()) {
+            "larger" -> deco = deco.copy(sizeEm = (saved.sizeEm ?: 1f) * 1.2f)
+            "smaller" -> deco = deco.copy(sizeEm = (saved.sizeEm ?: 1f) / 1.2f)
+        }
+        b.cur = mergeRunCtx(saved, deco)
         if (id.isNotEmpty()) b.openAnchors.addLast(id)
 
         // 七期: 盒样式(底色/边框/圆角/阴影/背景图/内边距)——覆盖期间产出的段落归入该盒
@@ -1027,16 +1194,22 @@ object HtmlTextExtractor {
         b.flush()
     }
 
-    // img: 任何位置独立成图片段(外部 URL/data URI 忽略——外部资源不入正文)。
+    // img src → 解压根相对 ref(相对路径 resolveHref;data URI 经 sink 落盘;外部 URL/拒收 null)
+    private fun imageRefOf(src: String, b: Builder): String? = when {
+        src.isEmpty() || src.startsWith("http", true) -> null
+        src.startsWith("data:", true) -> {
+            val (mime, payload) = parseDataUri(src) ?: return null
+            b.dataUriSink?.accept(mime, payload)?.takeIf { it.isNotBlank() }
+        }
+        else -> resolveHref(b.docDir, percentDecode(src)).takeIf { it.isNotBlank() }
+    }
+
+    // img: 任何位置独立成图片段(外部 URL 忽略——外部资源不入正文;data URI 经 sink 落盘接入)。
     // 七期: style/class 的 width 定宽随段落(物化期按目标宽等比缩放)
     private fun emitImage(node: Element, b: Builder, cssRules: List<CssRule>) {
-        val src = node.attr("src").trim()
-        if (src.isEmpty() || src.startsWith("http", true) || src.startsWith("data:")) return
-        val ref = resolveHref(b.docDir, percentDecode(src))
-        if (ref.isNotBlank()) {
-            val w = CssLen.parse(propsFor(node, cssRules)["width"] ?: "")
-            b.addImage(ref, w)
-        }
+        val ref = imageRefOf(node.attr("src").trim(), b) ?: return
+        val w = CssLen.parse(propsFor(node, cssRules)["width"] ?: "")
+        b.addImage(ref, w)
     }
 
     // 表格(七期批次四): 真渲染数据提取。colspan/rowspan 网格展开(含被占位跳过);
@@ -1062,7 +1235,7 @@ object HtmlTextExtractor {
                 val rs = cellEl.attr("rowspan").toIntOrNull()?.coerceIn(1, 64) ?: 1
                 val cs = cellEl.attr("colspan").toIntOrNull()?.coerceIn(1, 64) ?: 1
                 for (dr in 0 until rs) occupied.getOrPut(ri + dr) { HashSet() }.also { it.addAll(c until c + cs) }
-                val (text, runs) = extractCellContent(cellEl, b, cssRules, noteIds)
+                val (text, runs, cellImg) = extractCellContent(cellEl, b, cssRules, noteIds)
                 val props = propsFor(cellEl, cssRules)
                 // td style/class 的 width 列宽提示(单列格,同列取首次)
                 if ((cellEl.attr("colspan").toIntOrNull() ?: 1) <= 1) {
@@ -1070,7 +1243,7 @@ object HtmlTextExtractor {
                         colHints.putIfAbsent(c, it)
                     }
                 }
-                if (text.isNotBlank() || tag == "th") {
+                if (text.isNotBlank() || tag == "th" || cellImg != null) {
                     val pl = parseParaLayout(props)
                     val vAlign = when (props["vertical-align"]) {
                         "top" -> 0; "bottom" -> 2; else -> 1
@@ -1083,7 +1256,8 @@ object HtmlTextExtractor {
                         vAlign = vAlign,
                         bg = box?.bg,
                         edges = parseEdges(props),
-                        header = tag == "th"
+                        header = tag == "th",
+                        imgRef = cellImg
                     )
                 }
                 c += cs
@@ -1108,26 +1282,31 @@ object HtmlTextExtractor {
     }
 
     // 单元格内容: 子 Builder 独立提取投影文本与 runs(多段以单空格拼接,runs 平移对齐)。
-    // 子上下文不带段落级排版(对齐由 TableCell.align 承载)
+    // 子上下文不带段落级排版(对齐由 TableCell.align 承载)。
+    // 格内图片段(第一张)记 ref 随格返回(布局期按格宽等比撑行高,绘制期画位图);
+    // 其图片不进格文本——U+FFFC 在格内无占位管线
     private fun extractCellContent(
         el: Element, b: Builder, cssRules: List<CssRule>, noteIds: Set<String>
-    ): Pair<String, List<Run>> {
-        val sub = Builder(b.docDir)
+    ): Triple<String, List<Run>, String?> {
+        val sub = Builder(b.docDir, null, b.dataUriSink)
         for (c in el.childNodes()) walk(c, sub, ArrayDeque(), noteIds, cssRules)
         sub.flush()
         var text = ""
         var off = 0
+        var imgRef: String? = null
         val runs = ArrayList<Run>()
         for (p in sub.result()) {
-            // 格内图片段(装饰图)不进格文本——U+FFFC 在格内无图片管线,拼入会画出占位框
-            if (p.isImage) continue
+            if (p.isImage) {
+                if (imgRef == null) imgRef = p.imageRef
+                continue
+            }
             if (text.isNotEmpty()) { text += " "; off += 1 }
             for (r in p.runs) runs += r.copy(start = r.start + off, end = r.end + off)
             text += p.text
             off += p.text.length
         }
         // run.fontId 已按子 Builder 自身表(可能为空)分配——单元格内不引用字体,清零防越界
-        return text to runs.map { if (it.fontId != null) it.copy(fontId = null) else it }
+        return Triple(text, runs.map { if (it.fontId != null) it.copy(fontId = null) else it }, imgRef)
     }
 
     // 单元格文本规整(整段产出无 Run,不走 Builder)
@@ -1165,7 +1344,7 @@ object HtmlTextExtractor {
         return RunCtx(style, size, color, shadow, font)
     }
 
-    // font-size → 相对字号倍率(em 值/px÷16/百分比/CSS 关键词;larger/smaller 忽略)
+    // font-size → 相对字号倍率(em 值/px÷16/百分比/CSS 关键词;larger/smaller 由调用侧相对父字号复合)
     internal fun fontSizeEm(v: String): Float? {
         CssLen.parse(v)?.let { return if (it.pct) it.v / 100f else it.v }
         return when (v.trim().lowercase()) {

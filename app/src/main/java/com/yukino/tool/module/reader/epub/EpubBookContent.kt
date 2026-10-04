@@ -62,18 +62,32 @@ class EpubBookContent(
                         }
                     } else p.inlineImages
                     if (p.isImage && p.imageRef?.startsWith("/") != true) {
+                        // 命名参数补全全部字段: 图片段也可能带 table 之外的段级状态,
+                        // 位置构造截止 boxStyle 会静默丢字段
                         com.yukino.tool.module.reader.common.Paragraph(
                             p.text, p.runs, p.kind, java.io.File(chapterDir, p.imageRef!!).absolutePath,
-                            p.anchor, p.notes, p.align, p.indentEm, p.spaceAboveEm, p.spaceBelowEm,
-                            p.heading, inline, p.marginLeftEm, p.marginRightEm, p.widthEm,
-                            p.widthAlign, p.lineSpacingMult, boxAbs(p.boxStyle)
+                            anchor = p.anchor, notes = p.notes, align = p.align,
+                            indentEm = p.indentEm, indentCss = p.indentCss,
+                            spaceAboveEm = p.spaceAboveEm, spaceBelowEm = p.spaceBelowEm,
+                            heading = p.heading, inlineImages = inline,
+                            marginLeftEm = p.marginLeftEm, marginRightEm = p.marginRightEm,
+                            widthEm = p.widthEm, widthAlign = p.widthAlign,
+                            lineSpacingMult = p.lineSpacingMult, boxStyle = boxAbs(p.boxStyle),
+                            table = p.table, floatSide = p.floatSide,
+                            breakAll = p.breakAll, brBefore = p.brBefore
                         )
                     } else if (inline !== p.inlineImages || p.boxStyle != boxAbs(p.boxStyle)) {
                         com.yukino.tool.module.reader.common.Paragraph(
                             p.text, p.runs, p.kind, p.imageRef,
-                            p.anchor, p.notes, p.align, p.indentEm, p.spaceAboveEm, p.spaceBelowEm,
-                            p.heading, inline, p.marginLeftEm, p.marginRightEm, p.widthEm,
-                            p.widthAlign, p.lineSpacingMult, boxAbs(p.boxStyle)
+                            anchor = p.anchor, notes = p.notes, align = p.align,
+                            indentEm = p.indentEm, indentCss = p.indentCss,
+                            spaceAboveEm = p.spaceAboveEm, spaceBelowEm = p.spaceBelowEm,
+                            heading = p.heading, inlineImages = inline,
+                            marginLeftEm = p.marginLeftEm, marginRightEm = p.marginRightEm,
+                            widthEm = p.widthEm, widthAlign = p.widthAlign,
+                            lineSpacingMult = p.lineSpacingMult, boxStyle = boxAbs(p.boxStyle),
+                            table = p.table, floatSide = p.floatSide,
+                            breakAll = p.breakAll, brBefore = p.brBefore
                         )
                     } else p
                 }
@@ -96,8 +110,15 @@ class EpubBookContent(
         bs: com.yukino.tool.module.reader.common.BoxStyle?
     ): com.yukino.tool.module.reader.common.Paragraph =
         com.yukino.tool.module.reader.common.Paragraph(
-            text, runs, kind, imageRef, anchor, notes, align, indentEm, spaceAboveEm, spaceBelowEm,
-            heading, inlineImages, marginLeftEm, marginRightEm, widthEm, widthAlign, lineSpacingMult, bs
+            text, runs, kind, imageRef,
+            anchor = anchor, notes = notes, align = align,
+            indentEm = indentEm, indentCss = indentCss,
+            spaceAboveEm = spaceAboveEm, spaceBelowEm = spaceBelowEm,
+            heading = heading, inlineImages = inlineImages,
+            marginLeftEm = marginLeftEm, marginRightEm = marginRightEm,
+            widthEm = widthEm, widthAlign = widthAlign,
+            lineSpacingMult = lineSpacingMult, boxStyle = bs,
+            table = table, floatSide = floatSide, breakAll = breakAll, brBefore = brBefore
         )
 
     // 章内锚点 → 投影偏移: 扫段落 anchor 匹配,偏移 = 前序段长累计(与 bodyText 同构)

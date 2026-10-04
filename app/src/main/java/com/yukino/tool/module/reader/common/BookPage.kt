@@ -127,6 +127,9 @@ class DrawBox(
 // 格内折行的一行: 行文本 + 行首字符在格文本中的偏移 + 富文本样式段(相对行文本)
 class CellTextLine(val text: String, val startOff: Int, val styles: List<LineStyle>)
 
+// 格内图片的布局结果(尺寸版内坐标;画在格内容顶,文本行在其下)
+class CellImg(val width: Float, val height: Float)
+
 // 格矩形(表内坐标)与折行内容
 class TableCellBox(
     val cell: TableCell,
@@ -134,7 +137,8 @@ class TableCellBox(
     val y: Float,
     val w: Float,
     val h: Float,
-    val lines: List<CellTextLine>
+    val lines: List<CellTextLine>,
+    val img: CellImg? = null
 )
 
 // 表格布局(断行期一次算好,物化按页窗口切片): 列宽/行高/格几何
@@ -278,8 +282,10 @@ object ChapterComposer {
         override fun updateDrawState(target: TextPaint) { target.textSize *= scale }
     }
 
-    // 段首缩进: 书内 indentEm 覆盖全局设置(null = 全局;em 非负,0 = 显式不缩进)
+    // 段首缩进: 书内 indentCss(em/px/%)优先,老缓存 indentEm 次之,均覆盖全局设置
+    // (null=全局;em 非负,0 = 显式不缩进)
     internal fun paraIndentPx(p: Paragraph?, typo: ResolvedTypography): Float = when {
+        p?.indentCss != null -> p.indentCss.px(typo.fontPx, typo.textWidth.toFloat())
         p?.indentEm != null -> p.indentEm * typo.fontPx
         typo.indentPx > 0f -> typo.indentPx
         else -> 0f
@@ -534,7 +540,9 @@ object BookPager {
                     val td = para.table ?: continue
                     val pm = paraMetricsOf(para)
                     val measurePaint = TextPaint(TextPaint.ANTI_ALIAS_FLAG).apply { textSize = typo.fontPx }
-                    val layout = layoutTable(td, pm.availWidth, typo) { s -> measurePaint.measureText(s) }
+                    val layout = layoutTable(td, pm.availWidth, typo, { s -> measurePaint.measureText(s) }) { ref ->
+                        content.imageBounds(ref)
+                    }
                     tableLayouts[pi] = layout
                     val rng = paraRanges[pi]
                     if (!rng.isEmpty()) {
@@ -859,12 +867,14 @@ object BookPager {
 
     // 列宽: 内容自然宽按 colSpan 均摊取列最大;总宽不足版心按比例摊余量撑满,
     // 超出版心按比例压缩(保底 30% 版心)。行高: 单行格取需求最大,跨行格差额均摊到覆盖行。
-    // 格内文本贪心折行(空格优先断,超长硬断),runs 折算为行相对 LineStyle
+    // 格内文本贪心折行(空格优先断,超长硬断),runs 折算为行相对 LineStyle。
+    // imageBounds: 格内图片尺寸查询(坏图/未注入按占位高;图片高钳到版心高六成防单行超页)
     internal fun layoutTable(
         td: TableData,
         availWidth: Float,
         typo: ResolvedTypography,
-        measure: (String) -> Float
+        measure: (String) -> Float,
+        imageBounds: ((String) -> android.graphics.Rect?)? = null
     ): TableLayout {
         val fontPx = typo.fontPx
         val padH = fontPx * 0.3f
@@ -921,15 +931,24 @@ object BookPager {
         val colX = FloatArray(td.cols)
         run { var acc = gap; for (c in 0 until td.cols) { colX[c] = acc; acc += widths[c] + gap } }
         // 2. 格内容折行与需求高
-        data class Prepared(val cell: TableCell, val x: Float, val innerW: Float, val lines: List<CellTextLine>, val needH: Float)
+        data class Prepared(
+            val cell: TableCell, val x: Float, val innerW: Float,
+            val lines: List<CellTextLine>, val needH: Float, val img: CellImg?
+        )
         val prepared = ArrayList<Prepared>(td.cells.size)
         for (cell in td.cells) {
             val lastCol = minOf(cell.col + cell.colSpan, td.cols)
             val outerW = widths.copyOfRange(cell.col, lastCol).sum()
             val innerW = (outerW - padH * 2f).coerceAtLeast(fontPx)
             val lines = wrapCellText(cell, innerW, typo, measure)
-            val needH = lines.size * lineH + padV * 2f
-            prepared += Prepared(cell, colX[cell.col] + padH, innerW, lines, needH)
+            // 格内图片: 内容宽等比(先按内容宽撑高,超高钳到版心高六成,宽随高缩);
+            // 坏图/未知尺寸按两行高占位(可见可感知)
+            val img = cell.imgRef?.let { ref ->
+                val b = imageBounds?.invoke(ref)
+                cellImgSize(b?.width() ?: 0, b?.height() ?: 0, innerW, typo.textHeight * 0.6f, lineH)
+            }
+            val needH = padV * 2f + lines.size * lineH + (img?.height ?: 0f)
+            prepared += Prepared(cell, colX[cell.col] + padH, innerW, lines, needH, img)
         }
         // 3. 行高: 单行格先行,跨行格补差
         val heights = FloatArray(td.rows) { 0f }
@@ -957,16 +976,32 @@ object BookPager {
             var spannedH = 0f
             for (r in r0 until r1) spannedH += heights[r] + (if (r > r0) gap else 0f)
             val textH = p.lines.size * lineH
+            val contentH = textH + (p.img?.height ?: 0f)
             val yOff = when (p.cell.vAlign) {
                 0 -> padV
-                2 -> (spannedH - textH - padV).coerceAtLeast(padV)
-                else -> (spannedH - textH) / 2f
+                2 -> (spannedH - contentH - padV).coerceAtLeast(padV)
+                else -> (spannedH - contentH) / 2f
             }
-            cellBoxes += TableCellBox(p.cell, p.x, rowY[r0] + yOff, p.innerW, spannedH, p.lines)
+            cellBoxes += TableCellBox(p.cell, p.x, rowY[r0] + yOff, p.innerW, spannedH, p.lines, p.img)
         }
         val totalW = widths.sum() + gapTotal
         val totalH = rowY.lastOrNull()?.plus(heights.lastOrNull() ?: 0f)?.plus(gap) ?: 0f
         return TableLayout(widths.toList(), heights.toList(), rowY.toList(), cellBoxes, totalW, totalH, padH, padV, gap, lineH)
+    }
+
+    // 格内图片显示尺寸(纯函数): 原始宽高比下内容宽等比撑高,超高钳 maxH 宽随高缩;
+    // 坏尺寸(≤0)按两行高占位
+    internal fun cellImgSize(bw: Int, bh: Int, innerW: Float, maxH: Float, lineH: Float): CellImg = when {
+        bw <= 0 || bh <= 0 -> CellImg(innerW, 2f * lineH)
+        else -> {
+            var w = innerW
+            var h = w * bh / bw
+            if (h > maxH) {
+                h = maxH
+                w = h * bw / bh
+            }
+            CellImg(w, h)
+        }
     }
 
     // 格内贪心折行: 空格处优先断(断后空格丢弃),无空格超长按字符硬断(CJK 逐字天然可断);

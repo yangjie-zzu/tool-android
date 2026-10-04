@@ -1090,8 +1090,18 @@ class ReaderPageView(context: Context) : View(context) {
                 drawEdge(canvas, rect, side, edge, night, t.fontPx)
             }
         }
+        // 2.5 格内图片(布局期定好尺寸,内容宽内水平居中,画在格内容顶;未解码先占位,异步解码后重绘)
+        for (cb in tl.cells) {
+            val img = cb.img ?: continue
+            val ref = cb.cell.imgRef ?: continue
+            drawBitmapFit(
+                canvas, ref,
+                dt.x + cb.x + (cb.w - img.width) / 2f, dt.y + cb.y, img.width, img.height
+            )
+        }
         // 3. 格文本(逐行;水平对齐按自然行宽;表头补加粗;复用 drawStyledLine)
         for (cb in tl.cells) {
+            val imgTop = cb.img?.height ?: 0f   // 文本行画在格内图片之下
             for ((li, line) in cb.lines.withIndex()) {
                 val bold = if (cb.cell.header) RunStyle.BOLD else 0
                 val styles = when {
@@ -1121,7 +1131,7 @@ class ReaderPageView(context: Context) : View(context) {
                     2 -> (cb.w - lw).coerceAtLeast(0f)
                     else -> 0f
                 }
-                val lineY = dt.y + cb.y + li * tl.lineH + tl.lineH * 0.82f
+                val lineY = dt.y + cb.y + imgTop + li * tl.lineH + tl.lineH * 0.82f
                 if (styles.isEmpty()) {
                     canvas.drawText(line.text, dt.x + cb.x + xOff, lineY, base)
                 } else {

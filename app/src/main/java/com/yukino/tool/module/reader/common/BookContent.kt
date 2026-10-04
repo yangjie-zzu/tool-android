@@ -109,7 +109,8 @@ class TableCell(
     val vAlign: Int = 1,              // 垂直对齐(top/middle/bottom)
     val bg: Long? = null,             // 单元格底色
     val edges: List<EdgeStyle> = emptyList(),   // 四边框(上右下左)
-    val header: Boolean = false       // th 表头(默认加粗居中)
+    val header: Boolean = false,      // th 表头(默认加粗居中)
+    val imgRef: String? = null        // 格内图片(取第一张;相对解压根路径,加载侧转绝对)
 )
 
 // 表格(七期批次四): 真渲染数据。行高列宽排版期按内容分配;跨页按行切分
@@ -152,7 +153,8 @@ class Paragraph(
     val table: TableData? = null,     // 七期批次四: 表格段(投影 U+FFFC 占位,真渲染)
     val floatSide: Int = 0,           // 批次四b: 浮动盒(1=right 2=left;带 width+height 才真环绕,否则六期右对齐降级)
     val breakAll: Boolean = false,    // 批次四e: word-break:break-all(词中可断,手动逐字折行)
-    val brBefore: Boolean = false     // 七期补: 与上一段是 <br/> 相邻(同段内强制换行,排版层段距归零)
+    val brBefore: Boolean = false,    // 七期补: 与上一段是 <br/> 相邻(同段内强制换行,排版层段距归零)
+    val indentCss: CssLen? = null     // text-indent 全单位形态(em/px/%;优先于老字段 indentEm)
 ) {
     val isImage: Boolean get() = kind == ParaKind.IMAGE
     val isTable: Boolean get() = table != null

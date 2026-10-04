@@ -59,6 +59,7 @@ object ChapterFileCodec {
         val n: List<NoteAnchorDto> = emptyList(),
         val al: Int? = null,        // 四期: 段级对齐(1=center 2=right;七期 3=left 4=justify)
         val ind: Float? = null,     // 四期: 书内首行缩进(em;null=跟随全局)
+        val indc: CssLenDto? = null, // text-indent 全单位形态(em/px/%;优先于 ind)
         val mt: CssLenDto? = null,  // 块级 margin-top(七期起 CssLen: em/px/%)
         val mb: CssLenDto? = null,  // 块级 margin-bottom
         val h: Int? = null,         // 四期: 标题级别 1..6(h2 拆章依据)
@@ -94,7 +95,8 @@ object ChapterFileCodec {
         val al: Int = 0, val va: Int = 1,
         val bg: Long? = null,
         val edges: List<EdgeDto> = emptyList(),
-        val th: Boolean = false
+        val th: Boolean = false,
+        val img: String? = null     // 格内图片(相对解压根;null = 无)
     )
 
     @Serializable
@@ -156,6 +158,7 @@ object ChapterFileCodec {
                 n = p.notes.map { NoteAnchorDto(it.start, it.end, it.noteId) },
                 al = if (p.align != 0) p.align else null,
                 ind = p.indentEm,
+                indc = p.indentCss?.let { CssLenDto(it.v, it.pct) },
                 mt = p.spaceAboveEm?.let { CssLenDto(it.v, it.pct) },
                 mb = p.spaceBelowEm?.let { CssLenDto(it.v, it.pct) },
                 h = if (p.heading != 0) p.heading else null,
@@ -178,7 +181,8 @@ object ChapterFileCodec {
                                 },
                                 al = cell.align, va = cell.vAlign, bg = cell.bg,
                                 edges = cell.edges.map { EdgeDto(it.widthEm, it.style, it.color) },
-                                th = cell.header
+                                th = cell.header,
+                                img = cell.imgRef
                             )
                         },
                         collapse = td.collapse, spacing = td.spacingEm,
@@ -201,9 +205,9 @@ object ChapterFileCodec {
     }
 
     // 七期批次三格式版本: 对象化 runs(字号倍率/颜色/阴影/@font-face 字体下标)。
-    // fonts 表 value 存 family 名,实际字体文件路径由内容源按书籍 CSS @font-face 解析。
+    // v18: 选择器完整化/命名色全表/缩进 px-%/larger-smaller/dataURI 图片/表格格内图片。
     // 低版本文件打开时自动升级重提取
-    const val FORMAT_VERSION = 17
+    const val FORMAT_VERSION = 18
 
     private fun BoxDto.toBoxStyle() = com.yukino.tool.module.reader.common.BoxStyle(
         bg = bg, bgImage = bgImg,
@@ -277,7 +281,8 @@ object ChapterFileCodec {
                         runs = cell.runs.map { Run(it.s, it.e, it.st, it.sz, it.co, it.sh, it.fo) },
                         align = cell.al, vAlign = cell.va, bg = cell.bg,
                         edges = cell.edges.map { com.yukino.tool.module.reader.common.EdgeStyle(it.w, it.st, it.c) },
-                        header = cell.th
+                        header = cell.th,
+                        imgRef = cell.img
                     )
                 },
                 collapse = td.collapse, spacingEm = td.spacing,
@@ -313,6 +318,7 @@ object ChapterFileCodec {
             notes = n.map { NoteAnchor(it.s, it.e, it.id) },
             align = al ?: 0,
             indentEm = ind,
+            indentCss = indc?.toCssLen(),
             spaceAboveEm = mt?.toCssLen(),
             spaceBelowEm = mb?.toCssLen(),
             heading = h ?: 0,
