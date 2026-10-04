@@ -17,11 +17,13 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayInputStream
 import java.io.File
+import kotlin.coroutines.coroutineContext
 import kotlin.math.ceil
 
 // 装饰章快照生成: 离屏 WebView 渲染原书 xhtml(css/字体相对引用经拦截器映射到解压目录,
@@ -100,6 +102,33 @@ object DecorSnapshot {
             }
             inFlight.remove(key)
             if (ok) onDone() else failed.add(key)
+        }
+    }
+
+    // 阻塞补齐: 串行生成所有缺失快照, 全部处理完(含失败章, 失败页保持近似排版占位)
+    // 才返回——打开书时在 load 流程内调用, 内容就绪即快照齐备, 无占位无事后换身。
+    // 协程取消(中途退出阅读页)即中止, 未落盘的章下次打开重试
+    suspend fun ensureAllBlocking(
+        context: Context,
+        bookId: String,
+        chapters: List<Int>,
+        onProgress: (done: Int, total: Int) -> Unit = { _, _ -> }
+    ) {
+        val app = context.applicationContext
+        val total = chapters.size
+        for ((i, ci) in chapters.withIndex()) {
+            coroutineContext.ensureActive()
+            val done = if (EpubImporter.decoFile(context, bookId, ci).exists()) true else {
+                val key = "$bookId/$ci"
+                if (key in failed || !inFlight.add(key)) true   // 已失败/进行中: 视为处理完, 不卡打开
+                else gate.withLock {
+                    val ok = runCatching { capture(app, bookId, ci) }.getOrDefault(false)
+                    inFlight.remove(key)
+                    if (!ok) failed.add(key)
+                    true
+                }
+            }
+            onProgress(i + 1, total)
         }
     }
 

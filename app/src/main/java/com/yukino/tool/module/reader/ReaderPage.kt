@@ -271,24 +271,11 @@ fun ReaderScreen(
         withContext(Dispatchers.IO) { ReaderStore.saveSpecs(context, book.id, key, book.totalChars, result) }
     }
 
-    // 装饰章(扉页等 CSS 排版页,章首段带装饰盒): 与正文同一分页/绘制管线,整章一页
-    // 呈现离屏渲染的快照位图(DecorSnapshot 补生成,WebP 落盘随书缓存);
-    // decoVersion 自增触发当前页/邻页重物化(近似排版占位 → 快照真身)
-    var decoVersion by remember(book.id) { mutableStateOf(0) }
-    LaunchedEffect(content, book.id) {
-        if (book.format != BookFormat.EPUB) return@LaunchedEffect
-        val bid = book.id
-        val missing = withContext(Dispatchers.IO) {
-            book.chapters.indices.filter { i ->
-                runCatching { EpubImporter.isDecorativeChapter(context, bid, i) }.getOrDefault(false) &&
-                    !EpubImporter.decoFile(context, bid, i).exists()
-            }
-        }
-        for (ci in missing) DecorSnapshot.ensure(context, bid, ci) { decoVersion++ }
-    }
+    // 装饰章快照在 load 流程内阻塞补齐(BookContents.load, loading 遮罩展示进度),
+    // content 就绪即快照齐备——此处无需再扫描/换身
 
     // 物化当前页: 目录/页号/版式就绪 → 后台构建(装饰快照生成完成亦触发换真身)
-    LaunchedEffect(specs, pageIndex, typoKey, decoVersion) {
+    LaunchedEffect(specs, pageIndex, typoKey) {
         val sp = specs ?: return@LaunchedEffect
         val t = typo ?: return@LaunchedEffect
         val cnt = content ?: return@LaunchedEffect
@@ -302,10 +289,10 @@ fun ReaderScreen(
     // 邻页预物化缓存: 翻页落定后后台把前/后页备好,拖拽定向时查表即中,
     // 避免在手势回调(主线程)上构建 StaticLayout 造成起手卡顿。版式/目录变化整表重建
     // ConcurrentHashMap: 邻页在 Default 线程并行物化写入,主线程手势定向时读取
-    val neighborCache = remember(book.id, specs, typoKey, decoVersion) {
+    val neighborCache = remember(book.id, specs, typoKey) {
         java.util.concurrent.ConcurrentHashMap<Int, BookPage>()
     }
-    LaunchedEffect(specs, pageIndex, typoKey, decoVersion) {
+    LaunchedEffect(specs, pageIndex, typoKey) {
         val sp = specs ?: return@LaunchedEffect
         val t = typo ?: return@LaunchedEffect
         val cnt = content ?: return@LaunchedEffect
