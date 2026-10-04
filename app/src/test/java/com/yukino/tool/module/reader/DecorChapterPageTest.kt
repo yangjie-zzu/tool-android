@@ -4,12 +4,17 @@ import com.yukino.tool.module.reader.common.BoxStyle
 import com.yukino.tool.module.reader.common.BookPager
 import com.yukino.tool.module.reader.common.ChapterLines
 import com.yukino.tool.module.reader.common.LineKind
+import com.yukino.tool.module.reader.common.ParaKind
 import com.yukino.tool.module.reader.common.Paragraph
 import com.yukino.tool.module.reader.common.ResolvedTypography
 import com.yukino.tool.module.reader.common.TextLine
+import com.yukino.tool.module.reader.epub.EpubImporter
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
+import java.nio.file.Files
 
 // 装饰章(章首段带装饰盒)分页语义: 整章一页不跨页——页面按快照位图整体呈现。
 // 纯 JVM(行模型 + paginate 纯函数),不依赖 Android 运行时
@@ -47,5 +52,35 @@ class DecorChapterPageTest {
         val windows = BookPager.paginate(cl, typo())
         assertTrue(windows.size > 1)
         assertTrue(!BookPager.isDecorative(cl))
+    }
+
+    // ---- 封面文档去重(与元数据封面同一资源的纯图文档跳过建章) ----
+
+    private fun imgPara(ref: String) =
+        Paragraph("", kind = ParaKind.IMAGE, imageRef = ref)
+
+    @Test
+    fun `纯图片文档且与元数据封面同一文件判定为封面文档`() {
+        val root = Files.createTempDirectory("epubroot").toFile()
+        val cover = File(root, "OEBPS/Images/cover.jpg")
+        val doc = File(root, "OEBPS/Text/cover.xhtml")
+        assertTrue(EpubImporter.isCoverDoc(listOf(imgPara("OEBPS/Images/cover.jpg")), cover, root, doc))
+        // 相对文档目录的旧式相对路径同样命中(两种基准兼容)
+        assertTrue(EpubImporter.isCoverDoc(listOf(imgPara("../Images/cover.jpg")), cover, root, doc))
+    }
+
+    @Test
+    fun `非封面文档不误判`() {
+        val root = Files.createTempDirectory("epubroot").toFile()
+        val cover = File(root, "OEBPS/Images/cover.jpg")
+        val doc = File(root, "OEBPS/Text/cover.xhtml")
+        val other = File(root, "OEBPS/Images/other.jpg")
+        // 含文字段(非纯图)
+        assertFalse(EpubImporter.isCoverDoc(listOf(imgPara("OEBPS/Images/cover.jpg"), Paragraph("前言")), cover, root, doc))
+        // 图片不是封面文件(如目录插画/正文插图页)
+        assertFalse(EpubImporter.isCoverDoc(listOf(imgPara("OEBPS/Images/A0002.jpg")), cover, root, doc))
+        // 元数据封面未探测到 → 不判定,保留文档
+        assertFalse(EpubImporter.isCoverDoc(listOf(imgPara("OEBPS/Images/cover.jpg")), null, root, doc))
+        assertFalse(cover.exists() || doc.exists())   // 判定为纯函数,不触碰文件系统
     }
 }

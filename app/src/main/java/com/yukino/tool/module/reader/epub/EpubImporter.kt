@@ -164,6 +164,8 @@ object EpubImporter {
             if (!File(tmp, "chapters").renameTo(oldChapters)) {
                 throw BookInitException("升级写入失败")   // chapters 未就位: bak 还在,删 tmp 后下次重试
             }
+            // 章序列可能变化(如封面文档去重使章号前移), 按章号缓存的装饰快照随之失效
+            File(dir, "deco").deleteRecursively()
             ReaderStore.upsertBook(context, final)
             tmp.deleteRecursively()
             bak.deleteRecursively()
@@ -316,6 +318,11 @@ object EpubImporter {
                 // 5. 逐 spine 文档提取正文(非线性文档与资源文档跳过;宽容缺档)
                 val chapters = ArrayList<ChapterIndex>()
                 var offset = 0L
+                // 封面文档去重: spine 里的整图封面页(转制书惯例)与元数据封面(COVER 页画的
+                // 就是同一文件)同源——再登记为章会在书首出现连续两页同一封面,跳过不建章
+                val coverAbs = pkg.coverHref?.let {
+                    File(outDir, resolveHref(opfDir, percentDecode(stripFragment(it).first))).absoluteFile
+                }
                 for (ref in pkg.spine) {
                     val item = pkg.items[ref.idref] ?: continue
                     if (!ref.linear) continue
@@ -329,6 +336,7 @@ object EpubImporter {
                     val extracted = HtmlTextExtractor.extract(docFile, key.substringBeforeLast('/', ""))
                     val paragraphs = extracted.paragraphs
                     if (paragraphs.isEmpty()) continue
+                    if (isCoverDoc(paragraphs, coverAbs, outDir, docFile)) continue
 
                     // 目录键与 NCX/Nav 条目同一约定: 相对 zip 根的解码路径
                     val fallbackTitle = docFile.nameWithoutExtension.ifBlank { "未命名" }
@@ -436,5 +444,26 @@ object EpubImporter {
         if (!dir.exists()) return null
         dir.walkTopDown().forEach { f -> if (f.isFile && f.name.equals(name, ignoreCase = true)) return f }
         return null
+    }
+
+    // 封面文档判定(纯函数,单测覆盖): 文档提取结果全部为图片段、且其中存在与元数据封面
+    // 同一文件的段 → 该文档是书内封面页(应用 COVER 页已呈现同一图),跳过不登记为章。
+    // 元数据封面未探测到(coverFile null)时不判定——文档可能是唯一封面呈现,保留。
+    // 图片段路径按解压根与文档目录两种基准解析(extractor 规整规则的前身兼容)
+    internal fun isCoverDoc(
+        paragraphs: List<Paragraph>,
+        coverFile: File?,
+        docRoot: File,
+        docFile: File
+    ): Boolean {
+        if (coverFile == null) return false
+        if (paragraphs.isEmpty() || !paragraphs.all { it.isImage }) return false
+        return paragraphs.any { p ->
+            val ref = p.imageRef ?: return@any false
+            runCatching {
+                File(docRoot, ref).canonicalFile == coverFile.canonicalFile ||
+                    File(docFile.parent, ref).canonicalFile == coverFile.canonicalFile
+            }.getOrDefault(false)
+        }
     }
 }
