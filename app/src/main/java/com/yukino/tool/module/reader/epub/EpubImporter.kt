@@ -102,7 +102,13 @@ object EpubImporter {
             chapterFile(context, book.id, 0).let { it.exists() && it.length() > 0 } &&
             chapterFile(context, book.id, n - 1).let { it.exists() && it.length() > 0 }
         if (book.ready && filesOk) {
-            if (!ChapterFileCodec.needsUpgrade(chapterFile(context, book.id, 0))) return@withContext book
+            val first = chapterFile(context, book.id, 0)
+            // 封面章剔除(封面去重)对存量书生效: 历史导入的首章仍为封面文档章时,
+            // 走升级路径重建剔除(含进度迁移与装饰快照失效); 一次生效, 之后不再命中
+            val coverLingers = runCatching {
+                coverChapterLingers(first, book.coverPath, dir)
+            }.getOrDefault(false)
+            if (!ChapterFileCodec.needsUpgrade(first) && !coverLingers) return@withContext book
             onStage("升级书籍内容中…")
             return@withContext upgrade(context, book, dir, onStage)
         }
@@ -446,10 +452,19 @@ object EpubImporter {
         return null
     }
 
+    // 封面章残留检测(存量书升级触发): 首章为纯图片文档且其图与本书元数据封面同一文件
+    // → 该书导入早于封面去重, 打开时升级剔除。章文件 img 为相对书目录根的路径, 与 coverPath 同基准
+    private fun coverChapterLingers(first: File, coverPath: String?, dir: File): Boolean {
+        if (coverPath == null) return false
+        val rr = ChapterFileCodec.read(first)
+        return isCoverDoc(rr.paragraphs, File(coverPath), dir, dir)
+    }
+
     // 封面文档判定(纯函数,单测覆盖): 文档提取结果全部为图片段、且其中存在与元数据封面
     // 同一文件的段 → 该文档是书内封面页(应用 COVER 页已呈现同一图),跳过不登记为章。
     // 元数据封面未探测到(coverFile null)时不判定——文档可能是唯一封面呈现,保留。
-    // 图片段路径按解压根与文档目录两种基准解析(extractor 规整规则的前身兼容)
+    // 图片段路径按解压根与文档目录两种基准解析;路径不等时以内容等价兜底(升级搬运会在
+    // 书目录根留一份封面副本, 与解压目录内原图为同一张图的两份文件)
     internal fun isCoverDoc(
         paragraphs: List<Paragraph>,
         coverFile: File?,
@@ -461,9 +476,30 @@ object EpubImporter {
         return paragraphs.any { p ->
             val ref = p.imageRef ?: return@any false
             runCatching {
-                File(docRoot, ref).canonicalFile == coverFile.canonicalFile ||
-                    File(docFile.parent, ref).canonicalFile == coverFile.canonicalFile
+                val img = File(docRoot, ref)
+                img.canonicalFile == coverFile.canonicalFile ||
+                    File(docFile.parent, ref).canonicalFile == coverFile.canonicalFile ||
+                    sameContent(img, coverFile)
             }.getOrDefault(false)
+        }
+    }
+
+    // 内容等价: 大小相等且逐字节一致(封面图几 MB 级, 仅在首章检测时跑一次)
+    private fun sameContent(a: File, b: File): Boolean {
+        if (!a.isFile || !b.isFile || a.length() != b.length() || a.length() == 0L) return false
+        val bufA = ByteArray(8192)
+        val bufB = ByteArray(8192)
+        a.inputStream().use { ia ->
+            b.inputStream().use { ib ->
+                while (true) {
+                    val na = ia.read(bufA)
+                    val nb = ib.read(bufB)
+                    if (na != nb) return false
+                    if (na <= 0) return true
+                    if (!bufA.copyOf(na).contentEquals(bufB.copyOf(nb))) return false
+                }
+                true
+            }
         }
     }
 }

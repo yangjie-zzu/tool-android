@@ -83,4 +83,19 @@ class DecorChapterPageTest {
         assertFalse(EpubImporter.isCoverDoc(listOf(imgPara("OEBPS/Images/cover.jpg")), null, root, doc))
         assertFalse(cover.exists() || doc.exists())   // 判定为纯函数,不触碰文件系统
     }
+
+    @Test
+    fun `内容等价的封面副本命中_升级搬运场景`() {
+        val root = Files.createTempDirectory("epubroot").toFile()
+        val imgDir = File(root, "OEBPS/Images"); imgDir.mkdirs()
+        val cover = File(root, "cover.jpg")   // 升级搬运后的书目录根副本
+        val bytes = ByteArray(2048) { (it % 251).toByte() }
+        cover.writeBytes(bytes)
+        File(imgDir, "cover.jpg").writeBytes(bytes)   // 解压目录内原图(同内容不同路径)
+        val doc = File(root, "OEBPS/Text/cover.xhtml")
+        assertTrue(EpubImporter.isCoverDoc(listOf(imgPara("OEBPS/Images/cover.jpg")), cover, root, doc))
+        // 内容不同的"副本"不命中
+        File(imgDir, "cover.jpg").writeBytes(ByteArray(2048) { (it % 251).toByte() } + byteArrayOf(1))
+        assertFalse(EpubImporter.isCoverDoc(listOf(imgPara("OEBPS/Images/cover.jpg")), cover, root, doc))
+    }
 }
