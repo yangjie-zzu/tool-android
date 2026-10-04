@@ -111,7 +111,10 @@ object EpubImporter {
             val coverLingers = runCatching {
                 coverChapterLingers(first, book.coverPath, dir)
             }.getOrDefault(false)
-            if (!ChapterFileCodec.needsUpgrade(first) && !coverLingers) return@withContext book
+            val tableLingers = runCatching {
+                tableTitleLingers(context, book.id, book.chapters)
+            }.getOrDefault(false)
+            if (!ChapterFileCodec.needsUpgrade(first) && !coverLingers && !tableLingers) return@withContext book
             onStage("升级书籍内容中…")
             return@withContext upgrade(context, book, dir, onStage)
         }
@@ -407,7 +410,9 @@ object EpubImporter {
         f.parentFile?.toRelativeString(root)?.replace('\\', '/')?.let { if (it == ".") "" else it } ?: ""
 
     // 正文首段与章名相同的剥掉(EPUB 正文常自带 <h1> 标题,与合成大标题/页眉重复)。
-    // 版式层的 stripLeadingTitle 只认"整行等于章名",这里放宽到互相包含的短标题
+    // 版式层的 stripLeadingTitle 只认"整行等于章名",这里放宽到互相包含的短标题;
+    // 另有章首装饰表格场景(数字圈"1"+章名+装饰图的降级段): 去掉序号前缀后与章名一致
+    // 也视为重复剥掉——不剥则与合成章名形成双标题, 且表格行高被装饰图格需求撑出大段空白
     private fun dedupeLeadingTitle(paragraphs: List<Paragraph>, title: String): List<Paragraph> {
         val t = title.trim()
         if (t.isEmpty() || paragraphs.isEmpty()) return paragraphs
@@ -415,8 +420,22 @@ object EpubImporter {
         if (first == t || (first.length <= 30 && (t.contains(first) || first.contains(t)))) {
             return paragraphs.drop(1)
         }
+        // 章首装饰表格(数字圈"1"+章名+装饰图的降级段, 投影为单个 U+FFFC):
+        // 各 cell 文本拼接去序号后与章名一致 → 视为重复剥掉(否则双标题+行高空白)
+        if (paragraphs.first().isTable && first.length <= 2) {
+            val cells = paragraphs.first().table?.cells?.joinToString("") { it.text } ?: ""
+            val norm = stripOrdinal(cells)
+            if (norm.isNotEmpty() && norm.length <= 40 && norm == stripOrdinal(t)) {
+                return paragraphs.drop(1)
+            }
+        }
         return paragraphs
     }
+
+    // 去掉首部序号修饰(阿拉伯数字/带圈数字/点号/空格)用于重复比较
+    private fun stripOrdinal(s: String): String =
+        s.trim().trimStart('0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
+            '①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩', ' ', '　', '.', '、')
 
     // 四期: h2 小节切分。heading==2 且非首段的段落为小节起点;
     // 首小节 first=true(用目录名/目录锚点),后续小节 h2Text/h2Anchor 取自其 h2 段
@@ -454,6 +473,27 @@ object EpubImporter {
         if (!dir.exists()) return null
         dir.walkTopDown().forEach { f -> if (f.isFile && f.name.equals(name, ignoreCase = true)) return f }
         return null
+    }
+
+    // 章首装饰表格残留检测(存量书升级触发): 任一章的首段为表格降级段(投影 U+FFFC)
+    // 且 cell 文本去序号后与该章章名一致 → 该书导入早于装饰表格剥除, 打开时升级重建
+    // (双标题与大段空白随重建消失)。IO 线程调用
+    private fun tableTitleLingers(
+        context: Context,
+        bookId: String,
+        chapters: List<com.yukino.tool.module.reader.common.ChapterIndex>
+    ): Boolean {
+        for ((i, ch) in chapters.withIndex()) {
+            if (ch.title.isBlank()) continue
+            val rr = runCatching { ChapterFileCodec.read(chapterFile(context, bookId, i)) }
+                .getOrNull() ?: continue
+            val p0 = rr.paragraphs.firstOrNull() ?: continue
+            if (!p0.isTable) continue
+            val cells = p0.table?.cells?.joinToString("") { it.text } ?: continue
+            val norm = stripOrdinal(cells)
+            if (norm.isNotEmpty() && norm == stripOrdinal(ch.title)) return true
+        }
+        return false
     }
 
     // 封面章残留检测(存量书升级触发): 首章为纯图片文档且其图与本书元数据封面同一文件

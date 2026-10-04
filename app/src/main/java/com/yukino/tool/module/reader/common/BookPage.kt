@@ -11,6 +11,7 @@ import android.text.TextPaint
 import android.text.style.AlignmentSpan
 import android.text.style.LeadingMarginSpan
 import android.text.style.ReplacementSpan
+import android.text.style.MetricAffectingSpan
 import android.text.style.RelativeSizeSpan
 import android.text.style.StrikethroughSpan
 import android.text.style.StyleSpan
@@ -264,9 +265,17 @@ object ChapterComposer {
                 }
             }
         }
-        sb.setSpan(RelativeSizeSpan(TITLE_SCALE), 0, title.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        // 标题字号缩放用显式乘 textSize 的自定义 span(等价 RelativeSizeSpan): 规避
+        // RelativeSizeSpan 与后续 paint 组合在部分设备上断行度量不生效的疑云(行末出界)
+        sb.setSpan(TitleScaleSpan(TITLE_SCALE), 0, title.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         sb.setSpan(StyleSpan(Typeface.BOLD), 0, title.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         return sb
+    }
+
+    // 标题字号缩放 span: 度量与绘制都显式乘 textSize
+    private class TitleScaleSpan(private val scale: Float) : MetricAffectingSpan() {
+        override fun updateMeasureState(textPaint: TextPaint) { textPaint.textSize *= scale }
+        override fun updateDrawState(target: TextPaint) { target.textSize *= scale }
     }
 
     // 段首缩进: 书内 indentEm 覆盖全局设置(null = 全局;em 非负,0 = 显式不缩进)
@@ -1155,6 +1164,12 @@ object BookPager {
         val paint = TextPaint(TextPaint.ANTI_ALIAS_FLAG).apply { textSize = typo.fontPx }
         val chapterStartGlobal = content.chapterStart(idx)
         val drawn = drawLinesWithBoxes(cl, slice, typo, measure = { paint.measureText(it) }, chapterStartGlobal = chapterStartGlobal)
+        if (spec.chapterTitle.startsWith("①")) {
+            for (dl in drawn.lines.take(5)) {
+                android.util.Log.i("LayoutDiag", "PAGE title=" + dl.title + " x=" + dl.x +
+                    " baseline=" + dl.baseline + " text='" + dl.text.take(24) + "'")
+            }
+        }
         return BookPage(
             spec, spec.chapterTitle, label,
             drawn.lines, drawn.boxes, drawn.tables, cl.fontFiles

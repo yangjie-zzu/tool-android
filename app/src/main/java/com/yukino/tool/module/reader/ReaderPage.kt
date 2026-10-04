@@ -1207,12 +1207,6 @@ fun ReaderScreen(
                             .padding(horizontal = 16.dp, vertical = 12.dp)
                     ) {
                         Text(
-                            "脚注",
-                            style = MaterialTheme.typography.titleSmall,
-                            color = fgColor
-                        )
-                        Spacer(Modifier.height(6.dp))
-                        Text(
                             note.text,
                             style = MaterialTheme.typography.bodyMedium,
                             color = fgColor
