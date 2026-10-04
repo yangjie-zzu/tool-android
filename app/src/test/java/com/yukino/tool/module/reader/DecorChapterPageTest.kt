@@ -9,6 +9,8 @@ import com.yukino.tool.module.reader.common.Paragraph
 import com.yukino.tool.module.reader.common.ResolvedTypography
 import com.yukino.tool.module.reader.common.TextLine
 import com.yukino.tool.module.reader.epub.EpubImporter
+import com.yukino.tool.module.reader.epub.injectInto
+import com.yukino.tool.module.reader.epub.stripScripts
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -97,5 +99,31 @@ class DecorChapterPageTest {
         // 内容不同的"副本"不命中
         File(imgDir, "cover.jpg").writeBytes(ByteArray(2048) { (it % 251).toByte() } + byteArrayOf(1))
         assertFalse(EpubImporter.isCoverDoc(listOf(imgPara("OEBPS/Images/cover.jpg")), cover, root, doc))
+    }
+
+    // ---- 装饰页注入(自适应 CSS + 就绪探测) ----
+
+    @Test
+    fun `书内脚本剥除且注入自适应与探测`() {
+        val html = "<html><head><style>p{}</style></head><body>" +
+            "<script>alert('evil')</script><script src='x.js'></script>" +
+            "<p>正文</p></body></html>"
+        val out = injectInto(html)
+        // 书内脚本剥除(内联与外链)
+        assertFalse(out.contains("evil"))
+        assertFalse(out.contains("x.js"))
+        assertTrue(out.contains("<p>正文</p>"))
+        // 自适应 CSS 与就绪探测/桥都已注入
+        assertTrue(out.contains("box-sizing:border-box"))
+        assertTrue(out.contains("fonts.ready"))
+        assertTrue(out.contains("__decoBridge.onReady"))
+    }
+
+    @Test
+    fun `注入在head前插人_无head时尾部附加`() {
+        val withHead = injectInto("<html><head></head><body></body></html>")
+        assertTrue(withHead.indexOf("box-sizing") < withHead.indexOf("</head>"))
+        val noHead = injectInto("<p>仅正文</p>")
+        assertTrue(noHead.endsWith("</style><script>") || noHead.contains("box-sizing"))
     }
 }

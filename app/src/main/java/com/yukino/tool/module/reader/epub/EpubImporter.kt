@@ -31,9 +31,12 @@ object EpubImporter {
     fun chapterFile(context: Context, bookId: String, index: Int): File =
         File(File(chapterDir(context, bookId), "chapters"), "ch_%04d.txt".format(index))
 
-    // 装饰章快照位图(离屏 WebView 渲染原书 xhtml 落盘的 WebP): 书目录 deco/ 下按章号命名
+    // 装饰章快照位图(离屏 WebView 渲染原书 xhtml 落盘的 WebP): 书目录下按代目子目录命名。
+    // v2 = 自适应 CSS(border-box+max-width)与 JS 就绪探测的渲染语义, 旧代随渲染语义变更废弃
+    private const val DECO_DIR = "deco_v2"
+
     fun decoFileOf(chapterDir: File, index: Int): File =
-        File(File(chapterDir, "deco"), "ch_%04d.webp".format(index))
+        File(File(chapterDir, DECO_DIR), "ch_%04d.webp".format(index))
 
     fun decoFile(context: Context, bookId: String, index: Int): File =
         decoFileOf(chapterDir(context, bookId), index)
@@ -172,6 +175,7 @@ object EpubImporter {
             }
             // 章序列可能变化(如封面文档去重使章号前移), 按章号缓存的装饰快照随之失效
             File(dir, "deco").deleteRecursively()
+            File(dir, DECO_DIR).deleteRecursively()
             ReaderStore.upsertBook(context, final)
             tmp.deleteRecursively()
             bak.deleteRecursively()
