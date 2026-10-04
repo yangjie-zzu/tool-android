@@ -9,6 +9,8 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -19,6 +21,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -43,6 +46,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.foundation.text.KeyboardActions
@@ -133,6 +137,9 @@ private const val EDGE_DEADZONE_DP = 24
 // 快速轻扫翻页的速度阈值(dp/s),不满足滑动距离时轻扫仍可翻页——
 // 避免靠左/靠右起步的手指行程不足、永远够不到 1/4 屏宽距离的问题
 private const val FLICK_VELOCITY_DP_S = 900f
+
+// 脚注就近弹层: 脚注 id/内容 + 角标锚点(窗口坐标,卡片就近显示)
+data class FootnotePopup(val noteId: String, val text: String, val anchor: Offset)
 
 // 拖拽会话: 手势定向时把目标页物化并锁定,拖动全程只更新位移;
 // 松手落账 targetIndex。预览与落账是同一 BookPage,结构上不可能不一致
@@ -355,8 +362,13 @@ fun ReaderScreen(
         actionMode?.finish()
     }
 
-    // 脚注弹层: (noteId, 内容)。角标点击命中后弹出,关闭即回原位(不改变页面状态)
-    var footnoteShow by remember(book.id) { mutableStateOf<Pair<String, String>?>(null) }
+    // 脚注就近弹层: (noteId, 内容, 角标锚点)。角标点击命中后弹出,关闭即回原位(不改变页面状态)
+    var footnoteShow by remember(book.id) { mutableStateOf<FootnotePopup?>(null) }
+
+    // 脚注卡片显示时返回键先关卡片(不退出阅读页)
+    BackHandler(enabled = footnoteShow != null) {
+        footnoteShow = null
+    }
 
     // 出版信息页(四期实验项): 书籍元数据弹层,菜单顶栏"信息"入口
     var showBookInfo by remember(book.id) { mutableStateOf(false) }
@@ -404,8 +416,9 @@ fun ReaderScreen(
 
     // tap → 角标命中: 版心坐标 → (行,字符) → 全书偏移 → 章脚注表;未命中返回 null。
     // 占位符(U+FFFC)的点击度量不含 ReplacementSpan 图标宽,字符吸附可能偏多个字符——
-    // 先做"行内角标偏移差匹配"(容差 3 字符),未中再退常规 ±1 邻域
-    fun footnoteHitAt(offset: Offset): Pair<String, String>? {
+    // 先做"行内角标偏移差匹配"(容差 3 字符),未中再退常规 ±1 邻域。
+    // 命中携带点击点(窗口坐标)作为弹层锚点
+    fun footnoteHitAt(offset: Offset): FootnotePopup? {
         val bp = livePage ?: return null
         val t = liveTypo ?: return null
         val cnt = liveContent ?: return null
@@ -414,20 +427,23 @@ fun ReaderScreen(
         val hit = SelectionGeometry.hit(bp, offset.x - t.marginPx, offset.y - contentTopPx, m) ?: return null
         val line = bp.lines[hit.first]
         val global = SelectionGeometry.globalAt(bp, hit.first, hit.second)
-        if (line.inlineImages.isNotEmpty()) {
+        val hitNote: Pair<String, String>? = if (line.inlineImages.isNotEmpty()) {
             val nearest = line.inlineImages.minByOrNull {
                 kotlin.math.abs(global - (line.lineStartGlobal + it.charIdx))
             }
             if (nearest != null &&
                 kotlin.math.abs(global - (line.lineStartGlobal + nearest.charIdx)) <= 3
             ) {
-                return cnt.footnoteAt(line.lineStartGlobal + nearest.charIdx)
+                cnt.footnoteAt(line.lineStartGlobal + nearest.charIdx)
+            } else {
+                null   // 点击在本行但不在角标容差内,不弹菜单也不误触脚注
             }
-            return null   // 点击在本行但不在角标容差内,不弹菜单也不误触脚注
+        } else {
+            cnt.footnoteAt(global)
+                ?: cnt.footnoteAt(global - 1)
+                ?: cnt.footnoteAt(global + 1)
         }
-        return cnt.footnoteAt(global)
-            ?: cnt.footnoteAt(global - 1)
-            ?: cnt.footnoteAt(global + 1)
+        return hitNote?.let { FootnotePopup(it.first, it.second, offset) }
     }
 
     // 工具栏延迟弹出: 长按建选区后不能同步 startActionMode——选区坐标要等重组后才算好,
@@ -1175,22 +1191,54 @@ fun ReaderScreen(
         }
     }
 
+    // 脚注就近卡片: 锚定角标显示——角标在上半屏时卡片放下方、下半屏时放上方(底边贴角标),
+    // 长脚注填满所在半屏区域内部滚动。scrim 层关闭,卡片自身消费点击;配色与菜单浮层同源
     footnoteShow?.let { note ->
-        ModalBottomSheet(onDismissRequest = { footnoteShow = null }) {
-            Column(
-                modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp).padding(bottom = 24.dp)
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(Unit) { detectTapGestures { footnoteShow = null } }
+        )
+        val gapPx = with(density) { 20.dp.toPx() }
+        val cardMarginPx = with(density) { 16.dp.toPx() }
+        val screenBottom = topInsetPx + (viewport?.height ?: 0)
+        val below = note.anchor.y < screenBottom / 2
+        val areaTop = if (below) note.anchor.y + gapPx else topInsetPx + gapPx
+        val areaBottom = if (below) screenBottom - gapPx else note.anchor.y - gapPx
+        val areaH = (areaBottom - areaTop).coerceAtLeast(0f)
+        Box(
+            modifier = Modifier
+                .offset { IntOffset(cardMarginPx.roundToInt(), areaTop.roundToInt()) }
+                .width(with(density) { ((viewport?.width ?: 0) - cardMarginPx * 2).toDp() })
+                .height(with(density) { areaH.toDp() })
+                .pointerInput(Unit) { detectTapGestures { } }
+        ) {
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = menuBg,
+                tonalElevation = 0.dp,
+                shadowElevation = 8.dp,
+                modifier = Modifier
+                    .align(if (below) Alignment.TopStart else Alignment.BottomStart)
+                    .fillMaxWidth()
+                    .heightIn(max = with(density) { areaH.toDp() })
             ) {
-                Text(
-                    "脚注",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    note.second,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
+                Column(
+                    Modifier.verticalScroll(rememberScrollState())
+                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                ) {
+                    Text(
+                        "脚注",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = fgColor
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        note.text,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = fgColor
+                    )
+                }
             }
         }
     }
