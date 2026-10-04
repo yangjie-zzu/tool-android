@@ -151,7 +151,8 @@ class Paragraph(
     val boxStyle: BoxStyle? = null,
     val table: TableData? = null,     // 七期批次四: 表格段(投影 U+FFFC 占位,真渲染)
     val floatSide: Int = 0,           // 批次四b: 浮动盒(1=right 2=left;带 width+height 才真环绕,否则六期右对齐降级)
-    val breakAll: Boolean = false     // 批次四e: word-break:break-all(词中可断,手动逐字折行)
+    val breakAll: Boolean = false,    // 批次四e: word-break:break-all(词中可断,手动逐字折行)
+    val brBefore: Boolean = false     // 七期补: 与上一段是 <br/> 相邻(同段内强制换行,排版层段距归零)
 ) {
     val isImage: Boolean get() = kind == ParaKind.IMAGE
     val isTable: Boolean get() = table != null

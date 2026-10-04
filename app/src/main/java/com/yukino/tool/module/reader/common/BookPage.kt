@@ -92,7 +92,8 @@ class LineStyle(
 // 可绘制的行(物化产物,坐标相对版心左上角)。基线布局在物化时算好,绘制层只做平移与 drawText
 class DrawLine(
     val text: String,
-    val x: Float,                 // 行首 x: 段首行为首行缩进,其余 0(自带缩进的段落缩进在字符里)
+    var x: Float,                 // 行首 x: 段首行为首行缩进,其余 0(自带缩进的段落缩进在字符里);
+                                  // 物化期盒基准修正可改写(定宽盒内行的对齐基准随盒走)
     val baseline: Float,          // 图片行复用为"行顶 y"(图片从行顶绘制)
     val title: Boolean,           // true 用标题 paint(大字号加粗)
     val lineStartGlobal: Long,    // 行首字符的全书偏移(行内第 i 字符 = lineStartGlobal + i,正文区线性)
@@ -487,11 +488,21 @@ object BookPager {
                 paraRanges += p until (p + para.text.length)
                 var extra = 0f
                 if (typo.bookSpacing) {
-                    if (prevBelowPx != 0f) extra += prevBelowPx
-                    para.spaceAboveEm?.let { extra += it.px(typo.fontPx, tw) }
+                    val abovePx = para.spaceAboveEm?.px(typo.fontPx, tw) ?: 0f
+                    // 七期补: <br/> 相邻段是同段内强制换行,段距归零;
+                    // CSS 折叠语义: 同为正取较大值,含负值相加(正负抵消,允许净负上提)
+                    // 装饰盒内段距归零(对照浏览器/Calibre 渲染: 盒内密度由 line-height 控制,
+                    // 正的段 margin 不产生额外缝——否则内容撑出气泡底);
+                    // 负 margin(上提,如 t-box3 红1标签 -1.7em)是设计语义,保留生效
+                    extra = when {
+                        para.brBefore -> 0f
+                        para.boxStyle != null -> abovePx.coerceAtMost(0f)
+                        abovePx < 0f || prevBelowPx < 0f -> prevBelowPx + abovePx
+                        else -> maxOf(prevBelowPx, abovePx)
+                    }
                 }
                 extraAbove[i] = extra
-                prevBelowPx = if (typo.bookSpacing) (para.spaceBelowEm?.px(typo.fontPx, tw) ?: 0f) else 0f
+                prevBelowPx = if (typo.bookSpacing && !para.brBefore) (para.spaceBelowEm?.px(typo.fontPx, tw) ?: 0f) else 0f
                 p += para.text.length + 1
             }
         }
@@ -610,10 +621,18 @@ object BookPager {
         }
 
         // BODY 行的段级行距与基线: 无书内行距用全局贴合行高;有则行框 = 字号×倍率(CSS line-height 语义,
-        // 覆盖全局行距),行框空白(可负,如 0% 压行)上下对分
+        // 覆盖全局行距),行框空白(可负,如 0% 压行)上下对分。
+        // CSS line-height 的 em 相对段落自身字号: 取段内最大 run 缩放字号(无 run 用全局)。
+        // 装饰盒内段落(书内 CSS 排版)无 line-height 时行高用 normal(bodyNatural),
+        // 不吃全局贴合行距/行距偏好——盒的密度由书内 CSS 控制
         fun paraLinePitch(para: Paragraph?): Pair<Int, Int> {
-            val lh = para?.lineSpacingMult ?: return bodyPitch to (bodyAscentAbs + bodyShift)
-            val frame = typo.fontPx * lh
+            val lh = para?.lineSpacingMult
+            if (lh == null) {
+                if (para?.boxStyle != null) return bodyNatural.toInt() to bodyAscentAbs
+                return bodyPitch to (bodyAscentAbs + bodyShift)
+            }
+            val basePx = para.runs.firstOrNull()?.sizeEm?.let { typo.fontPx * it } ?: typo.fontPx
+            val frame = basePx * lh
             val p = PaginationEngine.gridCeil(frame, Typography.GRID_PX).coerceAtLeast(Typography.GRID_PX)
             return p to (bodyAscentAbs + LineGrid.centerShift(p, bodyNatural))
         }
@@ -641,8 +660,10 @@ object BookPager {
                     val para = paras[curPi]
                     for ((j, r) in (overrides[curPi] ?: emptyList()).withIndex()) {
                         val isStart = j == 0
+                        // 装饰盒内段落负上提放宽到两倍段前距(书内负 margin 是设计语义)
+                        val negLimitO = if (paras.getOrNull(curPi)?.boxStyle != null) -paraAbove * 2 else -paraAbove
                         val bookGrid = if (isStart) {
-                            PaginationEngine.gridCeil(extraAbove[curPi], Typography.GRID_PX).coerceAtLeast(-paraAbove)
+                            PaginationEngine.gridCeil(extraAbove[curPi], Typography.GRID_PX).coerceAtLeast(negLimitO)
                         } else 0
                         // 表格行: pitch = 表格行高网格化(基线偏移零,绘制从行顶);普通右缩进段: 段级行距
                         if (para.isTable) {
@@ -653,7 +674,15 @@ object BookPager {
                             tableRowOfLine[lines.lastIndex] = j
                         } else {
                             val (bp, ba) = paraLinePitch(para)
-                            val above2 = if (isStart) paraAbove + bookGrid else 0
+                            // <br/> 相邻段: 段前距归零(与主路径同规则)
+                            // 盒内段落不吃全局段距(装饰排版密度由书内 CSS 控制)
+                            val above2 = if (isStart) {
+                                when {
+                                    para.brBefore -> 0
+                                    para.boxStyle != null -> bookGrid
+                                    else -> paraAbove + bookGrid
+                                }
+                            } else 0
                             lines += TextLine(r.first, r.last + 1, LineKind.BODY, isStart, above2 + bp, above2, ba)
                         }
                     }
@@ -661,22 +690,43 @@ object BookPager {
                 continue
             }
             val bookExtra = if (isParaStart && rangeCursor < extraAbove.size) extraAbove[rangeCursor] else 0f
-            // 六期 A2: 负 margin 最多抵消全局段前距(不侵蚀行高本体,防文字重叠)
+            // 六期 A2: 负 margin 最多抵消全局段前距(不侵蚀行高本体,防文字重叠);
+            // 装饰盒内段落放宽到两倍段前距(负上提是书内设计语义)
+            val negLimit = if (rangeCursor < paras.size && paras[rangeCursor].boxStyle != null) -paraAbove * 2 else -paraAbove
             val bookGrid = PaginationEngine.gridCeil(bookExtra, Typography.GRID_PX)
-                .coerceAtLeast(-paraAbove)
+                .coerceAtLeast(negLimit)
             val curPara = if (curPi >= 0 && curPi < paras.size) paras[curPi] else null
             val (pitch, ascentAbs) = when (kind) {
                 LineKind.BLANK -> LineGrid.blankPitch(Typography.GRID_PX) to bodyAscentAbs
-                LineKind.TITLE -> titlePitch to (titleAscentAbs + titleShift)
+                LineKind.TITLE ->
+                    // 装饰章(首段带装饰盒)不显示阅读器章名行——原书页面没有它,
+                    // 它会把整个装饰版面往下挤;行保留为零占位以维持文本投影轴
+                    if (paras.firstOrNull()?.boxStyle != null) 0 to bodyAscentAbs
+                    else titlePitch to (titleAscentAbs + titleShift)
                 LineKind.BODY -> {
                     val (bp, ba) = paraLinePitch(curPara)
+                    // <br/> 相邻段: 连全局段前距一并跳过(br 是同段内紧凑换行)
                     val above = if (isParaStart) {
-                        paraAbove + bookGrid
+                        when {
+                            curPara?.brBefore == true -> 0
+                            curPara?.boxStyle != null -> bookGrid
+                            else -> paraAbove + bookGrid
+                        }
                     } else 0
                     above + bp to ba
                 }
             }
-            lines += TextLine(s, e, kind, isParaStart, pitch, if (isParaStart) paraAbove + bookGrid else 0, ascentAbs)
+            lines += TextLine(
+                s, e, kind, isParaStart, pitch,
+                if (isParaStart) {
+                    when {
+                        curPara?.brBefore == true -> 0
+                        curPara?.boxStyle != null -> bookGrid
+                        else -> paraAbove + bookGrid
+                    }
+                } else 0,
+                ascentAbs
+            )
         }
 
         // 批次四c: 固定高盒——盒组内容高 < 固定高时,内容整体下移(垂直居中):
@@ -1102,6 +1152,7 @@ object BookPager {
     ): DrawLinesResult {
         val out = ArrayList<DrawLine>(slice.endLineExclusive - slice.startLine)
         val boxes = ArrayList<DrawBox>()
+        val boxRanges = ArrayList<Pair<Int, Int>>()   // 与 boxes 平行: 盒覆盖的段落区间(first..last)
         val tables = ArrayList<DrawTable>()
         var head = slice.startLine
         while (head < slice.endLineExclusive && cl.lines[head].kind == LineKind.BLANK) head++
@@ -1110,11 +1161,14 @@ object BookPager {
         val paraBottom = HashMap<Int, Float>()
         val tableWindow = HashMap<Int, Pair<Int, Int>>()   // paraIndex → (firstRow, lastRowExclusive)
         val tableTopY = HashMap<Int, Float>()               // 窗口内表格首行顶 y
+        val linePara = ArrayList<Int>()                     // out 每行 → 段落下标(盒基准修正用)
+        // 装饰章: 章名行零占位且不绘制
+        val hideTitleRow = cl.paras.firstOrNull()?.boxStyle != null
         var y = 0
         for (li in slice.startLine until slice.endLineExclusive) {
             val ln = cl.lines[li]
             val above = if (li == head) 0 else ln.paraAbove
-            if (ln.kind != LineKind.BLANK) {
+            if (ln.kind != LineKind.BLANK && !(hideTitleRow && ln.kind == LineKind.TITLE)) {
                 val global = globalOffset(ln.start, cl.bodyStart, cl.bodyZero, chapterStartGlobal)
                 val pi = paraIndexOf(cl, ln.start)
                 val para = if (pi >= 0) cl.paras[pi] else null
@@ -1144,6 +1198,7 @@ object BookPager {
                         imageWidth = sz.width.toFloat(),
                         imageHeight = sz.height.toFloat()
                     )
+                    linePara.add(pi)
                 } else {
                     val text = cl.composed.substring(ln.start, ln.end)
                     val align = para?.align ?: 0
@@ -1200,6 +1255,7 @@ object BookPager {
                         text, x, (y + above + ln.ascentAbs).toFloat(), ln.kind == LineKind.TITLE,
                         global, segs, lineStyles(cl, ln, pi), inlineImages = inlines
                     )
+                    linePara.add(pi)
                 }
             }
             y += ln.pitch - (if (li == head) ln.paraAbove else 0)
@@ -1217,16 +1273,10 @@ object BookPager {
         // 七期: 盒组聚合(页内连续同 boxStyle 段落 → 一个矩形;跨页组边缘不画横向框)
         run {
             val order = paraTop.keys.sorted()
-            var accFirst = -1
-            var accLast = -1
-            var accStyle: BoxStyle? = null
             // 已定位盒(嵌套子盒的定位基准)
             class PlacedBox(val fp: Int, val lp: Int, val style: BoxStyle, val left: Float, val right: Float)
             val placed = ArrayList<PlacedBox>()
-            fun flushBox() {
-                val style = accStyle ?: return
-                val fp = accFirst
-                val lp = accLast
+            fun flushBox(fp: Int, lp: Int, style: BoxStyle) {
                 val fpSafe = fp.coerceIn(0, cl.paras.size - 1)
                 val lpSafe = lp.coerceIn(0, cl.paras.size - 1)
                 val pm = paraMetrics(cl.paras[fpSafe], typo)
@@ -1281,31 +1331,81 @@ object BookPager {
                 right = (right + style.padRightEm * fontPx + br * fontPx).coerceAtMost(tw)
                 placed += PlacedBox(fp, lp, style, left, right)
                 val top = (paraTop[fp] ?: 0f) - style.padTopEm * fontPx - bt * fontPx
-                var bottom = (paraBottom[lp] ?: 0f) + style.padBottomEm * fontPx + bb * fontPx
-                // 批次四c: 固定高盒——矩形高不小于固定高(内容垂直居中已由排版期偏移)
-                style.heightCss?.px(fontPx, typo.textWidth.toFloat())?.let { hPx ->
-                    if (hPx > bottom - top) bottom = top + hPx
-                }
+                // height 语义对齐浏览器: 固定高——盒不随内容撑高(内容超出画出盒外,
+                // overflow visible),有 height 的盒因此保持声明形状(t-box1 11em 正方形=正圆)
+                var bottom = style.heightCss?.px(fontPx, typo.textWidth.toFloat())?.let { hPx ->
+                    top + hPx
+                } ?: ((paraBottom[lp] ?: 0f) + style.padBottomEm * fontPx + bb * fontPx)
                 val topOpen = fp > 0 && cl.paras[fp - 1].boxStyle == style
                 val bottomOpen = lp < cl.paras.lastIndex && cl.paras[lp + 1].boxStyle == style
                 if (right > left) {
                     val db = DrawBox(style, left, top, right, bottom, topOpen, bottomOpen)
                     boxes += db
+                    boxRanges.add(fp to lp)
                     placed += PlacedBox(fp, lp, style, db.left, db.right)
                 }
             }
+            // 一遍收集连续同款盒段
+            class Seg(var first: Int, var last: Int, val style: BoxStyle)
+            val segs = ArrayList<Seg>()
             for (pi in order) {
-                val style = cl.paras.getOrNull(pi)?.boxStyle
-                if (style != null && style == accStyle) {
-                    accLast = pi
-                } else {
-                    flushBox()
-                    accStyle = style
-                    accFirst = pi
-                    accLast = pi
+                val style = cl.paras.getOrNull(pi)?.boxStyle ?: continue
+                val lastSeg = segs.lastOrNull()
+                if (lastSeg != null && lastSeg.style == style && lastSeg.last == pi - 1) lastSeg.last = pi
+                else segs.add(Seg(pi, pi, style))
+            }
+            // 嵌套合并: 同款两段之间夹的段落全部带盒样式(全是子盒) → DOM 里本是同一个 div,
+            // 被子盒打断的同一外盒合并为一个区间(否则外盒画成两截、子盒父查找失败飞位);
+            // 中间隔着无盒段落 → 是两个独立盒,不合并
+            var i = 0
+            while (i < segs.size) {
+                var mergedTo = -1
+                for (k in i + 1 until segs.size) {
+                    if (segs[k].style != segs[i].style) continue
+                    var gap = false
+                    for (p in segs[i].last + 1 until segs[k].first) {
+                        if (cl.paras.getOrNull(p)?.boxStyle == null) { gap = true; break }
+                    }
+                    if (!gap) mergedTo = k
+                    break
+                }
+                if (mergedTo >= 0) {
+                    val mergedLast = segs[mergedTo].last
+                    segs.removeAt(mergedTo)
+                    segs[i].last = mergedLast
+                } else i++
+            }
+            // 父盒先 flush(子盒的定位基准);同起点按终点降序(外层先)
+            val flushOrder = segs.sortedWith(compareBy({ it.first }, { -it.last }))
+            for (s in flushOrder) flushBox(s.first, s.last, s.style)
+            // 盒内行 x 基准修正: 定宽盒(margin auto/float 在基准区内定位)的文字随盒走,
+            // 对齐基准从版心换到盒——否则嵌套小标签场景文字与盒分离(t-box3 场景:
+            // 盒贴父盒右缘而文字留在版心贴右位置)
+            if (boxes.isNotEmpty()) {
+                val fontPx = typo.fontPx
+                val paraBox = HashMap<Int, DrawBox>()
+                for ((bi, b) in boxes.withIndex()) {
+                    val (bf, bl) = boxRanges[bi]
+                    for (p in bf..bl) paraBox[p] = b   // 子盒后 flush 覆盖父盒
+                }
+                for ((idx, dl) in out.withIndex()) {
+                    if (dl.text.isEmpty()) continue
+                    val b = paraBox[linePara[idx]] ?: continue
+                    val st = b.style
+                    if (st.widthCss == null) continue
+                    val para = cl.paras.getOrNull(linePara[idx]) ?: continue
+                    val w = measure(dl.text)
+                    dl.x = if (para.align == 1) {
+                        // 居中段相对整盒居中(小圆标签 padding/border 属于圈的视觉部分)
+                        b.left + (b.right - b.left - w) / 2f
+                    } else {
+                        val contentL = b.left + st.padLeftEm * fontPx +
+                            (st.edges.getOrNull(3)?.takeIf { it.widthEm > 0f && it.style > 0 }?.widthEm ?: 0f) * fontPx
+                        val mlPx = paraMetrics(para, typo).mlPx
+                        contentL + (dl.x - mlPx)   // 保留行原对齐偏移,仅平移基准
+                    }
                 }
             }
-            flushBox()
         }
         return DrawLinesResult(out, boxes, tables)
     }

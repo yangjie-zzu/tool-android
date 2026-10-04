@@ -347,12 +347,10 @@ object HtmlTextExtractor {
             }
             var autoL = false
             var autoR = false
-            if (left == null) {
-                if (lr[0] == "auto") autoL = true else CssLen.parse(lr[0])?.let { left = it }
-            }
-            if (right == null) {
-                if (lr[1] == "auto") autoR = true else CssLen.parse(lr[1])?.let { right = it }
-            }
+            // auto 是定位语义,检测独立于 left/right 是否已有值(padding 折算的缩进
+            // 先占了位不能吞掉 margin auto——t-box3 场景: padding:2px + margin-left:auto)
+            if (lr[0] == "auto") autoL = true else if (left == null) CssLen.parse(lr[0])?.let { left = it }
+            if (lr[1] == "auto") autoR = true else if (right == null) CssLen.parse(lr[1])?.let { right = it }
             if (width != null) {
                 widthAlign = when {
                     autoL && autoR -> 1
@@ -681,6 +679,8 @@ object HtmlTextExtractor {
         var paraWidthAlign = 0
         var paraBreakAll = false
         var pendingHeading = 0
+        // br 触发的收口: 新段与上一段是 <br/> 相邻(同段内强制换行,排版层跳过段距)
+        var brPending = false
 
         // 快照/恢复排版上下文(元素进出)
         fun snapshotLayout(): Array<Any?> = arrayOf(
@@ -793,8 +793,10 @@ object HtmlTextExtractor {
                     lineSpacingMult = paraLineMult,
                     boxStyle = boxStack.lastOrNull(),
                     floatSide = paraFloatSide,
-                    breakAll = paraBreakAll
+                    breakAll = paraBreakAll,
+                    brBefore = brPending
                 )
+                brPending = false
                 if (openAnchors.isNotEmpty()) openAnchors.removeFirst()
             }
             sb.setLength(0)
@@ -927,17 +929,36 @@ object HtmlTextExtractor {
         b.cur = mergeRunCtx(saved, runDecoFromProps(props))
         if (id.isNotEmpty()) b.openAnchors.addLast(id)
 
-        // 段级排版属性(子未设用父,离开恢复)
-        val savedLayout = b.snapshotLayout()
-        b.applyLayout(parseParaLayout(props))
-
         // 七期: 盒样式(底色/边框/圆角/阴影/背景图/内边距)——覆盖期间产出的段落归入该盒
         val box = parseBoxStyle(props, b.docDir)
         if (box != null) b.boxStack.addLast(box)
 
+        // 段级排版属性(子未设用父,离开恢复)
+        // 装饰盒的 padding 上下不再折入段距: 留白由物化层盒矩形上下外扩体现,
+        // 两处都算会把盒内行距/段缝撑大一倍(t-box1 气泡场景);左右缩进保留
+        // (折行宽需要它,矩形外扩不改变折行)
+        val layoutProps = if (box != null && (box.padTopEm > 0f || box.padBottomEm > 0f)) {
+            // padding 简写改写为"上下置 0,左右保留"(分边覆盖简写),再交给常规折算
+            val q = expand4(props["padding"] ?: "0")
+            val r = props["padding-right"] ?: q[1]
+            val l = props["padding-left"] ?: q[3]
+            val m = HashMap(props)
+            m["padding"] = "0 $r 0 $l"
+            m.remove("padding-top"); m.remove("padding-bottom")
+            m.remove("padding-right"); m.remove("padding-left")
+            m
+        } else props
+        val savedLayout = b.snapshotLayout()
+        b.applyLayout(parseParaLayout(layoutProps))
+
         try {
             when {
-                name == "br" -> b.flush()
+                name == "br" -> {
+                    // br = 同段内强制换行: 前面的内容先收口,再标记"下一段与上一段 br 相邻"
+                    // (排版层据此跳过段距)
+                    b.flush()
+                    b.brPending = true
+                }
                 name == "img" -> { b.flush(); emitImage(node, b, cssRules) }
                 name == "table" -> { b.flush(); emitTable(node, b, cssRules, noteIds) }
                 name == "ruby" -> {

@@ -100,6 +100,7 @@ import com.yukino.tool.module.reader.common.ReaderBook
 import com.yukino.tool.module.reader.common.ReaderSettings
 import com.yukino.tool.module.reader.common.ReaderPageView
 import com.yukino.tool.module.reader.common.Typography
+import com.yukino.tool.module.reader.epub.EpubImporter
 import com.yukino.tool.util.findActivity
 import java.io.File
 import kotlin.math.abs
@@ -259,6 +260,32 @@ fun ReaderScreen(
         specs = result
         pageIndex = BookPager.locatePage(result, anchor)
         withContext(Dispatchers.IO) { ReaderStore.saveSpecs(context, book.id, key, book.totalChars, result) }
+    }
+
+    // 装饰章(扉页等 CSS 排版页,章首段带装饰盒): 该章走 WebView 按原书样式呈现,
+    // 排版引擎不物化。decorativeOn 立即切换视图,docUrl 由 spine 反查后台补齐
+    var decorativeOn by remember(book.id) { mutableStateOf(false) }
+    var decorativeDocUrl by remember(book.id) { mutableStateOf<String?>(null) }
+    LaunchedEffect(specs, pageIndex, book.id) {
+        val ci = specs?.getOrNull(pageIndex)?.chapterIndex
+        decorativeOn = false
+        decorativeDocUrl = null
+        if (book.format != BookFormat.EPUB || ci == null || ci !in book.chapters.indices) {
+            return@LaunchedEffect
+        }
+        val probe = withContext(Dispatchers.IO) {
+            runCatching { EpubImporter.isDecorativeChapter(context, book.id, ci) }.getOrDefault(false)
+        }
+        if (!probe) return@LaunchedEffect
+        decorativeOn = true
+        val info = withContext(Dispatchers.IO) {
+            runCatching { EpubImporter.findDecorativeSourceDoc(context, book.id, ci) }.getOrNull()
+        }
+        if (info != null && specs?.getOrNull(pageIndex)?.chapterIndex == ci) {
+            val (doc, root) = info
+            decorativeDocUrl = "https://book.local/" +
+                doc.relativeTo(root).invariantSeparatorsPath
+        }
     }
 
     // 物化当前页: 目录/页号/版式就绪 → 后台构建
@@ -761,6 +788,7 @@ fun ReaderScreen(
 
                 // 定向时解析并锁定目标页。返回 null=未就绪或目标不存在(封面/封底越界方向页保持静止)
                 fun resolve(dir: Int): DragSession? {
+                    if (decorativeOn) return null   // 装饰章滚动查看,拖拽翻页禁用
                     val sp = liveSpecs ?: return null
                     val t = liveTypo ?: return null
                     val cur = livePage ?: return null
@@ -826,7 +854,7 @@ fun ReaderScreen(
                             val fromRightBand = startX > size.width - edgePx
                             val sameDirAsBack =
                                 (fromLeftBand && totalDrag > 0f) || (fromRightBand && totalDrag < 0f)
-                            if (!sameDirAsBack && shouldFlip) {
+                            if (!decorativeOn && !sameDirAsBack && shouldFlip) {
                                 val sp = liveSpecs
                                 if (!sp.isNullOrEmpty()) {
                                     val idx = livePageIndex.coerceIn(0, sp.lastIndex)
@@ -839,6 +867,44 @@ fun ReaderScreen(
                 )
             }
     ) {
+        if (decorativeOn) {
+            // 装饰章: WebView 原书样式(夜间反色滤镜由组件按 night 注入)
+            DecorativeChapterView(
+                docUrl = decorativeDocUrl
+                    ?: "https://book.local/",   // 反查未完成先空白页占位
+                rootDir = java.io.File(book.cachePath),   // 解压根(OEBPS/META-INF 所在)
+                night = bgColor.luminance() < 0.5f,
+                modifier = Modifier.fillMaxSize()
+            )
+            // 翻章按钮: 装饰章内滚动查看,章节切换经由按钮(与正文点击翻页习惯衔接)
+            Row(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(bottom = 28.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                val ciNow = specs?.getOrNull(pageIndex)?.chapterIndex ?: 0
+                if (ciNow > 0) {
+                    TextButton(
+                        onClick = {
+                            val sp = specs ?: return@TextButton
+                            val idx = sp.indexOfFirst { it.chapterIndex == ciNow - 1 }
+                            if (idx >= 0) pageIndex = idx
+                        }
+                    ) { Text("上一章", color = fgColor) }
+                }
+                if (ciNow + 1 < book.chapters.size) {
+                    TextButton(
+                        onClick = {
+                            val sp = specs ?: return@TextButton
+                            val idx = sp.indexOfFirst { it.chapterIndex == ciNow + 1 }
+                            if (idx >= 0) pageIndex = idx
+                        }
+                    ) { Text("下一章", color = fgColor) }
+                }
+            }
+        } else {
         AndroidView(
             factory = { ctx ->
                 ReaderPageView(ctx).also { pageViewRef.value = it }
@@ -862,6 +928,7 @@ fun ReaderScreen(
                 }
             }
         )
+        }
 
         // 选择手柄: 左右倾斜水滴挂在各自锚点下方(参考系统选区柄),
         // 共用一个触摸区,按指针在两锚点中点的左右判定拖哪个柄——

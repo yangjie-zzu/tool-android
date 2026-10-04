@@ -623,12 +623,49 @@ class ReaderPageView(context: Context) : View(context) {
         return (a shl 24) or (r shl 16) or (g shl 8) or b
     }
 
+    // CSS border-radius 的角半径: 椭圆角(rx 水平/ry 垂直可不同)
+    private class EllipseRadius(val rx: Float, val ry: Float)
+
+    // 百分比水平相对盒宽/垂直相对盒高,且**不缩减**——转制书 border-radius:100% 的设计意图
+    // 就是角弧覆盖整条边(气泡轮廓,与封面一致);em/px 固定值按圆角处理并钳制到边长一半
+    private fun ellipseRadiusOf(style: com.yukino.tool.module.reader.common.BoxStyle, rect: android.graphics.RectF, fontPx: Float): EllipseRadius? {
+        val rad = style.radius ?: return null
+        val rx = if (rad.pct) rect.width() * rad.v / 100f
+        else (rad.px(fontPx, rect.width())?.coerceAtLeast(0f) ?: 0f).coerceAtMost(rect.width() / 2f)
+        val ry = if (rad.pct) rect.height() * rad.v / 100f
+        else (rad.px(fontPx, rect.width())?.coerceAtLeast(0f) ?: rx).coerceAtMost(rect.height() / 2f)
+        if (rx <= 0f || ry <= 0f) return null
+        return EllipseRadius(rx, ry)
+    }
+
+    // 圆角矩形闭合轮廓(角为椭圆弧 rx/ry;rx=ry 即圆角)
+    private fun roundOutline(rect: android.graphics.RectF, rx: Float, ry: Float): android.graphics.Path {
+        val p = android.graphics.Path()
+        val L = rect.left; val T = rect.top; val w = rect.width(); val h = rect.height()
+        p.moveTo(L + rx, T)
+        p.lineTo(L + w - rx, T)
+        p.arcTo(android.graphics.RectF(L + w - 2 * rx, T, L + w, T + 2 * ry), 270f, 90f)
+        p.lineTo(L + w, T + h - ry)
+        p.arcTo(android.graphics.RectF(L + w - 2 * rx, T + h - 2 * ry, L + w, T + h), 0f, 90f)
+        p.lineTo(L + rx, T + h)
+        p.arcTo(android.graphics.RectF(L, T + h - 2 * ry, L + 2 * rx, T + h), 90f, 90f)
+        p.lineTo(L, T + ry)
+        p.arcTo(android.graphics.RectF(L, T, L + 2 * rx, T + 2 * ry), 180f, 90f)
+        p.close()
+        return p
+    }
+
     private fun drawBoxShape(canvas: Canvas, box: DrawBox, t: ResolvedTypography) {
         val night = t.night
         val style = box.style
         val fontPx = t.fontPx
         val rect = android.graphics.RectF(box.left, box.top, box.right, box.bottom)
-        val radius = style.radius?.px(fontPx, t.textWidth.toFloat())?.coerceAtLeast(0f) ?: 0f
+        val radius = ellipseRadiusOf(style, rect, fontPx)
+        // 椭圆模式: 角半径达到对应边长一半(border-radius:100% 缩减语义的极限形态),
+        // 轮廓即椭圆本身——fill/uniform 用整椭圆,部分边框用椭圆象限弧(四角弧拼接在此尺度
+        // 会来自不同圆心而互相交叉出花纹)
+        val ellipseMode = radius != null &&
+            (radius.rx >= rect.width() / 2f - 0.5f || radius.ry >= rect.height() / 2f - 0.5f)
         // 批次四d: 盒旋转(绕盒中心;选区命中不走盒内,装饰性元素)
         val rotated = style.rotateDeg != null && style.rotateDeg != 0f
         val saveCount = if (rotated) {
@@ -655,7 +692,6 @@ class ReaderPageView(context: Context) : View(context) {
                 boxPaint.shadowLayerCompatClear()
             }
         }
-
         // 背景图: cover 铺满盒矩形(等比放缩到覆盖,居中裁剪;夜间压暗 55%)
         val bgRef = style.bgImage
         if (bgRef != null && rect.width() > 1f && rect.height() > 1f) {
@@ -692,7 +728,36 @@ class ReaderPageView(context: Context) : View(context) {
             val uniform = !box.topOpen && !box.bottomOpen &&
                 e0 != null && e0 == e1 && e1 == e2 && e2 == e3
             if (uniform) {
-                drawUniformBorder(canvas, rect, radius, e0!!, adaptColor(e0.color, night), fontPx)
+                if (ellipseMode) {
+                    boxPaint.style = Paint.Style.STROKE
+                    boxPaint.strokeWidth = e0!!.widthEm * fontPx
+                    boxPaint.color = adaptColor(e0.color, night).toInt()
+                    canvas.drawOval(rect, boxPaint)
+                } else {
+                    drawUniformBorder(canvas, rect, radius, e0!!, adaptColor(e0.color, night), fontPx)
+                }
+            } else if (ellipseMode) {
+                // 椭圆模式部分边框: 存在的边对应椭圆象限弧(右=0..90 下=90..180 左=180..270 上=270..360),
+                // 相邻存在边合并为连续弧段,弧端悬空于边中点(气泡轮廓形态)
+                val oval = android.graphics.RectF(rect)
+                val on = active.map { it != null }
+                var i = 0
+                while (i < 4 && !on[i]) i++
+                if (i < 4) {
+                    var j = i
+                    while (j < 3 && on[j + 1]) j++
+                    val edgeSel = active[i] ?: active[j]
+                    boxPaint.style = Paint.Style.STROKE
+                    boxPaint.strokeWidth = edgeSel!!.widthEm * fontPx
+                    boxPaint.color = adaptColor(edgeSel.color, night).toInt()
+                    // 椭圆角度: 0°=右中, 顺时针;边1(右)=0..90, 边2(下)=90..180, 边3(左)=180..270, 边0(上)=270..360
+                    val start = when (i) { 1 -> 0f; 2 -> 90f; 3 -> 180f; else -> 270f }
+                    val end = when (j) { 1 -> 90f; 2 -> 180f; 3 -> 270f; else -> 360f }
+                    canvas.drawArc(oval, start, end - start, false, boxPaint)
+                }
+            } else if (radius != null) {
+                // 圆角 + 部分边框: 沿圆角矩形轮廓描存在的边(相邻两边齐全的角画弧,段首尾为尖角)
+                drawPartialRoundBorder(canvas, rect, radius, listOf(e0, e1, e2, e3), night, fontPx)
             } else {
                 if (!box.topOpen) drawEdge(canvas, rect, 0, e0, night, fontPx)     // 上
                 if (!box.bottomOpen) drawEdge(canvas, rect, 2, e2, night, fontPx)  // 下
@@ -705,9 +770,30 @@ class ReaderPageView(context: Context) : View(context) {
 
     private fun Paint.shadowLayerCompatClear() { clearShadowLayer() }
 
-    private fun fillRound(canvas: Canvas, rect: android.graphics.RectF, radius: Float, paint: Paint) {
-        if (radius > 0f) canvas.drawRoundRect(rect, radius, radius, paint)
-        else canvas.drawRect(rect, paint)
+    private fun fillRound(canvas: Canvas, rect: android.graphics.RectF, radius: EllipseRadius?, paint: Paint) {
+        when {
+            radius == null || radius.rx <= 0f || radius.ry <= 0f -> canvas.drawRect(rect, paint)
+            // 椭圆模式: 角弧达到半边长,轮廓即椭圆
+            radius.rx >= rect.width() / 2f - 0.5f || radius.ry >= rect.height() / 2f - 0.5f ->
+                canvas.drawOval(rect, paint)
+            else -> canvas.drawPath(roundOutline(rect, radius.rx, radius.ry), paint)
+        }
+    }
+
+    private fun strokeOutline(canvas: Canvas, outline: android.graphics.Path, w: Float, color: Int) {
+        boxPaint.style = Paint.Style.STROKE
+        boxPaint.strokeWidth = w
+        boxPaint.color = color
+        canvas.drawPath(outline, boxPaint)
+    }
+
+    private fun strokeOutlineDashed(canvas: Canvas, outline: android.graphics.Path, w: Float, color: Int, dash: Float) {
+        boxPaint.style = Paint.Style.STROKE
+        boxPaint.strokeWidth = w
+        boxPaint.color = color
+        boxPaint.pathEffect = android.graphics.DashPathEffect(floatArrayOf(dash, dash), 0f)
+        canvas.drawPath(outline, boxPaint)
+        boxPaint.pathEffect = null
     }
 
     // 整框描边(四边同型): solid 一次 stroke;dotted/dashed 虚线;double 双线;立体两色双描。
@@ -715,38 +801,129 @@ class ReaderPageView(context: Context) : View(context) {
     private fun drawUniformBorder(
         canvas: Canvas,
         rect: android.graphics.RectF,
-        radius: Float,
+        radius: EllipseRadius?,
         edge: com.yukino.tool.module.reader.common.EdgeStyle,
         color: Long,
         fontPx: Float
     ) {
         val w = edge.widthEm * fontPx
         if (w <= 0f) return
+        val outline = radius?.let { roundOutline(rect, it.rx, it.ry) }
         when (edge.style) {
-            1 -> strokeRound(canvas, rect, radius, w, color.toInt())
+            1 -> strokeOutline(canvas, outline ?: roundOutline(rect, 0f, 0f), w, color.toInt())
             2, 3 -> {
-                boxPaint.style = Paint.Style.STROKE
-                boxPaint.strokeWidth = w
-                boxPaint.color = color.toInt()
                 val dash = if (edge.style == 2) w else w * 3f
-                boxPaint.pathEffect = android.graphics.DashPathEffect(floatArrayOf(dash, dash), 0f)
-                strokeRoundPath(canvas, rect, radius, boxPaint)
-                boxPaint.pathEffect = null
+                strokeOutlineDashed(canvas, outline ?: roundOutline(rect, 0f, 0f), w, color.toInt(), dash)
             }
             4 -> {
                 val lw = w / 3f
-                strokeRound(canvas, rect, radius, lw, color.toInt())
+                strokeOutline(canvas, outline ?: roundOutline(rect, 0f, 0f), lw, color.toInt())
                 val r2 = RectInflater.inset(rect, lw * 2f)
-                strokeRound(canvas, r2, (radius - lw * 2f).coerceAtLeast(0f), lw, color.toInt())
+                val ir = radius?.let { EllipseRadius((it.rx - lw * 2f).coerceAtLeast(0f), (it.ry - lw * 2f).coerceAtLeast(0f)) }
+                strokeOutline(canvas, ir?.let { roundOutline(rect, it.rx, it.ry) } ?: roundOutline(r2, 0f, 0f), lw, color.toInt())
             }
             else -> {   // 5..8 立体: ridge(5)/outset(8) 上左亮;groove(6)/inset(7) 反之
                 val lightTopLeft = edge.style == 5 || edge.style == 8
                 val light = shade(color, lightTopLeft)
                 val dark = shade(color, !lightTopLeft)
-                strokeRound(canvas, rect, radius, w / 2f, light.toInt())
+                strokeOutline(canvas, outline ?: roundOutline(rect, 0f, 0f), w / 2f, light.toInt())
                 val r2 = RectInflater.inset(rect, w / 2f)
-                strokeRound(canvas, r2, (radius - w / 2f).coerceAtLeast(0f), w / 2f, dark.toInt())
+                val ir = radius?.let { EllipseRadius((it.rx - w / 2f).coerceAtLeast(0f), (it.ry - w / 2f).coerceAtLeast(0f)) }
+                strokeOutline(canvas, ir?.let { roundOutline(rect, it.rx, it.ry) } ?: roundOutline(r2, 0f, 0f), w / 2f, dark.toInt())
             }
+        }
+    }
+
+    // 圆角 + 部分边框: 沿圆角矩形轮廓只描存在的边。连续存在的边组成一段路径,
+    // 段内相邻角画椭圆弧衔接,段首尾(邻边缺失的角)以尖角收尾;四边齐全走 uniform。
+    // 样式统一按实线描边(dotted/double 的圆角组合罕见,不做混合)
+    private fun drawPartialRoundBorder(
+        canvas: Canvas,
+        rect: android.graphics.RectF,
+        radius: EllipseRadius?,
+        edges: List<com.yukino.tool.module.reader.common.EdgeStyle?>,
+        night: Boolean,
+        fontPx: Float
+    ) {
+        val present = edges.map { it != null && it.widthEm > 0f && it.style > 0 }
+        if (present.none { it }) return
+        val rx = (radius?.rx ?: 0f).coerceAtMost(rect.width() / 2f)
+        val ry = (radius?.ry ?: 0f).coerceAtMost(rect.height() / 2f)
+        // 画布绝对坐标: 所有路径点以 rect 左上角为原点折算
+        val L = rect.left
+        val T = rect.top
+        val w = rect.width()
+        val h = rect.height()
+        // 顺时针边 k(0上1右2下3左)的直线段与前角弧几何(前角 = 边 k-1 与 k 的夹角);
+        // 角弧为椭圆弧(水平半径 rx/垂直半径 ry)
+        data class Seg(val sx: Float, val sy: Float, val arc: android.graphics.RectF, val arcStart: Float)
+        val segs = listOf(
+            Seg(L + rx, T, android.graphics.RectF(L, T, L + 2 * rx, T + 2 * ry), 180f),                                   // 上: 前角 TL
+            Seg(L + w, T + ry, android.graphics.RectF(L + w - 2 * rx, T, L + w, T + 2 * ry), 270f),   // 右: 前角 TR
+            Seg(L + w - rx, T + h, android.graphics.RectF(L + w - 2 * rx, T + h - 2 * ry, L + w, T + h), 0f), // 下: 前角 BR
+            Seg(L, T + h - ry, android.graphics.RectF(L, T + h - 2 * ry, L + 2 * rx, T + h), 90f)   // 左: 前角 BL
+        )
+        // 边 k 终点: 下一边存在缩进角半径(弧衔接),不存在画到角点(尖角)
+        fun endX(k: Int, next: Boolean) = L + when (k) {
+            0 -> if (next) w - rx else w
+            1 -> w
+            2 -> if (next) rx else 0f
+            else -> 0f
+        }
+        fun endY(k: Int, next: Boolean) = T + when (k) {
+            0 -> 0f
+            1 -> if (next) h - ry else h
+            2 -> h
+            else -> if (next) ry else 0f
+        }
+        val order = (0..3).filter { present[it] }
+        // 环上按连续性分段(3 与 0 视为相邻)
+        val runs = ArrayList<List<Int>>()
+        var run = ArrayList<Int>()
+        for (i in order.indices) {
+            val k = order[i]
+            val prev = order.getOrNull(i - 1)
+            if (prev != null && k == prev + 1) run.add(k)
+            else {
+                if (run.isNotEmpty()) runs.add(run)
+                run = arrayListOf(k)
+            }
+        }
+        if (run.isNotEmpty()) runs.add(run)
+        // 环回绕: 末段尾边=3 且首段首边=0 → 合并(全环由 4 边齐全之外的三边+一边构成)
+        if (runs.size > 1 && runs.last().last() == 3 && runs.first().first() == 0) {
+            val first = runs.removeAt(0)
+            val last = runs.removeAt(runs.size - 1)
+            runs.add(last + first)
+        }
+        for (seg in runs) {
+            val edge0 = edges[seg.first()]!!
+            val color = adaptColor(edge0.color, night)
+            if (seg.size == 4) {
+                // 全环(四边齐但样式不一): 整体圆角描边,取第一条边样式
+                strokeOutline(canvas, roundOutline(rect, rx, ry), edge0.widthEm * fontPx, color.toInt())
+                continue
+            }
+            val path = android.graphics.Path()
+            var started = false
+            for ((j, k) in seg.withIndex()) {
+                val s = segs[k]
+                if (!started) {
+                    // 段首: 前角是尖角(前边缺失),从角点起笔
+                    path.moveTo(L + if (k == 1 || k == 2) w else 0f, T + if (k == 2 || k == 3) h else 0f)
+                    started = true
+                } else {
+                    // 段内非首边: 前角两侧边都存在,画角弧衔接
+                    path.arcTo(s.arc, s.arcStart, 90f)
+                }
+                val next = j < seg.size - 1
+                path.lineTo(endX(k, next), endY(k, next))
+            }
+            boxPaint.style = Paint.Style.STROKE
+            boxPaint.strokeWidth = edge0.widthEm * fontPx
+            boxPaint.strokeJoin = Paint.Join.ROUND
+            boxPaint.color = color.toInt()
+            canvas.drawPath(path, boxPaint)
         }
     }
 
@@ -819,27 +996,6 @@ class ReaderPageView(context: Context) : View(context) {
                 }
             }
         }
-    }
-
-    private fun strokeRound(canvas: Canvas, rect: android.graphics.RectF, radius: Float, w: Float, color: Int) {
-        boxPaint.style = Paint.Style.STROKE
-        boxPaint.strokeWidth = w
-        boxPaint.color = color
-        boxPaint.pathEffect = null
-        if (radius > 0f) {
-            val inset = w / 2f
-            val r = android.graphics.RectF(rect).apply { inset(inset, inset) }
-            canvas.drawRoundRect(r, radius, radius, boxPaint)
-        } else {
-            canvas.drawRect(rect, boxPaint)
-        }
-    }
-
-    private fun strokeRoundPath(canvas: Canvas, rect: android.graphics.RectF, radius: Float, paint: Paint) {
-        val inset = paint.strokeWidth / 2f
-        val r = android.graphics.RectF(rect).apply { inset(inset, inset) }
-        if (radius > 0f) canvas.drawRoundRect(r, radius, radius, paint)
-        else canvas.drawRect(r, paint)
     }
 
     private object RectInflater {

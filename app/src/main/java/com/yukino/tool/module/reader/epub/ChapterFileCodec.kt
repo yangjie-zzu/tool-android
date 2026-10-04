@@ -71,7 +71,8 @@ object ChapterFileCodec {
         val b: Int? = null,         // 七期: 盒样式下标(boxes 表)
         val tb: TableDto? = null,   // 七期批次四: 表格段数据
         val fs: Int = 0,            // 批次四b: 浮动(1=right 2=left)
-        val ba: Boolean = false     // 批次四e: break-all
+        val ba: Boolean = false,    // 批次四e: break-all
+        val brb: Boolean = false    // 七期补: 与上一段 <br/> 相邻(段距归零)
     )
 
     @Serializable
@@ -185,7 +186,8 @@ object ChapterFileCodec {
                     )
                 },
                 fs = p.floatSide,
-                ba = p.breakAll
+                ba = p.breakAll,
+                brb = p.brBefore
             )
         }
         val dto = ChapterDto(
@@ -201,7 +203,7 @@ object ChapterFileCodec {
     // 七期批次三格式版本: 对象化 runs(字号倍率/颜色/阴影/@font-face 字体下标)。
     // fonts 表 value 存 family 名,实际字体文件路径由内容源按书籍 CSS @font-face 解析。
     // 低版本文件打开时自动升级重提取
-    const val FORMAT_VERSION = 13
+    const val FORMAT_VERSION = 17
 
     private fun BoxDto.toBoxStyle() = com.yukino.tool.module.reader.common.BoxStyle(
         bg = bg, bgImage = bgImg,
@@ -322,7 +324,8 @@ object ChapterFileCodec {
             lineSpacingMult = lh,
             boxStyle = b?.let { boxStyles[it] },
             floatSide = fs,
-            breakAll = ba
+            breakAll = ba,
+            brBefore = brb
         )
     }
 

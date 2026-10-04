@@ -31,6 +31,56 @@ object EpubImporter {
     fun chapterFile(context: Context, bookId: String, index: Int): File =
         File(File(chapterDir(context, bookId), "chapters"), "ch_%04d.txt".format(index))
 
+    // 装饰章判定: 章首段带装饰盒(boxStyle)的章为 CSS 排版页(扉页/封面等),
+    // 阅读器排版引擎只做近似,这类章由 WebView 按原书样式呈现
+    fun isDecorativeChapter(context: Context, bookId: String, index: Int): Boolean {
+        val cf = chapterFile(context, bookId, index)
+        if (!cf.exists()) return false
+        val rr = runCatching { ChapterFileCodec.read(cf) }.getOrNull() ?: return false
+        return rr.paragraphs.firstOrNull()?.boxStyle != null
+    }
+
+    // 反查装饰章的源 xhtml 文档与解压根目录(WebView 加载与 css 相对引用都用):
+    // 遍历 OPF spine 的 xhtml 文档,以章首段文本与文档内容匹配(h2 拆章/多文档均适用)。
+    // 非装饰章返回 null
+    fun findDecorativeSourceDoc(
+        context: Context,
+        bookId: String,
+        index: Int
+    ): Pair<File, File>? {
+        val cf = chapterFile(context, bookId, index)
+        if (!cf.exists()) return null
+        val rr = runCatching { ChapterFileCodec.read(cf) }.getOrNull() ?: return null
+        if (rr.paragraphs.firstOrNull()?.boxStyle == null) return null
+        val head = rr.paragraphs.firstNotNullOfOrNull { p ->
+            p.text.takeIf { it.isNotBlank() }
+        }?.take(24) ?: return null
+        val outDir = chapterDir(context, bookId)   // 解压根: META-INF/OEBPS 所在
+        val opfFile = runCatching {
+            File(outDir, parseContainerXml(File(outDir, "META-INF/container.xml").readText()))
+        }.getOrNull() ?: return null
+        val opfDir = opfFile.path.substringBeforeLast('/', "")
+        val pkg = runCatching { parseOpf(opfFile.readText(), opfDir) }.getOrNull() ?: return null
+        for (ref in pkg.spine) {
+            val item = pkg.items[ref.idref] ?: continue
+            if (!ref.linear) continue
+            if (item.mediaType.isNotBlank() && item.mediaType != MEDIA_TYPE_XHTML &&
+                item.mediaType != "text/html" && !item.href.endsWith(".xhtml", true) &&
+                !item.href.endsWith(".html", true) && !item.href.endsWith(".htm", true)
+            ) continue
+            // resolveHref 的结果规范化为绝对路径(相对路径基于进程 cwd 解析)
+            val f = File(resolveHref(opfDir, percentDecode(stripFragment(item.href).first))).absoluteFile
+            if (!f.exists()) continue
+            val hit = runCatching {
+                val docText = HtmlTextExtractor.extract(f, f.parent ?: "")
+                    .paragraphs.joinToString("\n") { it.text }
+                docText.contains(head)
+            }.getOrDefault(false)
+            if (hit) return f to outDir
+        }
+        return null
+    }
+
     // 初始化到可读状态。返回更新后的书;失败抛 BookInitException(由 BookContents 收敛为文案)。
     // 二期升级: ready 且章文件在但为一期纯文本格式时,自动重新提取获得富文本/图片/封面,
     // 进度按"章级对齐+章内比例"迁移(见 migrateProgress);升级在临时目录完成,失败保持老格式可读

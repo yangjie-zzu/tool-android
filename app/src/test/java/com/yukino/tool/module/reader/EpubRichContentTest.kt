@@ -764,8 +764,17 @@ class EpubRichContentTest {
         assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v12))   // 缺盒自身定位/列宽提示
         val v13 = File.createTempFile("v13ch", ".txt")
         v13.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":13}""")
-        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v13))
-        legacy.delete(); v2.delete(); v4.delete(); v5.delete(); v6.delete(); v7.delete(); v8.delete(); v9.delete(); v10b.delete(); v11.delete(); v12.delete(); v13.delete()
+        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v13))   // 七期盒嵌套聚合/解析语义修正, v13 旧缓存需重提取
+        val v15 = File.createTempFile("v15ch", ".txt")
+        v15.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":15}""")
+        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v15))   // 盒padding段距去重/br段距归零/圆角语义, v15 旧缓存需重提取
+        val v16 = File.createTempFile("v16ch", ".txt")
+        v16.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":16}""")
+        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v16))
+        val v17 = File.createTempFile("v17ch", ".txt")
+        v17.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":17}""")
+        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v17))
+        legacy.delete(); v2.delete(); v4.delete(); v5.delete(); v6.delete(); v7.delete(); v8.delete(); v9.delete(); v10b.delete(); v11.delete(); v12.delete(); v13.delete(); v15.delete(); v16.delete(); v17.delete()
     }
 
     // ---- 老书升级: 章号映射(顺序保持的标题匹配) ----
