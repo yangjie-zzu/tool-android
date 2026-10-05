@@ -4,6 +4,7 @@ package com.yukino.tool.module.reader
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -11,6 +12,7 @@ import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -95,6 +97,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -1310,8 +1313,8 @@ fun ReaderScreen(
                             Modifier.verticalScroll(rememberScrollState())
                                 .padding(
                                     start = 16.dp, end = 16.dp,
-                                    top = if (above) 12.dp + tipPad else 12.dp,
-                                    bottom = if (above) 12.dp else 12.dp + tipPad
+                                    top = if (above) 12.dp else 12.dp + tipPad,
+                                    bottom = if (above) 12.dp + tipPad else 12.dp
                                 )
                         ) {
                             Text(
@@ -1349,8 +1352,18 @@ fun ReaderScreen(
     }
 
     // 图片预览层(书内图片点击查看大图;关闭即恢复,阅读页翻页手势已在预览期间冻结)
-    previewImage?.let { ref ->
-        ImagePreviewOverlay(ref = ref, onClose = { previewImage = null })
+    // lastPreview 撑住退出动画期间内容(参照脚注气泡); visible=false 淡出时组合仍在
+    var lastPreview by remember { mutableStateOf<String?>(null) }
+    if (previewImage != null) lastPreview = previewImage
+    // 动作面板配色与脚注气泡同源: 浅色主题纯白, 夜间跟随菜单浮层背景
+    lastPreview?.let { ref ->
+        ImagePreviewOverlay(
+            ref = ref,
+            visible = previewImage != null,
+            panelBg = if (bgColor.luminance() > 0.5f) Color.White else menuBg,
+            fg = fgColor,
+            onClose = { previewImage = null }
+        )
     }
 
     if (showSettings) {
@@ -1447,10 +1460,18 @@ private class BubbleShape(
 }
 
 // 图片预览层(混合渲染 §8): 全屏近黑半透明底 + 图片 fit 屏幕居中;
-// 双指捏合缩放(1x~4x)、放大后拖动平移、双击 1x/2x 切换、单击空白或返回键关闭。
-// 按屏幕尺寸 inSampleSize 采样解码(SVG 走 SvgDecoder 栅格化),GIF 取首帧;不落盘无保存
+// 双指捏合缩放(1x~4x)、放大后拖动平移、单击空白或返回键关闭;长按弹底部动作面板
+// (保存图片/分享图片/设为壁纸, 见 ImagePreviewActions)。面板打开时单击只关面板。
+// 按屏幕尺寸 inSampleSize 采样解码(SVG 走 SvgDecoder 栅格化),GIF 取首帧;不落盘无保存。
+// 进出场淡入淡出; lastPreview 模式下 visible=false 退出动画仍由组合撑住画面
 @Composable
-private fun ImagePreviewOverlay(ref: String, onClose: () -> Unit) {
+private fun ImagePreviewOverlay(
+    ref: String,
+    visible: Boolean,
+    panelBg: Color,
+    fg: Color,
+    onClose: () -> Unit
+) {
     val configuration = androidx.compose.ui.platform.LocalConfiguration.current
     val screenW = (configuration.screenWidthDp * configuration.densityDpi / 160f).toInt().coerceAtLeast(1)
     val screenH = (configuration.screenHeightDp * configuration.densityDpi / 160f).toInt().coerceAtLeast(1)
@@ -1460,55 +1481,110 @@ private fun ImagePreviewOverlay(ref: String, onClose: () -> Unit) {
     }
     var scale by remember { mutableStateOf(1f) }
     var off by remember { mutableStateOf(Offset.Zero) }
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color(0xD9000000L))
-            .pointerInput(Unit) {
-                detectTransformGestures { _, pan, zoom, _ ->
-                    val next = (scale * zoom).coerceIn(1f, 4f)
-                    scale = next
-                    off = if (next > 1f) {
-                        Offset(
-                            (off.x + pan.x).coerceIn(-screenW.toFloat(), screenW.toFloat()),
-                            (off.y + pan.y).coerceIn(-screenH.toFloat(), screenH.toFloat())
-                        )
-                    } else Offset.Zero
-                }
-            }
-            .pointerInput(Unit) {
-                detectTapGestures(
-                    onTap = { onClose() },
-                    onDoubleTap = {
-                        if (scale > 1.5f) {
-                            scale = 1f
-                            off = Offset.Zero
-                        } else {
-                            scale = 2f
-                        }
-                    }
-                )
-            },
-        contentAlignment = Alignment.Center
-    ) {
-        val bmp = bitmap
-        if (bmp != null) {
-            Image(
-                bitmap = bmp.asImageBitmap(),
-                contentDescription = "图片预览",
-                modifier = Modifier
-                    .fillMaxSize()
-                    .graphicsLayer {
-                        scaleX = scale
-                        scaleY = scale
-                        translationX = off.x
-                        translationY = off.y
-                    }
-            )
-        } else {
-            CircularProgressIndicator(color = Color.White)
+    // 常驻组合下重开预览要回到 1x 居中(原每次重建组合自然重置); 淡出期间不动, 画面稳定消失
+    LaunchedEffect(visible) {
+        if (visible) {
+            scale = 1f
+            off = Offset.Zero
         }
     }
+    // 长按动作面板; 动作在预览位图就绪后可用
+    var menuOpen by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val ctx = LocalContext.current
+    fun runAction(block: (android.graphics.Bitmap) -> String?) {
+        val bmp = bitmap ?: return
+        menuOpen = false
+        scope.launch {
+            val msg = withContext(Dispatchers.IO) { block(bmp) }
+            msg?.let { Toast.makeText(ctx, it, Toast.LENGTH_SHORT).show() }
+        }
+    }
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn(tween(180)),
+        exit = fadeOut(tween(150))
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color(0xD9000000L))
+                .pointerInput(Unit) {
+                    detectTransformGestures { _, pan, zoom, _ ->
+                        val next = (scale * zoom).coerceIn(1f, 4f)
+                        scale = next
+                        off = if (next > 1f) {
+                            Offset(
+                                (off.x + pan.x).coerceIn(-screenW.toFloat(), screenW.toFloat()),
+                                (off.y + pan.y).coerceIn(-screenH.toFloat(), screenH.toFloat())
+                            )
+                        } else Offset.Zero
+                    }
+                }
+                .pointerInput(Unit) {
+                    // 只挂 onTap: 与 onDoubleTap 同注册时单击须等 300ms 双击超时才回调,
+                    // 关闭会明显延迟; 缩放交给捏合。面板打开时单击只收面板
+                    detectTapGestures(
+                        onTap = { if (menuOpen) menuOpen = false else onClose() },
+                        onLongPress = { if (bitmap != null) menuOpen = true }
+                    )
+                },
+            contentAlignment = Alignment.Center
+        ) {
+            Crossfade(targetState = bitmap, animationSpec = tween(150), label = "preview") { bmp ->
+                if (bmp != null) {
+                    Image(
+                        bitmap = bmp.asImageBitmap(),
+                        contentDescription = "图片预览",
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .graphicsLayer {
+                                scaleX = scale
+                                scaleY = scale
+                                translationX = off.x
+                                translationY = off.y
+                            }
+                    )
+                } else {
+                    CircularProgressIndicator(color = Color.White)
+                }
+            }
+            AnimatedVisibility(
+                visible = menuOpen,
+                enter = slideInVertically(tween(200)) { it } + fadeIn(tween(200)),
+                exit = slideOutVertically(tween(150)) { it } + fadeOut(tween(150)),
+                modifier = Modifier.align(Alignment.BottomCenter)
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
+                    color = panelBg,
+                    shadowElevation = 12.dp,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.padding(vertical = 6.dp)) {
+                        PreviewActionItem("保存图片", fg) { runAction { ImagePreviewActions.saveToGallery(ctx, it) } }
+                        PreviewActionItem("分享图片", fg) { runAction { ImagePreviewActions.share(ctx, it) } }
+                        PreviewActionItem("设为壁纸", fg) { runAction { ImagePreviewActions.setWallpaper(ctx, it) } }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// 预览动作面板条目: 整行宽度点击区, 文案居中(底部动作表样式)
+@Composable
+private fun PreviewActionItem(title: String, fg: Color, onClick: () -> Unit) {
+    Text(
+        title,
+        color = fg,
+        style = MaterialTheme.typography.bodyLarge,
+        textAlign = TextAlign.Center,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 14.dp)
+    )
 }
 
 // 预览解码: 位图按屏幕尺寸 inSampleSize 采样(解码宽钳到屏幕 1~2 倍,捏合 2x 仍清晰);
@@ -1522,7 +1598,11 @@ private fun decodePreviewBitmap(ref: String, screenW: Int, screenH: Int): androi
         android.graphics.BitmapFactory.decodeFile(ref, bounds)
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@runCatching null
         var sample = 1
-        while (bounds.outWidth / (sample * 2) >= screenW * 2) sample *= 2
+        // 解码边(宽/高任一)钳到屏幕 1~2 倍: 再翻倍采样会低于 1 倍屏时停,
+        // 解码量直接决定预览打开速度与首帧纹理上传(过大会掉帧闪动)
+        while (bounds.outWidth / sample >= screenW * 2 ||
+            bounds.outHeight / sample >= screenH * 2
+        ) sample *= 2
         val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
         android.graphics.BitmapFactory.decodeFile(ref, opts)
     }.getOrNull()
