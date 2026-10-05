@@ -75,16 +75,16 @@ fun ReaderSettingsSheet(
             PercentSliderRow("行距", settings.lineSpacingPercent, Typography.SPACING_MIN, Typography.SPACING_MAX, 10, "%") {
                 onChange(settings.copy(lineSpacingPercent = it))
             }
+            SwitchRow("行距跟随书内", settings.bookLineHeight) { onChange(settings.copy(bookLineHeight = it)) }
             PercentSliderRow("段距", settings.paragraphSpacingPercent, 0, 300, 50, "%") {
                 onChange(settings.copy(paragraphSpacingPercent = it))
             }
+            SwitchRow("段距跟随书内", settings.bookSpacing) { onChange(settings.copy(bookSpacing = it)) }
             PercentSliderRow("边距", settings.marginDp, Typography.MARGIN_MIN, Typography.MARGIN_MAX, 4, "dp") {
                 onChange(settings.copy(marginDp = it))
             }
             SwitchRow("首行缩进", settings.indent) { onChange(settings.copy(indent = it)) }
             SwitchRow("两端对齐", settings.justify) { onChange(settings.copy(justify = it)) }
-            SwitchRow("段距跟随书内", settings.bookSpacing) { onChange(settings.copy(bookSpacing = it)) }
-            SwitchRow("行距跟随书内", settings.bookLineHeight) { onChange(settings.copy(bookLineHeight = it)) }
             SwitchRow("屏幕常亮", settings.keepScreenOn) { onChange(settings.copy(keepScreenOn = it)) }
         }
     }

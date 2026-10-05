@@ -164,7 +164,14 @@ private const val EDGE_DEADZONE_DP = 24
 private const val FLICK_VELOCITY_DP_S = 900f
 
 // 脚注就近弹层: 脚注 id/内容 + 角标锚点(窗口坐标,卡片就近显示)
-data class FootnotePopup(val noteId: String, val text: String, val anchor: Offset)
+// 脚注弹层锚点: anchor.y = 角标顶缘(上方弹出时气泡箭头尖贴此点上方 gap 处, 不压角标图);
+// anchorBelowY = 角标底缘(下方弹出时气泡顶贴此点下方 gap 处)。纯文本脚注两者均为点击点
+data class FootnotePopup(
+    val noteId: String,
+    val text: String,
+    val anchor: Offset,
+    val anchorBelowY: Float = anchor.y
+)
 
 // 拖拽会话: 手势定向时把目标页物化并锁定,拖动全程只更新位移;
 // 松手落账 targetIndex。预览与落账是同一 BookPage,结构上不可能不一致
@@ -449,8 +456,8 @@ fun ReaderScreen(
     // 版心坐标 → (行,字符) → 全书偏移 → 章脚注表;未命中返回 null。
     // 占位符(U+FFFC)的点击度量不含 ReplacementSpan 图标宽,字符吸附可能偏多个字符——
     // 先做"行内角标偏移差匹配"(容差 3 字符),未中再退常规 ±1 邻域。
-    // 弹层锚点: 命中角标图时用角标本体几何(水平中心/底缘,转窗口坐标)——箭头指向角标
-    // 而非手指落点,点偏不再带歪箭头;纯文本脚注无矩形,锚点用点击点
+    // 弹层锚点: 命中角标图时用角标本体几何(转窗口坐标)——上方弹出锚角标顶缘、
+    // 下方弹出锚角标底缘, 箭头尖贴角标外 10dp 不压图标; 纯文本脚注无矩形, 用点击点
     fun footnoteHitAt(offset: Offset): FootnotePopup? {
         val bp = livePage ?: return null
         val t = liveTypo ?: return null
@@ -461,6 +468,7 @@ fun ReaderScreen(
         val line = bp.lines[hit.first]
         val global = SelectionGeometry.globalAt(bp, hit.first, hit.second)
         var anchor = offset
+        var anchorBelowY = offset.y
         val hitNote: Pair<String, String>? = if (line.inlineImages.isNotEmpty()) {
             val nearest = line.inlineImages.minByOrNull {
                 kotlin.math.abs(global - (line.lineStartGlobal + it.charIdx))
@@ -468,11 +476,12 @@ fun ReaderScreen(
             if (nearest != null &&
                 kotlin.math.abs(global - (line.lineStartGlobal + nearest.charIdx)) <= 3
             ) {
-                // 锚到角标图本体: x = 水平中心, y = 底缘(版心 → 窗口坐标)
+                // 锚到角标图本体: x = 水平中心; 上弹锚顶缘/下弹锚底缘(版心 → 窗口坐标)
                 anchor = Offset(
                     nearest.x + nearest.width / 2f + t.marginPx,
-                    nearest.y + nearest.height + contentTopPx
+                    nearest.y + contentTopPx
                 )
+                anchorBelowY = nearest.y + nearest.height + contentTopPx
                 cnt.footnoteAt(line.lineStartGlobal + nearest.charIdx)
             } else {
                 null   // 点击在本行但不在角标容差内,不弹菜单也不误触脚注
@@ -482,7 +491,7 @@ fun ReaderScreen(
                 ?: cnt.footnoteAt(global - 1)
                 ?: cnt.footnoteAt(global + 1)
         }
-        return hitNote?.let { FootnotePopup(it.first, it.second, anchor) }
+        return hitNote?.let { FootnotePopup(it.first, it.second, anchor, anchorBelowY) }
     }
 
     // 图片命中(混合渲染 §8): 版心坐标 → 图片文件绝对路径。优先级: 块级图片行矩形 →
@@ -1303,7 +1312,7 @@ fun ReaderScreen(
                 val arrowX = (note.anchor.x - cardMarginPx - arrowW / 2f)
                     .coerceIn(arrowEdge, (cardW - arrowEdge - arrowW).coerceAtLeast(arrowEdge))
                 val spaceAbove = (note.anchor.y - gapPx - arrowH - topInsetPx).roundToInt().coerceAtLeast(0)
-                val spaceBelow = (screenBottom - gapPx - arrowH - note.anchor.y).roundToInt().coerceAtLeast(0)
+                val spaceBelow = (screenBottom - gapPx - arrowH - note.anchorBelowY).roundToInt().coerceAtLeast(0)
                 fun card(k: String, maxHp: Int, above: Boolean) = subcompose(k) {
                     val tipPad = with(density) { arrowH.toDp() }
                     Surface(
@@ -1344,7 +1353,7 @@ fun ReaderScreen(
                 val contentH = natural.maxOf { it.height }
                 val useAbove = contentH <= spaceAbove
                 val areaMax = if (useAbove) spaceAbove else spaceBelow
-                val areaTop = if (useAbove) note.anchor.y - gapPx - contentH else note.anchor.y + gapPx
+                val areaTop = if (useAbove) note.anchor.y - gapPx - contentH else note.anchorBelowY + gapPx
                 val placed = if (useAbove && contentH <= areaMax) natural
                 else card(note.noteId + "#b", maxHp = areaMax, above = useAbove)
                     .map { it.measure(meas.copy(maxHeight = areaMax)) }
