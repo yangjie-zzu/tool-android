@@ -20,8 +20,8 @@ android {
         applicationId = "com.yukino.tool"
         minSdk = 24
         targetSdk = 34
-        versionCode = 27
-        versionName = "1.5.7"
+        versionCode = 28
+        versionName = "1.5.8"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -54,6 +54,9 @@ android {
     testOptions {
         // 阅读器排版(JVM单测)需要 android.graphics.Paint 等桩返回默认值而非抛异常
         unitTests.isReturnDefaultValues = true
+        // fork 的测试 JVM 必须与 daemon 同编码: daemon(file.encoding=UTF-8)写 worker classpath,
+        // fork 按系统默认(GBK)读会把 GRADLE_USER_HOME 中文用户名路径读乱 → GradleWorkerMain 加载失败
+        unitTests.all { it.jvmArgs("-Dfile.encoding=UTF-8") }
     }
 
     signingConfigs {
