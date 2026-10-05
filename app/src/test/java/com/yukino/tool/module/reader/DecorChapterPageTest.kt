@@ -113,8 +113,9 @@ class DecorChapterPageTest {
         assertFalse(out.contains("evil"))
         assertFalse(out.contains("x.js"))
         assertTrue(out.contains("<p>正文</p>"))
-        // 自适应 CSS 与就绪探测/桥都已注入
-        assertTrue(out.contains("box-sizing:border-box"))
+        // 自适应 CSS(img/svg 限宽)与就绪探测/桥都已注入;精准收缩脚本含 boxSizing 补丁
+        assertTrue(out.contains("max-width:100%"))
+        assertTrue(out.contains("style.boxSizing"))
         assertTrue(out.contains("fonts.ready"))
         assertTrue(out.contains("__decoBridge.onReady"))
     }
@@ -122,8 +123,8 @@ class DecorChapterPageTest {
     @Test
     fun `注入在head前插人_无head时尾部附加`() {
         val withHead = injectInto("<html><head></head><body></body></html>")
-        assertTrue(withHead.indexOf("box-sizing") < withHead.indexOf("</head>"))
+        assertTrue(withHead.indexOf("max-width") < withHead.indexOf("</head>"))
         val noHead = injectInto("<p>仅正文</p>")
-        assertTrue(noHead.endsWith("</style><script>") || noHead.contains("box-sizing"))
+        assertTrue(noHead.contains("max-width:100%"))
     }
 }
