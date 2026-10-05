@@ -251,7 +251,7 @@ object ChapterComposer {
                 for (im in p.inlineImages) {
                     val idx = paraStart + im.start
                     if (idx >= pos) continue
-                    val size = inlineImageDisplaySize(imageBounds(im.ref), typo)
+                    val size = inlineImageDisplaySizeSized(imageBounds(im.ref), typo, im.sup)
                     sb.setSpan(
                         InlineImageSpan(size.width), idx, idx + 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
                     )
@@ -308,6 +308,16 @@ object ChapterComposer {
 
     // 五期: 行内图片显示尺寸——高约 1.2 倍字号、宽等比;上限 1.6 倍字号/版心宽(通用行内图防撑爆);
     // 坏图(bounds null)按一个字宽方框占位
+    // sup(noteref 图片角标)按浏览器 <sup><img> 实测还原: 直径 ≈ 0.96×字号
+    // (sup smaller 缩放 × 1.2em);普通行内图维持 1.2×字号
+    internal fun inlineImageDisplaySizeSized(bounds: Rect?, typo: ResolvedTypography, sup: Boolean): ImageSize {
+        val s = inlineImageDisplaySize(bounds, typo)
+        if (!sup) return s
+        val h = (typo.fontPx * 0.96f).roundToInt().coerceAtLeast(1)
+        val w = (h.toFloat() * s.width / s.height).roundToInt().coerceAtLeast(1)
+        return ImageSize(w, h)
+    }
+
     internal fun inlineImageDisplaySize(bounds: Rect?, typo: ResolvedTypography): ImageSize {
         val maxH = (typo.fontPx * 1.6f).roundToInt().coerceAtLeast(1)
         if (bounds == null || bounds.width() <= 0 || bounds.height() <= 0) {
@@ -863,7 +873,7 @@ object BookPager {
             for (p in paras) {
                 for (im in p.inlineImages) {
                     if (im.ref !in inlineSizes) {
-                        inlineSizes[im.ref] = ChapterComposer.inlineImageDisplaySize(content.imageBounds(im.ref), typo)
+                        inlineSizes[im.ref] = ChapterComposer.inlineImageDisplaySizeSized(content.imageBounds(im.ref), typo, im.sup)
                     }
                 }
             }
