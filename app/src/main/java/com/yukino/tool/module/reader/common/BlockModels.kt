@@ -59,10 +59,12 @@ object BlockCache {
     // 块内容 hash(渲染器与排版层共用同一条拼接规则)
     fun contentHashOf(
         html: String, shell: String, docDir: String,
-        cssHrefs: List<String>, cssInline: List<String>
+        cssHrefs: List<String>, cssInline: List<String>,
+        extra: String = ""
     ): String = md5(
         html + "\u0000" + shell + "\u0000" + docDir + "\u0000" +
-            cssHrefs.joinToString("\u0001") + "\u0000" + cssInline.joinToString("\u0001")
+            cssHrefs.joinToString("\u0001") + "\u0000" + cssInline.joinToString("\u0001") +
+            if (extra.isEmpty()) "" else "\u0000$extra"
     )
 
     fun fileOf(chapterDir: File, key: String): File = File(File(chapterDir, DIR_NAME), "$key.webp")

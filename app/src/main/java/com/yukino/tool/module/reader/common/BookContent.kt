@@ -175,7 +175,10 @@ class ChapterDocument(
     val fontIds: Map<Int, String> = emptyMap(),       // 七期: run.fontId → family
     val fontFiles: Map<String, String> = emptyMap(),  // family → 字体文件绝对路径
     val cssHrefs: List<String> = emptyList(),  // 混合渲染: 原文档 head 外部样式 href 原样列表
-    val cssInline: List<String> = emptyList()  // 混合渲染: 原文档 <style> 块原文列表
+    val cssInline: List<String> = emptyList(), // 混合渲染: 原文档 <style> 块原文列表
+    val bodyDecor: Boolean = false,            // 页面级背景信号: body 带背景图/色
+    val bodyHtml: String = "",                 // 页面级背景章聚合: 整章 body innerHTML
+    val bodyShell: String = ""                 // 页面级背景章聚合: body 开标签壳
 ) {
     val bodyText: String get() = paragraphs.joinToString("\n") { it.text }
 }

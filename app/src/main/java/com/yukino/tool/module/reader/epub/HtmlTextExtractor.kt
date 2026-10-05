@@ -214,7 +214,10 @@ object HtmlTextExtractor {
         val footnotes: Map<String, String>,
         val fonts: Map<String, String> = emptyMap(),   // 七期: @font-face family -> 字体文件相对路径
         val cssHrefs: List<String> = emptyList(),      // 混合渲染: head 外部样式 href 原样(块渲染 mini HTML 引用)
-        val cssInline: List<String> = emptyList()      // 混合渲染: <style> 块原文(块渲染 mini HTML 内联)
+        val cssInline: List<String> = emptyList(),     // 混合渲染: <style> 块原文(块渲染 mini HTML 内联)
+        val bodyDecor: Boolean = false,                // 页面级背景信号: body 带背景图/色(装饰章判定用)
+        val bodyHtml: String = "",                     // 页面级背景章聚合: 整章 body innerHTML(原始结构浏览器同源渲染)
+        val bodyShell: String = ""                     // 页面级背景章聚合: body 开标签(类/属性并入块壳)
     )
 
     fun extract(file: File, docDir: String = "", dataUriSink: DataUriSink? = null): ExtractResult {
@@ -288,10 +291,25 @@ object HtmlTextExtractor {
             mergeCssRules(cssRules, parseStyleBlock(style.data()))
             if (style.data().isNotBlank()) cssInline += style.data()
         }
+        // 页面级背景信号: body 自身声明的背景图/背景色(CSS 规则含元素选择器命中 body)
+        val bodyProps = propsFor(body, cssRules)
+        val bodyDecor = inlineBoxDecorated(bodyProps) ||
+            (bodyProps["background-color"]?.let { parseColor(it) ?: 0L } ?: 0L) != 0L
+        // 页面级背景章的聚合渲染: 保留整章 body innerHTML 与开标签壳
+        val bodyHtml = if (bodyDecor) body.html() else ""
+        val bodyShell = if (bodyDecor) {
+            val attrs = body.attributes().joinToString(" ") { (k, v) ->
+                "$k=\"" + v.replace("&", "&amp;").replace("\"", "&quot;") + "\""
+            }
+            if (attrs.isBlank()) "<body>" else "<body $attrs>"
+        } else ""
         val b = Builder(docDir, null, dataUriSink)
         walk(body, b, ArrayDeque(), noteRefs, cssRules)
         b.flush()
-        return ExtractResult(b.result(), b.notes, fontsIn ?: emptyMap(), cssHrefsIn, cssInline)
+        return ExtractResult(
+            b.result(), b.notes, fontsIn ?: emptyMap(), cssHrefsIn, cssInline, bodyDecor,
+            bodyHtml, bodyShell
+        )
     }
 
     // noteref 判定(保守: 仅显式标记;EPUB2 无标记内链不识别以免误伤普通链接)

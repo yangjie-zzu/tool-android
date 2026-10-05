@@ -897,7 +897,8 @@ object BookPager {
         val html = para.blockHtml ?: return null
         val root = content.webBlockRoot() ?: return null
         val hash = BlockCache.contentHashOf(
-            html, para.ancestorShell ?: "", para.blockDocDir, doc.cssHrefs, doc.cssInline
+            html, para.ancestorShell ?: "", para.blockDocDir, doc.cssHrefs, doc.cssInline,
+            if (doc.bodyDecor) "th=${typo.textHeight}" else ""
         )
         val key = BlockCache.keyOf(typo.fontPx, typo.textWidth, typo.lineSpacingPercent, typo.bookLineHeight, hash)
         val cb = BlockCache.lookup(root, key) ?: return null

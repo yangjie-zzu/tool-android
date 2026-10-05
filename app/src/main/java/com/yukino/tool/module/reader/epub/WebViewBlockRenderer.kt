@@ -53,7 +53,8 @@ class BlockSpec(
     val html: String,               // 块 HTML 片段
     val shell: String,              // 祖先壳(body→块的逐层开标签)
     val cssHrefs: List<String>,     // 原文档 head 外部样式 href 原样
-    val cssInline: List<String>     // 原文档 <style> 块原文
+    val cssInline: List<String>,    // 原文档 <style> 块原文
+    val fillPage: Boolean = false   // 页面级背景章聚合块: 视口/位图固定版心高, 背景 cover 铺满整页
 ) {
     fun contentHash(): String = BlockCache.contentHashOf(html, shell, docDir, cssHrefs, cssInline)
 }
@@ -78,6 +79,7 @@ object WebViewBlockRenderer {
         specs: List<Pair<String, BlockSpec>>,
         fontPx: Float,
         textWidth: Int,
+        textHeight: Int,
         lineSpacingPercent: Int,
         lineOverride: Boolean,
         onProgress: (done: Int, total: Int) -> Unit = { _, _ -> }
@@ -91,7 +93,7 @@ object WebViewBlockRenderer {
             if (key in failed || !inFlight.add(key)) { onProgress(i + 1, total); continue }
             val ok = gate.withLock {
                 runCatching {
-                    capture(app, root, key, spec, fontPx, textWidth, lineSpacingPercent, lineOverride)
+                    capture(app, root, key, spec, fontPx, textWidth, textHeight, lineSpacingPercent, lineOverride)
                 }.getOrDefault(false)
             }
             inFlight.remove(key)
@@ -112,6 +114,7 @@ object WebViewBlockRenderer {
         spec: BlockSpec,
         fontPx: Float,
         textWidth: Int,
+        textHeight: Int,
         lineSpacingPercent: Int,
         lineOverride: Boolean
     ): Boolean = withContext(Dispatchers.Default) {
@@ -119,9 +122,13 @@ object WebViewBlockRenderer {
         val metrics = app.resources.displayMetrics
         val screenH = metrics.heightPixels
         val density = metrics.density
+        // fillPage(页面级背景章聚合块): 视口/位图固定版心高, 注入 min-height 使
+        // body 背景(cover)铺满整页——目录页等页面级背景完整呈现
+        val fill = spec.fillPage
+        val pageH = if (fill) textHeight.coerceAtLeast(1) else screenH
         val html = buildMiniHtml(
             spec, fontPx, density,
-            lineMultCss(lineSpacingPercent, lineOverride),
+            lineMultCss(lineSpacingPercent, lineOverride, fill),
             collectJs(limitPxOf(screenH))
         )
         val done = CompletableDeferred<Boolean>()
@@ -146,7 +153,7 @@ object WebViewBlockRenderer {
                 val handled = java.util.concurrent.atomic.AtomicBoolean(false)
                 // 兜底死线: 桥丢失/挂死时按现状截(几何空,选择退化)
                 val fallback = Runnable {
-                    if (handled.compareAndSet(false, true)) settle(webView, w, root, key, null, done)
+                    if (handled.compareAndSet(false, true)) settle(webView, w, pageH, fill, root, key, null, done)
                 }
                 Handler(Looper.getMainLooper()).postDelayed(fallback, BLK_FALLBACK_MS)
                 webView.addJavascriptInterface(object {
@@ -156,7 +163,7 @@ object WebViewBlockRenderer {
                         Handler(Looper.getMainLooper()).post {
                             if (handled.compareAndSet(false, true)) {
                                 Handler(Looper.getMainLooper()).postDelayed({
-                                    settle(webView, w, root, key, json, done)
+                                    settle(webView, w, pageH, fill, root, key, json, done)
                                 }, BLK_PAINT_SETTLE_MS)
                             }
                         }
@@ -190,9 +197,9 @@ object WebViewBlockRenderer {
                 }
                 webView.measure(
                     View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY),
-                    View.MeasureSpec.makeMeasureSpec(screenH, View.MeasureSpec.EXACTLY)
+                    View.MeasureSpec.makeMeasureSpec(pageH, View.MeasureSpec.EXACTLY)
                 )
-                webView.layout(0, 0, w, screenH)
+                webView.layout(0, 0, w, pageH)
                 val base = "https://$BLK_HOST/" + spec.docDir.let { if (it.isEmpty()) "" else "$it/" }
                 webView.loadDataWithBaseURL(base, html, "text/html", "utf-8", null)
             } catch (t: Throwable) {
@@ -243,11 +250,15 @@ object WebViewBlockRenderer {
     }
 
     // 行距注入 CSS 片段: 覆盖模式 body *{line-height:X!important}(压过书内声明);
-    // 默认模式 body{line-height:X}(书内元素声明层叠自动优先,null=不注入)
-    private fun lineMultCss(lineSpacingPercent: Int, lineOverride: Boolean): String {
+    // 默认模式 body{line-height:X}(书内元素声明层叠自动优先,null=不注入)。
+    // fillPage(页面级背景章聚合块)时同时注入整页高度, 背景 cover 铺满视口
+    private fun lineMultCss(lineSpacingPercent: Int, lineOverride: Boolean, fillPage: Boolean): String {
         val mult = "%.2f".format((lineSpacingPercent / 100f).coerceIn(0.5f, 5f))
-        return if (lineOverride) "body *{line-height:${mult}!important}"
-        else "body{line-height:$mult}"
+        return when {
+            lineOverride -> "html{height:100%}body{min-height:100%}body *{line-height:${mult}!important}"
+            fillPage -> "html{height:100%}body{min-height:100%}body{line-height:$mult}"
+            else -> "body{line-height:$mult}"
+        }
     }
 
     private fun escapeAttr(s: String) = s.replace("&", "&amp;").replace("\"", "&quot;")
@@ -256,6 +267,8 @@ object WebViewBlockRenderer {
     private fun settle(
         view: WebView,
         w: Int,
+        pageH: Int,
+        fillPage: Boolean,
         root: File,
         key: String,
         geomJson: String?,
@@ -263,7 +276,7 @@ object WebViewBlockRenderer {
     ) {
         try {
             val contentH = ceil(view.contentHeight * view.scale).toInt()
-            val h = if (contentH > 0) contentH else view.height
+            val h = if (fillPage) pageH else (if (contentH > 0) contentH else view.height)
             android.util.Log.d(
                 "BlkRender",
                 "settle key=${key.take(8)} contentH=$contentH h=$h viewH=${view.height} scale=${view.scale} json=${geomJson?.take(60)}"

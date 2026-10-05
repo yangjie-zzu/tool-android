@@ -125,7 +125,10 @@ object ChapterFileCodec {
         val fontPaths: Map<String, String> = emptyMap(),  // family → 字体文件相对路径
         val cssHrefs: List<String> = emptyList(),   // 混合渲染: 原文档 head 外部样式 href 原样
         val cssInline: List<String> = emptyList(),  // 混合渲染: 原文档 <style> 块原文
-        val v: Int = 0   // 格式版本: 19 = 混合渲染(WEBVIEW 块段);旧文件缺省 0
+        val bd: Boolean = false,      // 页面级背景信号: body 带背景图/色(装饰章判定)
+        val bhtml: String = "",       // 页面级背景章聚合: 整章 body innerHTML
+        val bshell: String = "",      // 页面级背景章聚合: body 开标签壳
+        val v: Int = 0   // 格式版本: 21 = 页面级背景章聚合块;旧文件缺省 0
     )
 
     private val json = Json { ignoreUnknownKeys = true }
@@ -136,7 +139,10 @@ object ChapterFileCodec {
         footnotes: Map<String, String> = emptyMap(),
         fonts: Map<String, String> = emptyMap(),   // 七期: family → 字体文件相对路径
         cssHrefs: List<String> = emptyList(),      // 混合渲染: 原文档 head 外部样式 href 原样
-        cssInline: List<String> = emptyList()      // 混合渲染: 原文档 <style> 块原文
+        cssInline: List<String> = emptyList(),     // 混合渲染: 原文档 <style> 块原文
+        bodyDecor: Boolean = false,                // 页面级背景信号: body 带背景图/色(装饰章判定)
+        bodyHtml: String = "",                     // 页面级背景章聚合: 整章 body innerHTML
+        bodyShell: String = ""                     // 页面级背景章聚合: body 开标签壳
     ) {
         // 盒样式表: 按 BoxStyle 去重(相邻段落共享同一实例,序列化后经 equals 聚合还原同组)
         val boxIndex = LinkedHashMap<com.yukino.tool.module.reader.common.BoxStyle, Int>()
@@ -216,6 +222,9 @@ object ChapterFileCodec {
             fontPaths = fonts,
             cssHrefs = cssHrefs,
             cssInline = cssInline,
+            bd = bodyDecor,
+            bhtml = bodyHtml,
+            bshell = bodyShell,
             v = FORMAT_VERSION
         )
         file.writeText(json.encodeToString(ChapterDto.serializer(), dto))
@@ -225,8 +234,8 @@ object ChapterFileCodec {
     // v18: 选择器完整化/命名色全表/缩进 px-%/larger-smaller/dataURI 图片/表格格内图片。
     // v19: 混合渲染——章首装饰表格不再剥除(S1 信号命中块降级),存量书升级重提取。
     // 低版本文件打开时自动升级重提取
-    // v20: 行内图片角标 sup 标志(上标基线提升),存量书升级重提取
-    const val FORMAT_VERSION = 20
+    // v21: 页面级背景章聚合块(bd/bhtml/bshell——整章 body 聚合为单 WEBVIEW 块),存量书升级重提取
+    const val FORMAT_VERSION = 21
 
     private fun BoxDto.toBoxStyle() = com.yukino.tool.module.reader.common.BoxStyle(
         bg = bg, bgImage = bgImg,
@@ -251,7 +260,10 @@ object ChapterFileCodec {
         val fonts: Map<Int, String>,
         val fontPaths: Map<String, String> = emptyMap(),
         val cssHrefs: List<String> = emptyList(),
-        val cssInline: List<String> = emptyList()
+        val cssInline: List<String> = emptyList(),
+        val bodyDecor: Boolean = false,
+        val bodyHtml: String = "",
+        val bodyShell: String = ""
     )
 
     fun read(file: File): ReadResult {
@@ -264,7 +276,7 @@ object ChapterFileCodec {
                 val boxStyles = dto.boxes.mapValues { it.value.toBoxStyle() }
                 return ReadResult(
                     dto.p.map { it.toParagraph(boxStyles, dto.fonts) }, dto.notes, dto.fonts, dto.fontPaths,
-                    dto.cssHrefs, dto.cssInline
+                    dto.cssHrefs, dto.cssInline, dto.bd, dto.bhtml, dto.bshell
                 )
             }
         }
