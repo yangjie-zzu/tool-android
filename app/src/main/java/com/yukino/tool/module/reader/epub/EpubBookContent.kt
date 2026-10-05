@@ -50,8 +50,12 @@ class EpubBookContent(
                     if (!fontFiles.containsKey(family)) fontFiles[family] = abs
                 }
             }
-            // 图片相对路径 → 绝对路径(一次转换,排版/渲染零路径解析;块级 imageRef 与行内 inlineImages 同规则)
-            val needResolve = paras.any { it.isImage || it.inlineImages.isNotEmpty() }
+            // 图片相对路径 → 绝对路径(一次转换,排版/渲染零路径解析;块级 imageRef、
+            // 行内 inlineImages 与表格格内 imgRef 同规则)
+            val needResolve = paras.any {
+                it.isImage || it.inlineImages.isNotEmpty() ||
+                    it.table?.cells?.any { c -> c.imgRef != null } == true
+            }
             val resolved = if (needResolve) {
                 paras.map { p ->
                     val inline = if (p.inlineImages.isNotEmpty()) {
@@ -73,10 +77,12 @@ class EpubBookContent(
                             marginLeftEm = p.marginLeftEm, marginRightEm = p.marginRightEm,
                             widthEm = p.widthEm, widthAlign = p.widthAlign,
                             lineSpacingMult = p.lineSpacingMult, boxStyle = boxAbs(p.boxStyle),
-                            table = p.table, floatSide = p.floatSide,
+                            table = absTable(p.table), floatSide = p.floatSide,
                             breakAll = p.breakAll, brBefore = p.brBefore
                         )
-                    } else if (inline !== p.inlineImages || p.boxStyle != boxAbs(p.boxStyle)) {
+                    } else if (inline !== p.inlineImages || p.boxStyle != boxAbs(p.boxStyle) ||
+                        p.table !== absTable(p.table)
+                    ) {
                         com.yukino.tool.module.reader.common.Paragraph(
                             p.text, p.runs, p.kind, p.imageRef,
                             anchor = p.anchor, notes = p.notes, align = p.align,
@@ -86,7 +92,7 @@ class EpubBookContent(
                             marginLeftEm = p.marginLeftEm, marginRightEm = p.marginRightEm,
                             widthEm = p.widthEm, widthAlign = p.widthAlign,
                             lineSpacingMult = p.lineSpacingMult, boxStyle = boxAbs(p.boxStyle),
-                            table = p.table, floatSide = p.floatSide,
+                            table = absTable(p.table), floatSide = p.floatSide,
                             breakAll = p.breakAll, brBefore = p.brBefore
                         )
                     } else p
@@ -118,8 +124,25 @@ class EpubBookContent(
             marginLeftEm = marginLeftEm, marginRightEm = marginRightEm,
             widthEm = widthEm, widthAlign = widthAlign,
             lineSpacingMult = lineSpacingMult, boxStyle = bs,
-            table = table, floatSide = floatSide, breakAll = breakAll, brBefore = brBefore
+            table = absTable(table), floatSide = floatSide, breakAll = breakAll, brBefore = brBefore
         )
+
+    // 表格格内图片相对路径 → 绝对路径(无格内图或已绝对化原样返回同实例)
+    private fun absTable(td: com.yukino.tool.module.reader.common.TableData?): com.yukino.tool.module.reader.common.TableData? {
+        if (td == null || td.cells.none { it.imgRef != null && !it.imgRef.startsWith("/") }) return td
+        val cells = td.cells.map { c ->
+            if (c.imgRef != null && !c.imgRef.startsWith("/")) {
+                com.yukino.tool.module.reader.common.TableCell(
+                    c.row, c.col, c.rowSpan, c.colSpan, c.text, c.runs,
+                    c.align, c.vAlign, c.bg, c.edges, c.header,
+                    java.io.File(chapterDir, c.imgRef).absolutePath
+                )
+            } else c
+        }
+        return com.yukino.tool.module.reader.common.TableData(
+            td.rows, td.cols, cells, td.collapse, td.spacingEm, td.colWidths
+        )
+    }
 
     // 章内锚点 → 投影偏移: 扫段落 anchor 匹配,偏移 = 前序段长累计(与 bodyText 同构)
     override fun anchorOffset(chapterIndex: Int, anchorId: String): Long? {
