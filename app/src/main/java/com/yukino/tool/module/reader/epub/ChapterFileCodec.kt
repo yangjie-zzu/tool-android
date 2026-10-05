@@ -25,7 +25,7 @@ object ChapterFileCodec {
     private data class NoteAnchorDto(val s: Int, val e: Int, val id: String)
 
     @Serializable
-    private data class InlineImgDto(val s: Int, val ref: String)
+    private data class InlineImgDto(val s: Int, val ref: String, val sup: Boolean = false)
 
     @Serializable
     private data class CssLenDto(val v: Float, val pct: Boolean = false)
@@ -174,7 +174,7 @@ object ChapterFileCodec {
                 mt = p.spaceAboveEm?.let { CssLenDto(it.v, it.pct) },
                 mb = p.spaceBelowEm?.let { CssLenDto(it.v, it.pct) },
                 h = if (p.heading != 0) p.heading else null,
-                ii = p.inlineImages.map { InlineImgDto(it.start, it.ref) },
+                ii = p.inlineImages.map { InlineImgDto(it.start, it.ref, it.sup) },
                 ml = p.marginLeftEm?.let { CssLenDto(it.v, it.pct) },
                 mr = p.marginRightEm?.let { CssLenDto(it.v, it.pct) },
                 w = p.widthEm?.let { CssLenDto(it.v, it.pct) },
@@ -225,7 +225,8 @@ object ChapterFileCodec {
     // v18: 选择器完整化/命名色全表/缩进 px-%/larger-smaller/dataURI 图片/表格格内图片。
     // v19: 混合渲染——章首装饰表格不再剥除(S1 信号命中块降级),存量书升级重提取。
     // 低版本文件打开时自动升级重提取
-    const val FORMAT_VERSION = 19
+    // v20: 行内图片角标 sup 标志(上标基线提升),存量书升级重提取
+    const val FORMAT_VERSION = 20
 
     private fun BoxDto.toBoxStyle() = com.yukino.tool.module.reader.common.BoxStyle(
         bg = bg, bgImage = bgImg,
@@ -293,7 +294,7 @@ object ChapterFileCodec {
             }
             rs
         }
-        val inlines = ii.map { InlineImg(it.s, it.ref) }
+        val inlines = ii.map { InlineImg(it.s, it.ref, it.sup) }
         val wb = wb
         if (wb != null) {
             return Paragraph(

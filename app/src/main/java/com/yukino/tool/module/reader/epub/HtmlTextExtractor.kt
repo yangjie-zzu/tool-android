@@ -1181,8 +1181,8 @@ object HtmlTextExtractor {
             pendingNotes += NoteAnchor(start, end, noteId)
         }
 
-        fun pendingInline(start: Int, ref: String) {
-            pendingInline += com.yukino.tool.module.reader.common.InlineImg(start, ref)
+        fun pendingInline(start: Int, ref: String, sup: Boolean = false) {
+            pendingInline += com.yukino.tool.module.reader.common.InlineImg(start, ref, sup)
         }
     }
 
@@ -1241,7 +1241,7 @@ object HtmlTextExtractor {
                     val (s, e) = b.appendTextTracked(HtmlTextExtractor.IMAGE_PLACEHOLDER)
                     if (e > s) {
                         b.pendingNote(s, e, frag)
-                        b.pendingInline(s, ref)
+                        b.pendingInline(s, ref, sup = true)   // noteref 图片角标 = 上标形态
                     }
                 }
             }

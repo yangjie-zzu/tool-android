@@ -36,8 +36,9 @@ enum class ParaKind { TEXT, IMAGE, TABLE, WEBVIEW }
 class NoteAnchor(val start: Int, val end: Int, val noteId: String)
 
 // 段内行内图片(五期): start 为投影中 U+FFFC 占位字符的段内偏移,
-// ref 为图片路径(章文件存相对路径,加载侧转绝对)。行内渲染,不独占行
-class InlineImg(val start: Int, val ref: String)
+// ref 为图片路径(章文件存相对路径,加载侧转绝对)。行内渲染,不独占行。
+// sup = noteref 图片角标(书源 <sup> 内): 绘制按上标基线提升
+class InlineImg(val start: Int, val ref: String, val sup: Boolean = false)
 
 // CSS 长度(七期): em 绝对值或版心百分比(CSS 的 margin/width 百分比相对包含块宽度)。
 // 排版期换算 px: em × 字号,百分比 × 可用宽

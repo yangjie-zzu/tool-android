@@ -115,7 +115,15 @@ class DrawLine(
 // 行内图片标记(五期): charIdx 为行内字符下标(该字符 = 投影 U+FFFC 占位),
 // ref 为图片绝对路径,w/h 为物化好的显示尺寸;x/y 为显示矩形左上角(版心坐标,
 // 图片预览命中用;与绘制层的精确定位同源公式,书内字体未加载时少量偏差可接受)
-class DrawInline(val charIdx: Int, val ref: String, val width: Int, val height: Int, val x: Float = 0f, val y: Float = 0f)
+class DrawInline(
+    val charIdx: Int,
+    val ref: String,
+    val width: Int,
+    val height: Int,
+    val x: Float = 0f,
+    val y: Float = 0f,
+    val sup: Boolean = false   // noteref 图片角标: 上标基线提升
+)
 
 // 盒组绘制矩形(七期): 版心坐标,底色/背景图/边框/圆角/阴影由 style 描述。
 // topOpen/bottomOpen = 盒组延续到相邻页(该缘不画横向边框,左右边照画)
@@ -1425,7 +1433,7 @@ object BookPager {
                                 val ci = abs - ln.start
                                 val ix = x + if (ci > 0) measure(text.substring(0, ci)) else 0f
                                 val iy = (y + above + ln.ascentAbs) - sz.height + typo.fontPx * 0.18f
-                                DrawInline(ci, im.ref, sz.width, sz.height, ix, iy)
+                                DrawInline(ci, im.ref, sz.width, sz.height, ix, iy, im.sup)
                             } else null
                         }
                     } else emptyList()

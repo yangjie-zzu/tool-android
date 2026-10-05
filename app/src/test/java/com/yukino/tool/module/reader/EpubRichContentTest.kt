@@ -780,8 +780,11 @@ class EpubRichContentTest {
         assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v17))   // v19 混合渲染(装饰表格不再剥除), v17 旧缓存需重提取
         val v19 = File.createTempFile("v19ch", ".txt")
         v19.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":19}""")
-        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v19))
-        legacy.delete(); v2.delete(); v4.delete(); v5.delete(); v6.delete(); v7.delete(); v8.delete(); v9.delete(); v10b.delete(); v11.delete(); v12.delete(); v13.delete(); v15.delete(); v16.delete(); v17.delete(); v19.delete()
+        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v19))   // v20 行内图片角标 sup 标志, v19 需重提取
+        val v20 = File.createTempFile("v20ch", ".txt")
+        v20.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":20}""")
+        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v20))
+        legacy.delete(); v2.delete(); v4.delete(); v5.delete(); v6.delete(); v7.delete(); v8.delete(); v9.delete(); v10b.delete(); v11.delete(); v12.delete(); v13.delete(); v15.delete(); v16.delete(); v17.delete(); v19.delete(); v20.delete()
     }
 
     // ---- 老书升级: 章号映射(顺序保持的标题匹配) ----
@@ -1369,7 +1372,7 @@ class EpubRichContentTest {
     }
 
     @Test
-    fun `缩进字段章文件往返且v19不再升级`() {
+    fun `缩进字段章文件往返且v20不再升级`() {
         val f = File.createTempFile("ch_v19", ".txt")
         val td = com.yukino.tool.module.reader.common.TableData(
             rows = 1, cols = 1,
@@ -1385,9 +1388,23 @@ class EpubRichContentTest {
         assertEquals("d/i.png", read.paragraphs[1].table!!.cells[0].imgRef)
         assertTrue(!ChapterFileCodec.needsUpgrade(f))
         // 降版本号模拟旧缓存: 可读但触发重提取
-        f.writeText(f.readText().replace("\"v\": 19", "\"v\": 17").replace("\"v\":19", "\"v\":17"))
+        f.writeText(f.readText().replace("\"v\": 20", "\"v\": 17").replace("\"v\":20", "\"v\":17"))
         assertTrue(ChapterFileCodec.needsUpgrade(f))
         f.delete()
+    }
+
+    // ---- 行内图片角标 sup 标志(上标基线提升) ----
+
+    @Test
+    fun `图片角标提取携带sup标志`() {
+        val paras = extractHtml(
+            "<p>你是蝴蝶夫人" +
+                "<a class=\"duokan-footnote no-d\" epub:type=\"noteref\" href=\"#n4\">" +
+                "<sup><img alt=\"note\" src=\"../Images/note.png\"></sup></a>吗？</p>"
+        )
+        val p = paras.first()
+        assertEquals(1, p.inlineImages.size)
+        assertTrue(p.inlineImages[0].sup)
     }
 
     // ---- larger/smaller 相对字号 ----

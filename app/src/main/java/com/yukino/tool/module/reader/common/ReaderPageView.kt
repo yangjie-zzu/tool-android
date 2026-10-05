@@ -597,7 +597,10 @@ class ReaderPageView(context: Context) : View(context) {
             if (inl.width > 0 && inl.height > 0) {
                 val bmp = imageFor(inl.ref, inl.width, inl.height)
                 val left = charX(inl.charIdx)
-                val top = ln.baseline - inl.height + base.textSize * 0.18f
+                // sup(noteref 图片角标)按上标形态提升: 底缘在基线上方 0.12 字号;
+                // 普通行内图底缘在基线下方 0.18 字号(垂直居中于字身)
+                val top = ln.baseline - inl.height +
+                    base.textSize * (if (inl.sup) -0.12f else 0.18f)
                 if (bmp != null) {
                     canvas.drawBitmap(bmp, null, android.graphics.RectF(left, top, left + inl.width, top + inl.height), imagePaint)
                 } else {
