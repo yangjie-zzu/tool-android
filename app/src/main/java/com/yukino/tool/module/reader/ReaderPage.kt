@@ -5,6 +5,7 @@ package com.yukino.tool.module.reader
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -1560,12 +1561,14 @@ private fun ImagePreviewOverlay(
         } else showSpinner = false
     }
     // MutableTransitionState(false) 起步: 首次组合即 visible=true(第一次点开图片)时
-    // 也播进入动画——普通 visible 参数首次组合无状态变化, 淡入被跳过 = 黑底硬切闪现
+    // 也播进入动画——普通 visible 参数首次组合无状态变化, 进场动画被跳过。
+    // 蒙层进场不淡入(EnterTransition.None): 淡入前 100ms 几乎不可见, 点击反馈发闷;
+    // 黑底即时全显 + 图片就绪后 Crossfade 淡入(系统相册模式), 关闭仍淡出柔化
     val previewVis = remember { MutableTransitionState(false) }
     previewVis.targetState = visible
     AnimatedVisibility(
         visibleState = previewVis,
-        enter = fadeIn(tween(180)),
+        enter = EnterTransition.None,
         exit = fadeOut(tween(150))
     ) {
         Box(
