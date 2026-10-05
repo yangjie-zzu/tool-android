@@ -19,7 +19,9 @@ data class ResolvedTypography(
     val bgColor: Int,
     val justify: Boolean,
     val bookSpacing: Boolean = true,  // 段距跟随书内 CSS(四期): false = 忽略书内 margin 纯用全局段距
-    val night: Boolean = false        // 七期: 夜间主题(书内颜色/底色/边框做亮度适配)
+    val bookLineHeight: Boolean = true, // 行距跟随书内 CSS: false = 忽略书内 line-height,全局行距覆盖
+    val night: Boolean = false,       // 七期: 夜间主题(书内颜色/底色/边框做亮度适配)
+    val lineSpacingPercent: Int = 180 // 行距%原值(WebView 块行距注入与缓存键用;lineExtraPx 无法逆推)
 )
 
 object Typography {
@@ -64,7 +66,9 @@ object Typography {
             bgColor = s.effectiveBg.toInt(),
             justify = s.justify,
             bookSpacing = s.bookSpacing,
-            night = s.theme == ReaderTheme.NIGHT
+            bookLineHeight = s.bookLineHeight,
+            night = s.theme == ReaderTheme.NIGHT,
+            lineSpacingPercent = s.lineSpacingPercent
         )
     }
 

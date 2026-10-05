@@ -16,7 +16,7 @@ import android.database.sqlite.SQLiteOpenHelper
 object AppDb {
 
     private const val NAME = "tool.db"
-    private const val VERSION = 6
+    private const val VERSION = 7
 
     @Volatile
     private var helper: SQLiteOpenHelper? = null
@@ -57,6 +57,10 @@ object AppDb {
                     // v6: 段距跟随书内 CSS 开关(四期)
                     if (oldVersion < 6) {
                         db.execSQL("ALTER TABLE reader_settings ADD COLUMN book_spacing INTEGER NOT NULL DEFAULT 1")
+                    }
+                    // v7: 行距跟随书内 CSS 开关(关=全局行距覆盖书内 line-height)
+                    if (oldVersion < 7) {
+                        db.execSQL("ALTER TABLE reader_settings ADD COLUMN book_line_height INTEGER NOT NULL DEFAULT 1")
                     }
                 }
             }
@@ -131,7 +135,8 @@ object AppDb {
                     "indent INTEGER NOT NULL, " +
                     "justify INTEGER NOT NULL, " +
                     "keep_screen_on INTEGER NOT NULL, " +
-                    "book_spacing INTEGER NOT NULL DEFAULT 1)"
+                    "book_spacing INTEGER NOT NULL DEFAULT 1, " +
+                    "book_line_height INTEGER NOT NULL DEFAULT 1)"
             )
             // 分页缓存: 派生数据, 版式/内容变化由 typo_key/total_chars 失效
             db.execSQL(

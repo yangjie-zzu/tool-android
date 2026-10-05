@@ -122,6 +122,7 @@ import com.yukino.tool.module.reader.common.PageKind
 import com.yukino.tool.module.reader.common.PageSpec
 import com.yukino.tool.module.reader.common.ReaderBook
 import com.yukino.tool.module.reader.common.ReaderSettings
+import com.yukino.tool.module.reader.common.ResolvedTypography
 import com.yukino.tool.module.reader.common.ReaderPageView
 import com.yukino.tool.module.reader.common.Typography
 import com.yukino.tool.module.reader.common.BlockCache
@@ -255,6 +256,7 @@ fun ReaderScreen(
         listOf(
             it.fontPx, it.lineExtraPx, it.paraExtraPx, it.indentPx, it.marginPx,
             it.textWidth, it.textHeight, it.justify, it.fgColor, it.bookSpacing,
+            it.bookLineHeight,
             Typography.BREAK_STRATEGY_VERSION   // 断行算法升级时使旧缓存失效
         ).hashCode()
     }
@@ -277,11 +279,12 @@ fun ReaderScreen(
         // 混合渲染: WEBVIEW 块按需渲染(串行闸 + 缓存,缓存命中零成本)。必须先于分页——
         // 断行按块位图高占行,specs 持久缓存命中的页界同样按位图高分页
         if (cnt is EpubBookContent) {
-            val blockSpecs = withContext(Dispatchers.IO) { collectWebBlockSpecs(cnt, t.fontPx, t.textWidth) }
+            val blockSpecs = withContext(Dispatchers.IO) { collectWebBlockSpecs(cnt, t) }
             if (blockSpecs.isNotEmpty()) {
                 initStage = "渲染装饰块…"
                 WebViewBlockRenderer.ensureAllBlocking(
-                    context, cnt.webBlockRoot(), blockSpecs, t.fontPx, t.textWidth
+                    context, cnt.webBlockRoot(), blockSpecs, t.fontPx, t.textWidth,
+                    t.lineSpacingPercent, t.bookLineHeight
                 ) { done, total -> initStage = "渲染装饰块 $done/$total" }
                 initStage = null
             }
@@ -443,10 +446,11 @@ fun ReaderScreen(
     val selVisualRef = remember { mutableStateOf(selectionVisual) }
     selVisualRef.value = selectionVisual
 
-    // tap → 角标命中: 版心坐标 → (行,字符) → 全书偏移 → 章脚注表;未命中返回 null。
+    // 版心坐标 → (行,字符) → 全书偏移 → 章脚注表;未命中返回 null。
     // 占位符(U+FFFC)的点击度量不含 ReplacementSpan 图标宽,字符吸附可能偏多个字符——
     // 先做"行内角标偏移差匹配"(容差 3 字符),未中再退常规 ±1 邻域。
-    // 命中携带点击点(窗口坐标)作为弹层锚点
+    // 弹层锚点: 命中角标图时用角标本体几何(水平中心/底缘,转窗口坐标)——箭头指向角标
+    // 而非手指落点,点偏不再带歪箭头;纯文本脚注无矩形,锚点用点击点
     fun footnoteHitAt(offset: Offset): FootnotePopup? {
         val bp = livePage ?: return null
         val t = liveTypo ?: return null
@@ -456,6 +460,7 @@ fun ReaderScreen(
         val hit = SelectionGeometry.hit(bp, offset.x - t.marginPx, offset.y - contentTopPx, m) ?: return null
         val line = bp.lines[hit.first]
         val global = SelectionGeometry.globalAt(bp, hit.first, hit.second)
+        var anchor = offset
         val hitNote: Pair<String, String>? = if (line.inlineImages.isNotEmpty()) {
             val nearest = line.inlineImages.minByOrNull {
                 kotlin.math.abs(global - (line.lineStartGlobal + it.charIdx))
@@ -463,6 +468,11 @@ fun ReaderScreen(
             if (nearest != null &&
                 kotlin.math.abs(global - (line.lineStartGlobal + nearest.charIdx)) <= 3
             ) {
+                // 锚到角标图本体: x = 水平中心, y = 底缘(版心 → 窗口坐标)
+                anchor = Offset(
+                    nearest.x + nearest.width / 2f + t.marginPx,
+                    nearest.y + nearest.height + contentTopPx
+                )
                 cnt.footnoteAt(line.lineStartGlobal + nearest.charIdx)
             } else {
                 null   // 点击在本行但不在角标容差内,不弹菜单也不误触脚注
@@ -472,7 +482,7 @@ fun ReaderScreen(
                 ?: cnt.footnoteAt(global - 1)
                 ?: cnt.footnoteAt(global + 1)
         }
-        return hitNote?.let { FootnotePopup(it.first, it.second, offset) }
+        return hitNote?.let { FootnotePopup(it.first, it.second, anchor) }
     }
 
     // 图片命中(混合渲染 §8): 版心坐标 → 图片文件绝对路径。优先级: 块级图片行矩形 →
@@ -1273,7 +1283,7 @@ fun ReaderScreen(
     var lastNote by remember { mutableStateOf<FootnotePopup?>(null) }
     if (footnoteShow != null) lastNote = footnoteShow
     lastNote?.let { note ->
-        val gapPx = with(density) { 20.dp.toPx() }
+        val gapPx = with(density) { 10.dp.toPx() }
         val cardMarginPx = with(density) { 16.dp.toPx() }
         val arrowW = with(density) { 18.dp.toPx() }
         val arrowH = with(density) { 11.dp.toPx() }
@@ -1375,12 +1385,11 @@ fun ReaderScreen(
     }
 }
 
-// 全书 WEBVIEW 块清单(章文件遍历,一次性;缓存键随字号/版心宽)。
+// 全书 WEBVIEW 块清单(章文件遍历,一次性;缓存键随字号/版心宽/行距)。
 // IO 线程调用——章文档读取是磁盘 JSON
 private fun collectWebBlockSpecs(
     content: EpubBookContent,
-    fontPx: Float,
-    textWidth: Int
+    typo: ResolvedTypography
 ): List<Pair<String, BlockSpec>> {
     val out = ArrayList<Pair<String, BlockSpec>>()
     for (i in 0 until content.chapterCount) {
@@ -1389,7 +1398,7 @@ private fun collectWebBlockSpecs(
             val html = p.blockHtml ?: continue
             val shell = p.ancestorShell ?: ""
             val hash = BlockCache.contentHashOf(html, shell, p.blockDocDir, doc.cssHrefs, doc.cssInline)
-            out += BlockCache.keyOf(fontPx, textWidth, hash) to
+            out += BlockCache.keyOf(typo.fontPx, typo.textWidth, typo.lineSpacingPercent, typo.bookLineHeight, hash) to
                 BlockSpec(p.blockDocDir, html, shell, doc.cssHrefs, doc.cssInline)
         }
     }

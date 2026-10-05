@@ -28,8 +28,8 @@ class WebBlockInfo(
     val bitmapW: Int = 0   // 位图像素宽(几何表坐标 → 显示坐标的换算基准)
 )
 
-// 块缓存键与磁盘读取。键 = 渲染器版本|字号|版心宽|块内容 hash
-// (失效条件与整章快照同语义: 字号、版式(版心宽)、渲染器版本三元组)
+// 块缓存键与磁盘读取。键 = 渲染器版本|字号|版心宽|行距(值+是否覆盖书内)|块内容 hash
+// (失效条件与整章快照同语义: 字号、版式(版心宽)、行距注入、渲染器版本)
 object BlockCache {
     // v2: 采集加布局稳定性环。v3: 强制全部声明字体 FontFace.load() 后再量。
     // v4: 两遍采集(隔 2×rAF)矩形序列一致才上报(布局定格自校验)。
@@ -47,8 +47,14 @@ object BlockCache {
         java.security.MessageDigest.getInstance("MD5").digest(s.toByteArray(Charsets.UTF_8))
             .joinToString("") { "%02x".format(it) }
 
-    fun keyOf(fontPx: Float, textWidth: Int, contentHash: String): String =
-        md5("v$RENDERER_VERSION|${"%.1f".format(fontPx)}|$textWidth|$contentHash")
+    fun keyOf(
+        fontPx: Float,
+        textWidth: Int,
+        lineSpacingPercent: Int,
+        bookLineHeight: Boolean,
+        contentHash: String
+    ): String =
+        md5("v$RENDERER_VERSION|${"%.1f".format(fontPx)}|$textWidth|$lineSpacingPercent|$bookLineHeight|$contentHash")
 
     // 块内容 hash(渲染器与排版层共用同一条拼接规则)
     fun contentHashOf(

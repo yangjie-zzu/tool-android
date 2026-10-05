@@ -250,7 +250,7 @@ object ReaderStore {
     fun loadSettings(context: Context): ReaderSettings {
         AppDb.get(context).rawQuery(
             "SELECT theme, custom_bg, custom_fg, font_size_dp, line_spacing, paragraph_spacing, " +
-                "margin_dp, indent, justify, keep_screen_on, book_spacing FROM reader_settings WHERE id = 1",
+                "margin_dp, indent, justify, keep_screen_on, book_spacing, book_line_height FROM reader_settings WHERE id = 1",
             null
         ).use { c ->
             if (!c.moveToFirst()) return ReaderSettings()
@@ -266,7 +266,8 @@ object ReaderStore {
                     indent = c.getInt(7) != 0,
                     justify = c.getInt(8) != 0,
                     keepScreenOn = c.getInt(9) != 0,
-                    bookSpacing = c.isNull(10) || c.getInt(10) != 0
+                    bookSpacing = c.isNull(10) || c.getInt(10) != 0,
+                    bookLineHeight = c.isNull(11) || c.getInt(11) != 0
                 )
             }.getOrElse { ReaderSettings() } // 脏数据兜底: 回退默认设置
         }
@@ -276,8 +277,8 @@ object ReaderStore {
     fun saveSettings(context: Context, settings: ReaderSettings) {
         val st = AppDb.get(context).compileStatement(
             "INSERT OR REPLACE INTO reader_settings(id, theme, custom_bg, custom_fg, font_size_dp, " +
-                "line_spacing, paragraph_spacing, margin_dp, indent, justify, keep_screen_on, book_spacing) " +
-                "VALUES(1,?,?,?,?,?,?,?,?,?,?,?)"
+                "line_spacing, paragraph_spacing, margin_dp, indent, justify, keep_screen_on, book_spacing, book_line_height) " +
+                "VALUES(1,?,?,?,?,?,?,?,?,?,?,?,?)"
         )
         st.bindString(1, settings.theme.name)
         if (settings.customBg != null) st.bindLong(2, settings.customBg) else st.bindNull(2)
@@ -290,6 +291,7 @@ object ReaderStore {
         st.bindLong(9, if (settings.justify) 1 else 0)
         st.bindLong(10, if (settings.keepScreenOn) 1 else 0)
         st.bindLong(11, if (settings.bookSpacing) 1 else 0)
+        st.bindLong(12, if (settings.bookLineHeight) 1 else 0)
         st.executeInsert()
     }
 

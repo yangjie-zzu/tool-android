@@ -70,12 +70,16 @@ object WebViewBlockRenderer {
     // 阻塞补齐(串行): specs 里缓存未命中的块逐个渲染,全部处理完(含失败)才返回。
     // 在 buildSpecs 前调用(主线程调度,loading 遮盖),断行时块位图尺寸即已就绪。
     // root = 解压根目录(chapterDir,css/字体/图片拦截映射的基准)
+    // 行距注入: lineOverride=false 时 line-height 只作 body 默认(书内元素声明层叠优先),
+    // true 时 !important 压过书内声明(设置"行距跟随书内"关闭)
     suspend fun ensureAllBlocking(
         context: Context,
         root: File,
         specs: List<Pair<String, BlockSpec>>,
         fontPx: Float,
         textWidth: Int,
+        lineSpacingPercent: Int,
+        lineOverride: Boolean,
         onProgress: (done: Int, total: Int) -> Unit = { _, _ -> }
     ) {
         val app = context.applicationContext
@@ -86,7 +90,9 @@ object WebViewBlockRenderer {
             val (key, spec) = pair
             if (key in failed || !inFlight.add(key)) { onProgress(i + 1, total); continue }
             val ok = gate.withLock {
-                runCatching { capture(app, root, key, spec, fontPx, textWidth) }.getOrDefault(false)
+                runCatching {
+                    capture(app, root, key, spec, fontPx, textWidth, lineSpacingPercent, lineOverride)
+                }.getOrDefault(false)
             }
             inFlight.remove(key)
             if (!ok) failed.add(key)
@@ -105,13 +111,19 @@ object WebViewBlockRenderer {
         key: String,
         spec: BlockSpec,
         fontPx: Float,
-        textWidth: Int
+        textWidth: Int,
+        lineSpacingPercent: Int,
+        lineOverride: Boolean
     ): Boolean = withContext(Dispatchers.Default) {
         val w = textWidth.coerceAtLeast(1)
         val metrics = app.resources.displayMetrics
         val screenH = metrics.heightPixels
         val density = metrics.density
-        val html = buildMiniHtml(spec, fontPx, density, collectJs(limitPxOf(screenH)))
+        val html = buildMiniHtml(
+            spec, fontPx, density,
+            lineMultCss(lineSpacingPercent, lineOverride),
+            collectJs(limitPxOf(screenH))
+        )
         val done = CompletableDeferred<Boolean>()
         Handler(Looper.getMainLooper()).post {
             var view: WebView? = null
@@ -194,7 +206,15 @@ object WebViewBlockRenderer {
     // mini HTML 组装: 原文档样式(外链 href 原样经 <base> 解析 + <style> 原文)+
     // html 根字号注入 + 祖先壳(body 属性并入 <body> 标签)+ 块 HTML + 壳反序闭合。
     // 书内脚本一律剥除(JS 引擎只为采集脚本服务)
-    private fun buildMiniHtml(spec: BlockSpec, fontPx: Float, density: Float, collectScript: String): String {
+    // 行距: 无单位倍数随各元素自身字号缩放(对齐自绘"字号×倍率"语义)。
+    // lineMultCss 为空 = 不注入;非空时 override 模式 !important 压书内声明,否则只作 body 默认
+    private fun buildMiniHtml(
+        spec: BlockSpec,
+        fontPx: Float,
+        density: Float,
+        lineMultCss: String?,
+        collectScript: String
+    ): String {
         val rootFontPx = fontPx / density   // CSS px(钉死缩放比 = density)
         val sb = StringBuilder()
         sb.append("<!DOCTYPE html><html><head><meta charset=\"utf-8\">")
@@ -206,6 +226,7 @@ object WebViewBlockRenderer {
         }
         sb.append("<style>html{font-size:").append(rootFontPx).append("px}")
         sb.append("body{margin:0;padding:0}</style>")
+        if (lineMultCss != null) sb.append("<style>").append(lineMultCss).append("</style>")
         sb.append(collectScript)
         sb.append("</head>")
         val shell = stripScripts(spec.shell)
@@ -219,6 +240,14 @@ object WebViewBlockRenderer {
         }
         sb.append("</body></html>")
         return sb.toString()
+    }
+
+    // 行距注入 CSS 片段: 覆盖模式 body *{line-height:X!important}(压过书内声明);
+    // 默认模式 body{line-height:X}(书内元素声明层叠自动优先,null=不注入)
+    private fun lineMultCss(lineSpacingPercent: Int, lineOverride: Boolean): String {
+        val mult = "%.2f".format((lineSpacingPercent / 100f).coerceIn(0.5f, 5f))
+        return if (lineOverride) "body *{line-height:${mult}!important}"
+        else "body{line-height:$mult}"
     }
 
     private fun escapeAttr(s: String) = s.replace("&", "&amp;").replace("\"", "&quot;")

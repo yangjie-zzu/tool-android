@@ -669,14 +669,15 @@ object BookPager {
         // 覆盖全局行距),行框空白(可负,如 0% 压行)上下对分。
         // CSS line-height 的 em 相对段落自身字号: 取段内最大 run 缩放字号(无 run 用全局)。
         // 装饰盒内段落(书内 CSS 排版)无 line-height 时行高用 normal(bodyNatural),
-        // 不吃全局贴合行距/行距偏好——盒的密度由书内 CSS 控制
+        // 不吃全局贴合行距/行距偏好——盒的密度由书内 CSS 控制。
+        // 行距设置"覆盖书内"开关关着时忽略书内 line-height,一律走全局行距
         fun paraLinePitch(para: Paragraph?): Pair<Int, Int> {
-            val lh = para?.lineSpacingMult
+            val lh = if (typo.bookLineHeight) para?.lineSpacingMult else null
             if (lh == null) {
                 if (para?.boxStyle != null) return bodyNatural.toInt() to bodyAscentAbs
                 return bodyPitch to (bodyAscentAbs + bodyShift)
             }
-            val basePx = para.runs.firstOrNull()?.sizeEm?.let { typo.fontPx * it } ?: typo.fontPx
+            val basePx = para?.runs?.firstOrNull()?.sizeEm?.let { typo.fontPx * it } ?: typo.fontPx
             val frame = basePx * lh
             val p = PaginationEngine.gridCeil(frame, Typography.GRID_PX).coerceAtLeast(Typography.GRID_PX)
             return p to (bodyAscentAbs + LineGrid.centerShift(p, bodyNatural))
@@ -881,7 +882,7 @@ object BookPager {
         val hash = BlockCache.contentHashOf(
             html, para.ancestorShell ?: "", para.blockDocDir, doc.cssHrefs, doc.cssInline
         )
-        val key = BlockCache.keyOf(typo.fontPx, typo.textWidth, hash)
+        val key = BlockCache.keyOf(typo.fontPx, typo.textWidth, typo.lineSpacingPercent, typo.bookLineHeight, hash)
         val cb = BlockCache.lookup(root, key) ?: return null
         if (cb.width <= 0 || cb.height <= 0) return null
         var dw = typo.textWidth

@@ -81,7 +81,8 @@ data class ReaderSettings(
     val indent: Boolean = true,        // 首行缩进 2 字符
     val justify: Boolean = true,       // 两端对齐
     val keepScreenOn: Boolean = true,
-    val bookSpacing: Boolean = true    // 段距跟随书内 CSS(四期): 关=忽略书内 margin 纯用全局段距
+    val bookSpacing: Boolean = true,   // 段距跟随书内 CSS(四期): 关=忽略书内 margin 纯用全局段距
+    val bookLineHeight: Boolean = true // 行距跟随书内 CSS: 关=忽略书内 line-height,全局行距覆盖
 ) {
     val effectiveBg: Long get() = if (theme == ReaderTheme.CUSTOM) customBg ?: theme.colors.first else theme.colors.first
     val effectiveFg: Long get() = if (theme == ReaderTheme.CUSTOM) customFg ?: theme.colors.second else theme.colors.second
