@@ -1275,6 +1275,8 @@ fun ReaderScreen(
         val arrowW = with(density) { 18.dp.toPx() }
         val arrowH = with(density) { 11.dp.toPx() }
         val arrowEdge = with(density) { 16.dp.toPx() }   // 尖角离卡片左右缘的最小距离
+        // B 方案: 浅色主题下卡片纯白(与页面米色区分更清), 夜间主题跟随 menuBg
+        val noteCardBg = if (bgColor.luminance() > 0.5f) Color.White else menuBg
         AnimatedVisibility(
             visible = footnoteShow != null,
             enter = fadeIn(tween(150)) + scaleIn(initialScale = 0.96f, animationSpec = tween(150)),
@@ -1297,7 +1299,7 @@ fun ReaderScreen(
                             radius = with(density) { 12.dp.toPx() },
                             tipX = arrowX, tipW = arrowW, tipH = arrowH, down = above
                         ),
-                        color = menuBg,
+                        color = noteCardBg,
                         tonalElevation = 0.dp,
                         shadowElevation = 8.dp,
                         modifier = Modifier
@@ -1392,8 +1394,9 @@ private fun currentPercent(
 
 
 // 脚注气泡形状: 圆角矩形主体 + 朝角标一侧的三角箭头。tipX = 箭头左缘 x(px, 已在
-// 调用处钳进圆角区); down = 卡片在角标上方, 箭头贴下缘向下方伸出。三角底边与主体
-// 重叠 1px 防缝, 非零环绕填充即并集; 投影沿整个轮廓绘制, 箭头同样带影
+// 调用处钳进圆角区); down = 卡片在角标上方, 箭头贴下缘向下方伸出。
+// 单一闭合轮廓(沿周界行走、箭头处外凸)——两条回路拼接会让矩形底边投影压过三角
+// 根部形成暗缝; 连续轮廓下填充与投影都是一条线, 无缝
 private class BubbleShape(
     private val radius: Float,
     private val tipX: Float,
@@ -1402,16 +1405,42 @@ private class BubbleShape(
     private val down: Boolean
 ) : Shape {
     override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline {
-        val bodyH = size.height - tipH
+        val w = size.width
+        val r = radius
         val p = Path()
-        p.addRoundRect(RoundRect(0f, 0f, size.width, bodyH, CornerRadius(radius, radius)))
-        val x = tipX.coerceIn(radius, (size.width - radius - tipW).coerceAtLeast(radius))
         if (down) {
-            val base = bodyH - 1f
-            p.moveTo(x, base); p.lineTo(x + tipW, base); p.lineTo(x + tipW / 2f, size.height); p.close()
+            // 主体 [0..bodyH], 箭头贴下缘向下伸出
+            val bodyH = size.height - tipH
+            p.moveTo(r, 0f)
+            p.lineTo(w - r, 0f)
+            p.arcTo(androidx.compose.ui.geometry.Rect(w - 2 * r, 0f, w, 2 * r), -90f, 90f, false)
+            p.lineTo(w, bodyH - r)
+            p.arcTo(androidx.compose.ui.geometry.Rect(w - 2 * r, bodyH - 2 * r, w, bodyH), 0f, 90f, false)
+            p.lineTo(tipX + tipW, bodyH)
+            p.lineTo(tipX + tipW / 2f, bodyH + tipH)
+            p.lineTo(tipX, bodyH)
+            p.lineTo(r, bodyH)
+            p.arcTo(androidx.compose.ui.geometry.Rect(0f, bodyH - 2 * r, 2 * r, bodyH), 90f, 90f, false)
+            p.lineTo(0f, r)
+            p.arcTo(androidx.compose.ui.geometry.Rect(0f, 0f, 2 * r, 2 * r), 180f, 90f, false)
+            p.close()
         } else {
-            val base = tipH + 1f
-            p.moveTo(x, base); p.lineTo(x + tipW, base); p.lineTo(x + tipW / 2f, 0f); p.close()
+            // 主体 [tipH..h], 箭头贴上缘向上伸出
+            val top = tipH
+            val bot = size.height
+            p.moveTo(r, top)
+            p.lineTo(w - r, top)
+            p.arcTo(androidx.compose.ui.geometry.Rect(w - 2 * r, top, w, top + 2 * r), -90f, 90f, false)
+            p.lineTo(w, bot - r)
+            p.arcTo(androidx.compose.ui.geometry.Rect(w - 2 * r, bot - 2 * r, w, bot), 0f, 90f, false)
+            p.lineTo(r, bot)
+            p.arcTo(androidx.compose.ui.geometry.Rect(0f, bot - 2 * r, 2 * r, bot), 90f, 90f, false)
+            p.lineTo(0f, top + r)
+            p.arcTo(androidx.compose.ui.geometry.Rect(0f, top, 2 * r, top + 2 * r), 180f, 90f, false)
+            p.lineTo(tipX, top)
+            p.lineTo(tipX + tipW / 2f, top - tipH)
+            p.lineTo(tipX + tipW, top)
+            p.close()
         }
         return Outline.Generic(p)
     }
