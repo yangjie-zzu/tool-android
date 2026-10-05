@@ -62,7 +62,7 @@ class EpubBookContent(
                         p.inlineImages.map { im ->
                             val abs = if (im.ref.startsWith("/")) im.ref
                             else java.io.File(chapterDir, im.ref).absolutePath
-                            com.yukino.tool.module.reader.common.InlineImg(im.start, abs)
+                            com.yukino.tool.module.reader.common.InlineImg(im.start, abs, im.sup)
                         }
                     } else p.inlineImages
                     if (p.isImage && p.imageRef?.startsWith("/") != true) {
