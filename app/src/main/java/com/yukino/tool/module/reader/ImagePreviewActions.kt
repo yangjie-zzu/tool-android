@@ -18,8 +18,14 @@ import java.util.Locale
 // 图片预览动作: 保存到相册/分享/设壁纸, 三者共用当前预览位图(所见即所得,
 // SVG 栅格图与 GIF 首帧同样可存)。全部同步实现, 调用方放 Dispatchers.IO 执行;
 // 返回值为 Toast 文案: saveToGallery 必返回, share/setWallpaper 返回 null 表示
-// 已进入系统流程(分享面板/裁剪页拉起), 无需提示
+// 已进入系统流程(分享面板/裁剪页拉起), 无需提示。
+// 预览位图在 26+ 是硬件位图(GPU 侧), 写盘/壁纸前先转回软件位图
 object ImagePreviewActions {
+
+    private fun softOf(bitmap: Bitmap): Bitmap =
+        if (Build.VERSION.SDK_INT >= 26 && bitmap.config == Bitmap.Config.HARDWARE)
+            bitmap.copy(Bitmap.Config.ARGB_8888, false)
+        else bitmap
 
     // 保存 PNG 到相册 Pictures/YukinoTool/: 29+ 走 MediaStore RELATIVE_PATH,
     // 28- 直写公共目录(需 WRITE_EXTERNAL_STORAGE, 未授权时提示)后扫库入库
@@ -28,6 +34,7 @@ object ImagePreviewActions {
             context.checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
             != PackageManager.PERMISSION_GRANTED
         ) return "保存失败: 请先在系统设置中授予存储权限"
+        val bmp = softOf(bitmap)
         val name = "preview_" +
             SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date()) + ".png"
         return try {
@@ -42,7 +49,7 @@ object ImagePreviewActions {
                     MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values
                 ) ?: return "保存失败"
                 context.contentResolver.openOutputStream(uri)?.use { os ->
-                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, os)
+                    bmp.compress(Bitmap.CompressFormat.PNG, 100, os)
                 } ?: return "保存失败"
             } else {
                 val dir = File(
@@ -51,7 +58,7 @@ object ImagePreviewActions {
                 )
                 if (!dir.exists() && !dir.mkdirs()) return "保存失败: 无法创建目录"
                 val out = File(dir, name)
-                out.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                out.outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
                 MediaScannerConnection.scanFile(
                     context, arrayOf(out.absolutePath), arrayOf("image/png"), null
                 )
@@ -65,9 +72,10 @@ object ImagePreviewActions {
     // 分享: PNG 落 cache/export/(FileProvider 已有该路径映射)经 ACTION_SEND 拉起系统分享
     fun share(context: Context, bitmap: Bitmap): String? {
         return try {
+            val bmp = softOf(bitmap)
             val dir = File(context.cacheDir, "export").apply { mkdirs() }
             val file = File(dir, "share_${System.currentTimeMillis()}.png")
-            file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+            file.outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
             val uri = FileProvider.getUriForFile(
                 context, context.packageName + ".fileProvider", file
             )
@@ -91,10 +99,11 @@ object ImagePreviewActions {
     // 系统无裁剪组件(或拉起失败)时降级 setBitmap 直接设主屏壁纸
     fun setWallpaper(context: Context, bitmap: Bitmap): String? {
         val wm = WallpaperManager.getInstance(context)
+        val bmp = softOf(bitmap)
         val dir = File(context.cacheDir, "export").apply { mkdirs() }
         val file = File(dir, "wallpaper_${System.currentTimeMillis()}.png")
         return try {
-            file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+            file.outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
             val uri = FileProvider.getUriForFile(
                 context, context.packageName + ".fileProvider", file
             )
@@ -107,7 +116,7 @@ object ImagePreviewActions {
                 context.startActivity(crop)
                 null
             } else {
-                wm.setBitmap(bitmap, null, true, WallpaperManager.FLAG_SYSTEM)
+                wm.setBitmap(bmp, null, true, WallpaperManager.FLAG_SYSTEM)
                 "壁纸已设置"
             }
         } catch (e: Exception) {

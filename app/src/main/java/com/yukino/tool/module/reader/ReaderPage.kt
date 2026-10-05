@@ -277,42 +277,52 @@ fun ReaderScreen(
     val livePage by rememberUpdatedState(currentBookPage)
 
     // 全书页目录: 文本/视口/版式任一变化 → 后台整本重算,按锚点重定位(打开书时锚点=持久化进度)。
-    // 分页结果持久化缓存(ReaderStore.specs): 同一本书版式未变时二次进入直接命中,免整本重排
+    // 分页结果持久化缓存(ReaderStore.specs): 同一本书版式未变时二次进入直接命中,免整本重排。
+    // 250ms 防抖: 设置面板拖动逐档变化,停顿才真正重排;重排期间 repaginating 锁翻页并显示
+    // 遮盖——完成后按起点锚点一次定位,避免"重排中翻页,完成后被拉回起点"的二次跳动
+    var repaginating by remember(book.id) { mutableStateOf(false) }
     LaunchedEffect(content, typoKey) {
         val cnt = content ?: return@LaunchedEffect
         val t = typo ?: return@LaunchedEffect
         val key = typoKey ?: return@LaunchedEffect
         if (specs != null && specsTypoKey == key) return@LaunchedEffect   // 已是当前版式,不重排
-        // 混合渲染: WEBVIEW 块按需渲染(串行闸 + 缓存,缓存命中零成本)。必须先于分页——
-        // 断行按块位图高占行,specs 持久缓存命中的页界同样按位图高分页
-        if (cnt is EpubBookContent) {
-            val blockSpecs = withContext(Dispatchers.IO) { collectWebBlockSpecs(cnt, t) }
-            if (blockSpecs.isNotEmpty()) {
-                initStage = "渲染装饰块…"
-                WebViewBlockRenderer.ensureAllBlocking(
-                    context, cnt.webBlockRoot(), blockSpecs, t.fontPx, t.textWidth,
-                    t.lineSpacingPercent, t.bookLineHeight
-                ) { done, total -> initStage = "渲染装饰块 $done/$total" }
-                initStage = null
+        delay(250)
+        val reflow = specs != null   // 阅读中改版式(区别于打开书,后者沿用 contentReady loading)
+        if (reflow) repaginating = true
+        try {
+            // 混合渲染: WEBVIEW 块按需渲染(串行闸 + 缓存,缓存命中零成本)。必须先于分页——
+            // 断行按块位图高占行,specs 持久缓存命中的页界同样按位图高分页
+            if (cnt is EpubBookContent) {
+                val blockSpecs = withContext(Dispatchers.IO) { collectWebBlockSpecs(cnt, t) }
+                if (blockSpecs.isNotEmpty()) {
+                    initStage = "渲染装饰块…"
+                    WebViewBlockRenderer.ensureAllBlocking(
+                        context, cnt.webBlockRoot(), blockSpecs, t.fontPx, t.textWidth,
+                        t.lineSpacingPercent, t.bookLineHeight
+                    ) { done, total -> initStage = "渲染装饰块 $done/$total" }
+                    initStage = null
+                }
             }
-        }
-        // 锚点 = 当前页页首偏移(阅读中改版式不丢位置);无当前页(刚打开书)才用持久化进度
-        val anchor = specs?.getOrNull(pageIndex)?.globalCharOffset ?: book.progress.globalCharOffset
-        // 缓存命中: 直接用,跳过整本重排
-        val cached = withContext(Dispatchers.IO) {
-            ReaderStore.loadSpecs(context, book.id, key, book.totalChars)
-        }
-        if (cached != null) {
+            // 锚点 = 当前页页首偏移(阅读中改版式不丢位置);无当前页(刚打开书)才用持久化进度
+            val anchor = specs?.getOrNull(pageIndex)?.globalCharOffset ?: book.progress.globalCharOffset
+            // 缓存命中: 直接用,跳过整本重排
+            val cached = withContext(Dispatchers.IO) {
+                ReaderStore.loadSpecs(context, book.id, key, book.totalChars)
+            }
+            if (cached != null) {
+                specsTypoKey = key
+                specs = cached
+                pageIndex = BookPager.locatePage(cached, anchor)
+                return@LaunchedEffect
+            }
+            val result = BookPager.buildSpecs(cnt, t)
             specsTypoKey = key
-            specs = cached
-            pageIndex = BookPager.locatePage(cached, anchor)
-            return@LaunchedEffect
+            specs = result
+            pageIndex = BookPager.locatePage(result, anchor)
+            withContext(Dispatchers.IO) { ReaderStore.saveSpecs(context, book.id, key, book.totalChars, result) }
+        } finally {
+            if (reflow) repaginating = false
         }
-        val result = BookPager.buildSpecs(cnt, t)
-        specsTypoKey = key
-        specs = result
-        pageIndex = BookPager.locatePage(result, anchor)
-        withContext(Dispatchers.IO) { ReaderStore.saveSpecs(context, book.id, key, book.totalChars, result) }
     }
 
     // 装饰章快照在 load 流程内阻塞补齐(BookContents.load, loading 遮罩展示进度),
@@ -876,9 +886,9 @@ fun ReaderScreen(
                     }
                 )
             }
-            .pointerInput(menuVisible, selection != null, previewImage != null, typoKey, specs) {
-                // 菜单打开/选择激活/图片预览期间翻页手势让位(选择下翻页只经由手柄驻留自动翻页)
-                if (menuVisible || selection != null || previewImage != null) return@pointerInput
+            .pointerInput(menuVisible, selection != null, previewImage != null, repaginating, typoKey, specs) {
+                // 菜单打开/选择激活/图片预览/重排期间翻页手势让位(选择下翻页只经由手柄驻留自动翻页)
+                if (menuVisible || selection != null || previewImage != null || repaginating) return@pointerInput
                 var startX = 0f
                 var totalDrag = 0f
                 var velocityPxPerSec = 0f
@@ -1045,6 +1055,23 @@ fun ReaderScreen(
                         Spacer(Modifier.height(12.dp))
                         Text(it, color = secondary, style = MaterialTheme.typography.bodySmall)
                     }
+                }
+            }
+        }
+
+        // 阅读中重排遮盖: 半透明底挡住正文与翻页手势, 完成后一次性切新排版
+        if (contentReady && repaginating) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0x66000000L))
+                    .pointerInput(Unit) { detectTapGestures { } },   // 消费点击, 挡住底下菜单/正文
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator(color = fgColor)
+                    Spacer(Modifier.height(12.dp))
+                    Text(initStage ?: "重排中…", color = fgColor, style = MaterialTheme.typography.bodySmall)
                 }
             }
         }
@@ -1518,6 +1545,15 @@ private fun ImagePreviewOverlay(
             msg?.let { Toast.makeText(ctx, it, Toast.LENGTH_SHORT).show() }
         }
     }
+    // 转圈延迟显示: 解码通常几十 ms,spinner 闪一帧本身就是"闪";超时未就绪才出现
+    var showSpinner by remember { mutableStateOf(false) }
+    LaunchedEffect(bitmap) {
+        if (bitmap == null) {
+            showSpinner = false
+            delay(250)
+            showSpinner = bitmap == null
+        } else showSpinner = false
+    }
     AnimatedVisibility(
         visible = visible,
         enter = fadeIn(tween(180)),
@@ -1563,7 +1599,7 @@ private fun ImagePreviewOverlay(
                                 translationY = off.y
                             }
                     )
-                } else {
+                } else if (showSpinner) {
                     CircularProgressIndicator(color = Color.White)
                 }
             }
@@ -1605,10 +1641,11 @@ private fun PreviewActionItem(title: String, fg: Color, onClick: () -> Unit) {
     )
 }
 
-// 预览解码: 位图按屏幕尺寸 inSampleSize 采样(解码宽钳到屏幕 1~2 倍,捏合 2x 仍清晰);
-// SVG 按屏幕尺寸栅格化;GIF 天然取首帧;失败返回 null(预览层转圈后无图可看,点击关闭)
+// 预览解码: 位图按屏幕尺寸 inSampleSize 采样(解码边钳到屏幕 1~2 倍,捏合 2x 仍清晰);
+// SVG 按屏幕尺寸栅格化;GIF 天然取首帧;API 26+ 转硬件位图(GPU 纹理在解码线程就位,
+// 首帧显示不再因主线程上传大纹理掉帧闪动);失败返回 null(预览层黑底等待,点击关闭)
 private fun decodePreviewBitmap(ref: String, screenW: Int, screenH: Int): android.graphics.Bitmap? {
-    return runCatching {
+    val soft = runCatching {
         if (com.yukino.tool.module.reader.common.SvgDecoder.isSvg(ref)) {
             return@runCatching com.yukino.tool.module.reader.common.SvgDecoder.decode(ref, screenW, screenH)
         }
@@ -1623,7 +1660,12 @@ private fun decodePreviewBitmap(ref: String, screenW: Int, screenH: Int): androi
         ) sample *= 2
         val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
         android.graphics.BitmapFactory.decodeFile(ref, opts)
-    }.getOrNull()
+    }.getOrNull() ?: return null
+    // 硬件位图转换: copy 即纹理上传(IO 线程);失败(OOM/不支持)静默回退软件位图
+    if (android.os.Build.VERSION.SDK_INT >= 26) {
+        return runCatching { soft.copy(android.graphics.Bitmap.Config.HARDWARE, false) }.getOrNull() ?: soft
+    }
+    return soft
 }
 
 // 选择双柄: 左右倾斜水滴图标挂在各自锚点下方(参考系统选区柄样式),
