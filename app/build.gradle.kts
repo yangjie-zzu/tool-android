@@ -20,8 +20,8 @@ android {
         applicationId = "com.yukino.tool"
         minSdk = 24
         targetSdk = 34
-        versionCode = 29
-        versionName = "1.5.9"
+        versionCode = 30
+        versionName = "1.5.10"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
