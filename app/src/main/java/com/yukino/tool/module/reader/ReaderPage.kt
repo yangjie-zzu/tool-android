@@ -4,9 +4,10 @@ package com.yukino.tool.module.reader
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.Crossfade
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.core.MutableTransitionState
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -84,6 +85,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.luminance
@@ -174,6 +176,12 @@ data class FootnotePopup(
     val anchor: Offset,
     val anchorBelowY: Float = anchor.y
 )
+
+// 图片预览来源: 文件路径 + 命中矩形(窗口坐标)——共位过渡的起点,
+// 预览大图从该矩形平滑放大到全屏, 关闭时缩回
+data class PreviewSource(val ref: String, val rect: androidx.compose.ui.geometry.Rect)
+
+private fun lerpF(a: Float, b: Float, t: Float) = a + (b - a) * t
 
 // 拖拽会话: 手势定向时把目标页物化并锁定,拖动全程只更新位移;
 // 松手落账 targetIndex。预览与落账是同一 BookPage,结构上不可能不一致
@@ -415,11 +423,10 @@ fun ReaderScreen(
         footnoteShow = null
     }
 
-    // 图片预览(混合渲染 §8): 点击书内图片(块级图/行内图/格内图)全屏查看大图
-    var previewImage by remember(book.id) { mutableStateOf<String?>(null) }
-    BackHandler(enabled = previewImage != null) {
-        previewImage = null
-    }
+    // 图片预览(混合渲染 §8): 点击书内图片(块级图/行内图/格内图)全屏查看大图。
+    // 携带命中矩形(窗口坐标)供共位过渡——图片从原位放大到全屏,消除凭空出现的闪现;
+    // 返回键的缩回动画在预览层内部处理(直接置空会跳过缩放回位)
+    var previewSource by remember(book.id) { mutableStateOf<PreviewSource?>(null) }
 
     // 出版信息页(四期实验项): 书籍元数据弹层,菜单顶栏"信息"入口
     var showBookInfo by remember(book.id) { mutableStateOf(false) }
@@ -506,21 +513,27 @@ fun ReaderScreen(
         return hitNote?.let { FootnotePopup(it.first, it.second, anchor, anchorBelowY) }
     }
 
-    // 图片命中(混合渲染 §8): 版心坐标 → 图片文件绝对路径。优先级: 块级图片行矩形 →
-    // 行内图片矩形(物化预计算) → 表格格内图片矩形(drawTable 布局坐标)。
+    // 图片命中(混合渲染 §8): 版心坐标 → 图片文件绝对路径+显示矩形(窗口坐标,共位过渡起点)。
+    // 优先级: 块级图片行矩形 → 行内图片矩形(物化预计算) → 表格格内图片矩形(drawTable 布局坐标)。
     // 命中则不呼菜单直接预览;WEBVIEW 块位图不响应点击(位图语义,原图入口已失)
-    fun imageHitAt(offset: Offset): String? {
+    fun imageHitAt(offset: Offset): PreviewSource? {
         val bp = livePage ?: return null
         val t = liveTypo ?: return null
         val cnt = liveContent ?: return null
         if (bp.spec.kind != PageKind.CONTENT) return null
         val cx = offset.x - t.marginPx
         val cy = offset.y - contentTopPx
+        fun src(ref: String, l: Float, tp: Float, w: Float, h: Float) = PreviewSource(
+            ref,
+            androidx.compose.ui.geometry.Rect(
+                l + t.marginPx, tp + contentTopPx, l + t.marginPx + w, tp + contentTopPx + h
+            )
+        )
         for (ln in bp.lines) {
             if (ln.imageRef != null && ln.imageWidth > 0f &&
                 cx >= ln.x && cx <= ln.x + ln.imageWidth &&
                 cy >= ln.baseline && cy <= ln.baseline + ln.imageHeight
-            ) return ln.imageRef
+            ) return src(ln.imageRef, ln.x, ln.baseline, ln.imageWidth, ln.imageHeight)
         }
         for (ln in bp.lines) {
             for (im in ln.inlineImages) {
@@ -529,18 +542,19 @@ fun ReaderScreen(
                 ) {
                     // 脚注角标图(行内图片即 noteref 徽标)不进预览——让位给脚注弹层
                     if (cnt.footnoteAt(ln.lineStartGlobal + im.charIdx) != null) continue
-                    return im.ref
+                    return src(im.ref, im.x, im.y, im.width.toFloat(), im.height.toFloat())
                 }
             }
         }
         for (dt in bp.tables) {
             for (cb in dt.layout.cells) {
                 val img = cb.img ?: continue
+                val ref = cb.cell.imgRef ?: continue
                 val ix = dt.x + cb.x + (cb.w - img.width) / 2f
                 val iy = dt.y + cb.y
                 if (cx >= ix && cx <= ix + img.width &&
                     cy >= iy && cy <= iy + img.height
-                ) return cb.cell.imgRef
+                ) return src(ref, ix, iy, img.width, img.height)
             }
         }
         return null
@@ -865,8 +879,8 @@ fun ReaderScreen(
                     onTap = { offset ->
                         if (selection == null) {
                             // 图片预览命中优先于角标与菜单(仅菜单收起时检测)
-                            val img = if (!menuVisible && previewImage == null) imageHitAt(offset) else null
-                            if (img != null) previewImage = img
+                            val img = if (!menuVisible && previewSource == null) imageHitAt(offset) else null
+                            if (img != null) previewSource = img
                             else {
                                 // 角标点击优先于菜单开关(仅菜单收起时检测;弹层自身拦截后续触摸)
                                 val note = if (!menuVisible) footnoteHitAt(offset) else null
@@ -888,9 +902,9 @@ fun ReaderScreen(
                     }
                 )
             }
-            .pointerInput(menuVisible, selection != null, previewImage != null, repaginating, typoKey, specs) {
+            .pointerInput(menuVisible, selection != null, previewSource != null, repaginating, typoKey, specs) {
                 // 菜单打开/选择激活/图片预览/重排期间翻页手势让位(选择下翻页只经由手柄驻留自动翻页)
-                if (menuVisible || selection != null || previewImage != null || repaginating) return@pointerInput
+                if (menuVisible || selection != null || previewSource != null || repaginating) return@pointerInput
                 var startX = 0f
                 var totalDrag = 0f
                 var velocityPxPerSec = 0f
@@ -1405,16 +1419,17 @@ fun ReaderScreen(
 
     // 图片预览层(书内图片点击查看大图;关闭即恢复,阅读页翻页手势已在预览期间冻结)
     // lastPreview 撑住退出动画期间内容(参照脚注气泡); visible=false 淡出时组合仍在
-    var lastPreview by remember { mutableStateOf<String?>(null) }
-    if (previewImage != null) lastPreview = previewImage
+    var lastPreview by remember { mutableStateOf<PreviewSource?>(null) }
+    if (previewSource != null) lastPreview = previewSource
     // 动作面板配色与脚注气泡同源: 浅色主题纯白, 夜间跟随菜单浮层背景
-    lastPreview?.let { ref ->
+    lastPreview?.let { src ->
         ImagePreviewOverlay(
-            ref = ref,
-            visible = previewImage != null,
+            ref = src.ref,
+            sourceRect = src.rect,
+            visible = previewSource != null,
             panelBg = if (bgColor.luminance() > 0.5f) Color.White else menuBg,
             fg = fgColor,
-            onClose = { previewImage = null }
+            onClose = { previewSource = null }
         )
     }
 
@@ -1518,6 +1533,7 @@ private class BubbleShape(
 @Composable
 private fun ImagePreviewOverlay(
     ref: String,
+    sourceRect: androidx.compose.ui.geometry.Rect,
     visible: Boolean,
     panelBg: Color,
     fg: Color,
@@ -1551,6 +1567,29 @@ private fun ImagePreviewOverlay(
             msg?.let { Toast.makeText(ctx, it, Toast.LENGTH_SHORT).show() }
         }
     }
+    // 共位过渡: 位图就绪后从命中矩形(版心原位)放大到全屏, 关闭反向缩回原位再摘除——
+    // 图片始终"在原地长大", 消除大图凭空出现在屏幕中央的闪现
+    val grow = remember(ref) { Animatable(0f) }
+    var closing by remember { mutableStateOf(false) }
+    LaunchedEffect(bitmap, visible) {
+        if (visible && bitmap != null) {
+            grow.snapTo(0f)
+            grow.animateTo(1f, tween(320, easing = FastOutSlowInEasing))
+        }
+    }
+    fun close() {
+        if (closing) return
+        val bmp = bitmap
+        if (bmp == null) { onClose(); return }   // 未就绪无位图可缩回, 直接关
+        closing = true
+        menuOpen = false
+        scope.launch {
+            grow.animateTo(0f, tween(220, easing = FastOutSlowInEasing))
+            closing = false
+            onClose()
+        }
+    }
+    androidx.activity.compose.BackHandler(enabled = visible) { close() }
     // 转圈延迟显示: 解码通常几十 ms,spinner 闪一帧本身就是"闪";超时未就绪才出现
     var showSpinner by remember { mutableStateOf(false) }
     LaunchedEffect(bitmap) {
@@ -1561,9 +1600,8 @@ private fun ImagePreviewOverlay(
         } else showSpinner = false
     }
     // MutableTransitionState(false) 起步: 首次组合即 visible=true(第一次点开图片)时
-    // 也播进入动画——普通 visible 参数首次组合无状态变化, 进场动画被跳过。
-    // 蒙层进场不淡入(EnterTransition.None): 淡入前 100ms 几乎不可见, 点击反馈发闷;
-    // 黑底即时全显 + 图片就绪后 Crossfade 淡入(系统相册模式), 关闭仍淡出柔化
+    // 也播退出收尾——普通 visible 参数首次组合无状态变化, 状态切换被跳过。
+    // 蒙层进场不淡入(EnterTransition.None): 点击即时全显; 关闭随缩回由 alpha 联动淡出
     val previewVis = remember { MutableTransitionState(false) }
     previewVis.targetState = visible
     AnimatedVisibility(
@@ -1574,9 +1612,10 @@ private fun ImagePreviewOverlay(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color(0xD9000000L))
+                .background(Color.Black.copy(alpha = 0.85f * grow.value.coerceIn(0f, 1f)))
                 .pointerInput(Unit) {
                     detectTransformGestures { _, pan, zoom, _ ->
+                        if (grow.value < 1f || closing) return@detectTransformGestures
                         val next = (scale * zoom).coerceIn(1f, 4f)
                         scale = next
                         off = if (next > 1f) {
@@ -1591,29 +1630,44 @@ private fun ImagePreviewOverlay(
                     // 只挂 onTap: 与 onDoubleTap 同注册时单击须等 300ms 双击超时才回调,
                     // 关闭会明显延迟; 缩放交给捏合。面板打开时单击只收面板
                     detectTapGestures(
-                        onTap = { if (menuOpen) menuOpen = false else onClose() },
-                        onLongPress = { if (bitmap != null) menuOpen = true }
+                        onTap = { if (menuOpen) menuOpen = false else close() },
+                        onLongPress = { if (bitmap != null && grow.value >= 1f) menuOpen = true }
                     )
                 },
             contentAlignment = Alignment.Center
         ) {
-            Crossfade(targetState = bitmap, animationSpec = tween(150), label = "preview") { bmp ->
-                if (bmp != null) {
+            if (bitmap != null) {
+                // 外层: 共位变换容器(全屏布局整体从原位 rect 放大到铺满); 内层: 捏合手势
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            val p = grow.value.coerceIn(0f, 1f)
+                            val s = lerpF(sourceRect.width / screenW, 1f, p)
+                            scaleX = s
+                            scaleY = s
+                            transformOrigin = TransformOrigin(0f, 0f)
+                            translationX = lerpF(sourceRect.left, 0f, p)
+                            translationY = lerpF(sourceRect.top, 0f, p)
+                        }
+                ) {
                     Image(
-                        bitmap = bmp.asImageBitmap(),
+                        bitmap = bitmap!!.asImageBitmap(),
                         contentDescription = "图片预览",
+                        contentScale = ContentScale.Fit,
                         modifier = Modifier
                             .fillMaxSize()
                             .graphicsLayer {
+                                alpha = grow.value.coerceIn(0f, 1f)
                                 scaleX = scale
                                 scaleY = scale
                                 translationX = off.x
                                 translationY = off.y
                             }
                     )
-                } else if (showSpinner) {
-                    CircularProgressIndicator(color = Color.White)
                 }
+            } else if (showSpinner) {
+                CircularProgressIndicator(color = Color.White)
             }
             AnimatedVisibility(
                 visible = menuOpen,
