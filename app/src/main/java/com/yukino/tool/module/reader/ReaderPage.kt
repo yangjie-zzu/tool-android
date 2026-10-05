@@ -5,6 +5,7 @@ package com.yukino.tool.module.reader
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -1326,8 +1327,12 @@ fun ReaderScreen(
         val arrowEdge = with(density) { 16.dp.toPx() }   // 尖角离卡片左右缘的最小距离
         // B 方案: 浅色主题下卡片纯白(与页面米色区分更清), 夜间主题跟随 menuBg
         val noteCardBg = if (bgColor.luminance() > 0.5f) Color.White else menuBg
+        // MutableTransitionState(false) 起步: 首次组合即 visible=true 时也播进入动画
+        // (普通 visible 参数首次组合无状态变化, 进场动画被跳过 = 硬切闪现)
+        val noteVis = remember { MutableTransitionState(false) }
+        noteVis.targetState = footnoteShow != null
         AnimatedVisibility(
-            visible = footnoteShow != null,
+            visibleState = noteVis,
             enter = fadeIn(tween(150)) + scaleIn(initialScale = 0.96f, animationSpec = tween(150)),
             exit = fadeOut(tween(120)) + scaleOut(targetScale = 0.96f, animationSpec = tween(120))
         ) {
@@ -1554,8 +1559,12 @@ private fun ImagePreviewOverlay(
             showSpinner = bitmap == null
         } else showSpinner = false
     }
+    // MutableTransitionState(false) 起步: 首次组合即 visible=true(第一次点开图片)时
+    // 也播进入动画——普通 visible 参数首次组合无状态变化, 淡入被跳过 = 黑底硬切闪现
+    val previewVis = remember { MutableTransitionState(false) }
+    previewVis.targetState = visible
     AnimatedVisibility(
-        visible = visible,
+        visibleState = previewVis,
         enter = fadeIn(tween(180)),
         exit = fadeOut(tween(150))
     ) {
