@@ -72,7 +72,9 @@ class ChapterLines(
     val fontFiles: Map<String, String> = emptyMap(), // family → 字体文件绝对路径
     val tableLayouts: Map<Int, TableLayout> = emptyMap(),  // 批次四: 表格段布局(paraIndex → 布局)
     val tableRowOfLine: Map<Int, Int> = emptyMap(),        // 批次四: lines 下标 → 表格行号(表格段)
-    val avoidX: Map<Int, Float> = emptyMap()               // 批次四b: float 环绕避让偏移(paraIndex → 行 x 偏移)
+    val avoidX: Map<Int, Float> = emptyMap(),              // 批次四b: float 环绕避让偏移(paraIndex → 行 x 偏移)
+    val webBlocks: Map<Int, WebBlockInfo> = emptyMap(),    // 混合渲染: WEBVIEW 块段(paraIndex → 块信息)
+    val hideTitleRow: Boolean = false                      // 混合渲染: 章首 WEBVIEW 装饰块顶替章名 → 隐藏合成章名行
 )
 
 // 图片行的显示尺寸(版心坐标系;按版心宽等比缩放,超高图缩到一页内)
@@ -95,7 +97,7 @@ class DrawLine(
     val text: String,
     var x: Float,                 // 行首 x: 段首行为首行缩进,其余 0(自带缩进的段落缩进在字符里);
                                   // 物化期盒基准修正可改写(定宽盒内行的对齐基准随盒走)
-    val baseline: Float,          // 图片行复用为"行顶 y"(图片从行顶绘制)
+    val baseline: Float,          // 图片行复用为"行顶 y"(图片从行顶绘制);WEBVIEW 块行同为行顶
     val title: Boolean,           // true 用标题 paint(大字号加粗)
     val lineStartGlobal: Long,    // 行首字符的全书偏移(行内第 i 字符 = lineStartGlobal + i,正文区线性)
     val segments: List<LineSeg>? = null,   // 两端对齐拉伸分段(相对行首 x);null = 自然宽整行画
@@ -103,12 +105,17 @@ class DrawLine(
     val imageRef: String? = null,          // 图片行: 图片文件绝对路径(非空 = 图片行,text 为空)
     val imageWidth: Float = 0f,            // 图片行显示尺寸(物化时按版心宽换算好)
     val imageHeight: Float = 0f,
-    val inlineImages: List<DrawInline> = emptyList()   // 五期: 行内图片(字符下标+路径+显示尺寸)
+    val inlineImages: List<DrawInline> = emptyList(),   // 五期: 行内图片(字符下标+路径+显示尺寸)
+    val blockRef: String? = null,          // 混合渲染: WEBVIEW 块行位图路径(text 为块投影全文,不绘制)
+    val blockWidth: Float = 0f,            // 块位图显示尺寸(物化时按版心宽等比换算好)
+    val blockHeight: Float = 0f,
+    val blockGeom: BlockGeom? = null       // 块字符几何表(位图像素坐标;选择委托与高亮并集用)
 )
 
 // 行内图片标记(五期): charIdx 为行内字符下标(该字符 = 投影 U+FFFC 占位),
-// ref 为图片绝对路径,w/h 为物化好的显示尺寸
-class DrawInline(val charIdx: Int, val ref: String, val width: Int, val height: Int)
+// ref 为图片绝对路径,w/h 为物化好的显示尺寸;x/y 为显示矩形左上角(版心坐标,
+// 图片预览命中用;与绘制层的精确定位同源公式,书内字体未加载时少量偏差可接受)
+class DrawInline(val charIdx: Int, val ref: String, val width: Int, val height: Int, val x: Float = 0f, val y: Float = 0f)
 
 // 盒组绘制矩形(七期): 版心坐标,底色/背景图/边框/圆角/阴影由 style 描述。
 // topOpen/bottomOpen = 盒组延续到相邻页(该缘不画横向边框,左右边照画)
@@ -498,6 +505,12 @@ object BookPager {
         // 七期: margin 支持 em/px/%(百分比相对版心宽),此处直接折 px
         val paraRanges = ArrayList<IntRange>(paras.size)
         val extraAbove = FloatArray(paras.size)
+        // 混合渲染: 章首 WEBVIEW 块且投影文本(去序号修饰)与章名一致 → 隐藏合成章名行
+        // (章首装饰表格场景,原书页面没有阅读器章名行;零占位维持投影轴,页眉仍显示章名)
+        val hideTitlePara = paras.firstOrNull()?.let { p ->
+            p.kind == ParaKind.WEBVIEW && p.text.isNotBlank() &&
+                stripOrdinalLoose(p.text) == stripOrdinalLoose(title)
+        } == true
         run {
             var p = bodyStart
             var prevBelowPx = 0f
@@ -532,9 +545,21 @@ object BookPager {
         val overrides = HashMap<Int, List<IntRange>>()
         val tableLayouts = HashMap<Int, TableLayout>()
         val tableRowOfLine = HashMap<Int, Int>()
+        val webBlocks = HashMap<Int, WebBlockInfo>()
         run {
             for ((pi, para) in paras.withIndex()) {
                 if (para.isImage) continue   // 图片段单行,不参与独立断行(对齐由物化层处理)
+                // 混合渲染: WEBVIEW 块段——位图就绪时挂单块行(整块一位图,行高=位图高网格化);
+                // 未就绪(渲染失败/缓存被清)不挂,投影文本按普通段落自绘兜底
+                if (para.kind == ParaKind.WEBVIEW) {
+                    val info = webBlockInfoOf(content, para, doc, typo)
+                    if (info?.file != null) {
+                        webBlocks[pi] = info
+                        val rngW = paraRanges[pi]
+                        if (!rngW.isEmpty()) overrides[pi] = listOf(rngW.first until rngW.last + 1)
+                    }
+                    continue
+                }
                 // 表格段: 布局一次(列宽/行高/格折行),虚拟行 = 表格行(每行 pitch = 行高),分页引擎按行切页天然断表
                 if (para.isTable) {
                     val td = para.table ?: continue
@@ -692,6 +717,12 @@ object BookPager {
                             val above = if (isStart) paraAbove + bookGrid else 0
                             lines += TextLine(r.first, r.last + 1, LineKind.BODY, isStart, above + pitch, above, 0)
                             tableRowOfLine[lines.lastIndex] = j
+                        } else if (para.kind == ParaKind.WEBVIEW && webBlocks.containsKey(curPi)) {
+                            // 混合渲染块行: pitch = 位图高网格化,基线偏移零(绘制从行顶)
+                            val info = webBlocks[curPi]!!
+                            val pitch = PaginationEngine.gridCeil(info.height.toFloat(), Typography.GRID_PX)
+                            val above = if (isStart) paraAbove + bookGrid else 0
+                            lines += TextLine(r.first, r.last + 1, LineKind.BODY, isStart, above + pitch, above, 0)
                         } else {
                             val (bp, ba) = paraLinePitch(para)
                             // <br/> 相邻段: 段前距归零(与主路径同规则)
@@ -719,9 +750,10 @@ object BookPager {
             val (pitch, ascentAbs) = when (kind) {
                 LineKind.BLANK -> LineGrid.blankPitch(Typography.GRID_PX) to bodyAscentAbs
                 LineKind.TITLE ->
-                    // 装饰章(首段带装饰盒)不显示阅读器章名行——原书页面没有它,
-                    // 它会把整个装饰版面往下挤;行保留为零占位以维持文本投影轴
-                    if (paras.firstOrNull()?.boxStyle != null) 0 to bodyAscentAbs
+                    // 装饰章(首段带装饰盒)/章首 WEBVIEW 装饰块不显示阅读器章名行——
+                    // 原书页面没有它,它会把整个装饰版面往下挤;
+                    // 行保留为零占位以维持文本投影轴
+                    if (paras.firstOrNull()?.boxStyle != null || hideTitlePara) 0 to bodyAscentAbs
                     else titlePitch to (titleAscentAbs + titleShift)
                 LineKind.BODY -> {
                     val (bp, ba) = paraLinePitch(curPara)
@@ -831,9 +863,40 @@ object BookPager {
         return ChapterLines(
             composed, bodyStart, content.chapterStart(chapterIndex) + stripped, lines,
             paras, paraRanges, imageSizes, inlineSizes, overrides, doc.fontIds, doc.fontFiles,
-            tableLayouts, tableRowOfLine, avoidX
+            tableLayouts, tableRowOfLine, avoidX, webBlocks,
+            paras.firstOrNull()?.boxStyle != null || hideTitlePara
         )
     }
+
+    // 混合渲染: WEBVIEW 块段 → 块信息(缓存键查位图,显示尺寸按版心宽等比、超高钳一页)。
+    // 位图缺失返回 null(该段不挂块行,投影文本按普通段落自绘兜底)
+    private fun webBlockInfoOf(
+        content: BookContent,
+        para: Paragraph,
+        doc: com.yukino.tool.module.reader.common.ChapterDocument,
+        typo: ResolvedTypography
+    ): WebBlockInfo? {
+        val html = para.blockHtml ?: return null
+        val root = content.webBlockRoot() ?: return null
+        val hash = BlockCache.contentHashOf(
+            html, para.ancestorShell ?: "", para.blockDocDir, doc.cssHrefs, doc.cssInline
+        )
+        val key = BlockCache.keyOf(typo.fontPx, typo.textWidth, hash)
+        val cb = BlockCache.lookup(root, key) ?: return null
+        if (cb.width <= 0 || cb.height <= 0) return null
+        var dw = typo.textWidth
+        var dh = (dw.toFloat() * cb.height / cb.width).roundToInt().coerceAtLeast(1)
+        if (dh > typo.textHeight) {
+            dh = typo.textHeight
+            dw = (dh.toFloat() * cb.width / cb.height).roundToInt().coerceAtLeast(1)
+        }
+        return WebBlockInfo(key, cb.file.absolutePath, dw, dh, cb.geom, cb.width)
+    }
+
+    // 去掉首部序号修饰(与 EpubImporter.stripOrdinal 同规则;common 不依赖 epub,本地镜像)
+    private fun stripOrdinalLoose(s: String): String =
+        s.trim().trimStart('0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
+            '①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩', ' ', '　', '.', '、')
 
     // 七期: 段级左右度量(px)。定宽段推出右留白(左右 auto 时整体居中);
     // 右缩进 > 0.5px 的段需独立断行(主 layout 全宽断行会过宽)
@@ -1244,8 +1307,8 @@ object BookPager {
         val tableWindow = HashMap<Int, Pair<Int, Int>>()   // paraIndex → (firstRow, lastRowExclusive)
         val tableTopY = HashMap<Int, Float>()               // 窗口内表格首行顶 y
         val linePara = ArrayList<Int>()                     // out 每行 → 段落下标(盒基准修正用)
-        // 装饰章: 章名行零占位且不绘制
-        val hideTitleRow = cl.paras.firstOrNull()?.boxStyle != null
+        // 装饰章/章首 WEBVIEW 装饰块: 章名行零占位且不绘制
+        val hideTitleRow = cl.hideTitleRow
         var y = 0
         for (li in slice.startLine until slice.endLineExclusive) {
             val ln = cl.lines[li]
@@ -1263,6 +1326,34 @@ object BookPager {
                     val cur = tableWindow[pi]
                     tableWindow[pi] = if (cur == null) rowNo to rowNo + 1 else minOf(cur.first, rowNo) to maxOf(cur.second, rowNo + 1)
                     tableTopY[pi] = minOf(tableTopY[pi] ?: Float.MAX_VALUE, (y + above).toFloat())
+                    y += ln.pitch - (if (li == head) ln.paraAbove else 0)
+                    continue
+                }
+                // 混合渲染: WEBVIEW 块行——不画文字,只画块位图(text 携带投影全文供选择/词边界)
+                if (para?.kind == ParaKind.WEBVIEW && cl.webBlocks.containsKey(pi)) {
+                    val info = cl.webBlocks[pi]!!
+                    // 段有左右缩进时位图等比缩到可用宽(几何表随显示比换算,选择仍精确)
+                    var bw = info.width.toFloat()
+                    var bh = info.height.toFloat()
+                    if (bw > pm.availWidth && bw > 0f) {
+                        bh *= pm.availWidth / bw
+                        bw = pm.availWidth
+                    }
+                    paraTop[pi] = minOf(paraTop[pi] ?: Float.MAX_VALUE, (y + above).toFloat())
+                    paraBottom[pi] = maxOf(paraBottom[pi] ?: 0f, (y + ln.pitch).toFloat())
+                    // 几何表随显示比预换算到位图显示域(相对块左上),选择直接用
+                    val dispGeom = info.geom?.let { g ->
+                        val f = if (info.bitmapW > 0) bw / info.bitmapW else 1f
+                        if (f == 1f) g else BlockGeom(g.chars, FloatArray(g.rects.size) { g.rects[it] * f }, (g.contentW * f).roundToInt(), (g.contentH * f).roundToInt())
+                    }
+                    out += DrawLine(
+                        para.text, pm.mlPx, (y + above).toFloat(), false, global,
+                        blockRef = info.file,
+                        blockWidth = bw,
+                        blockHeight = bh,
+                        blockGeom = dispGeom
+                    )
+                    linePara.add(pi)
                     y += ln.pitch - (if (li == head) ln.paraAbove else 0)
                     continue
                 }
@@ -1321,7 +1412,8 @@ object BookPager {
                             } else null
                         }
                     }
-                    // 五期: 行内图片折算(段内偏移 → 行内下标;尺寸查 ChapterLines.inlineSizes)
+                    // 五期: 行内图片折算(段内偏移 → 行内下标;尺寸查 ChapterLines.inlineSizes)。
+                    // x/y = 显示矩形左上角(版心坐标,图片预览命中): 前缀宽按 base paint 量的近似
                     val inlines = if (pi >= 0 && para!!.inlineImages.isNotEmpty()) {
                         val rngFirst = cl.paraRanges[pi].first
                         para.inlineImages.mapNotNull { im ->
@@ -1329,7 +1421,10 @@ object BookPager {
                             if (abs in ln.start until ln.end) {
                                 val sz = cl.inlineSizes[im.ref]
                                     ?: ImageSize(typo.fontPx.roundToInt(), typo.fontPx.roundToInt())
-                                DrawInline(abs - ln.start, im.ref, sz.width, sz.height)
+                                val ci = abs - ln.start
+                                val ix = x + if (ci > 0) measure(text.substring(0, ci)) else 0f
+                                val iy = (y + above + ln.ascentAbs) - sz.height + typo.fontPx * 0.18f
+                                DrawInline(ci, im.ref, sz.width, sz.height, ix, iy)
                             } else null
                         }
                     } else emptyList()

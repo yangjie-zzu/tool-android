@@ -73,7 +73,15 @@ object ChapterFileCodec {
         val tb: TableDto? = null,   // 七期批次四: 表格段数据
         val fs: Int = 0,            // 批次四b: 浮动(1=right 2=left)
         val ba: Boolean = false,    // 批次四e: break-all
-        val brb: Boolean = false    // 七期补: 与上一段 <br/> 相邻(段距归零)
+        val brb: Boolean = false,   // 七期补: 与上一段 <br/> 相邻(段距归零)
+        val wb: WbDto? = null       // 混合渲染: WEBVIEW 块段(块 HTML + 祖先壳 + 来源文档目录)
+    )
+
+    @Serializable
+    private data class WbDto(
+        val html: String,       // 块 HTML 片段(jsoup 序列化原样)
+        val shell: String,      // 祖先壳(body→块元素的逐层开标签)
+        val doc: String = ""    // 来源文档相对解压根的目录(相对引用解析基准)
     )
 
     @Serializable
@@ -115,7 +123,9 @@ object ChapterFileCodec {
         val boxes: Map<Int, BoxDto> = emptyMap(),   // 七期: 盒样式表(段落 b 下标引用)
         val fonts: Map<Int, String> = emptyMap(),   // 七期批次三: 字体表(下标 → family 名)
         val fontPaths: Map<String, String> = emptyMap(),  // family → 字体文件相对路径
-        val v: Int = 0   // 格式版本: 10 = 七期批次四(表格真渲染);旧文件缺省 0
+        val cssHrefs: List<String> = emptyList(),   // 混合渲染: 原文档 head 外部样式 href 原样
+        val cssInline: List<String> = emptyList(),  // 混合渲染: 原文档 <style> 块原文
+        val v: Int = 0   // 格式版本: 19 = 混合渲染(WEBVIEW 块段);旧文件缺省 0
     )
 
     private val json = Json { ignoreUnknownKeys = true }
@@ -124,7 +134,9 @@ object ChapterFileCodec {
         file: File,
         paragraphs: List<Paragraph>,
         footnotes: Map<String, String> = emptyMap(),
-        fonts: Map<String, String> = emptyMap()   // 七期: family → 字体文件相对路径
+        fonts: Map<String, String> = emptyMap(),   // 七期: family → 字体文件相对路径
+        cssHrefs: List<String> = emptyList(),      // 混合渲染: 原文档 head 外部样式 href 原样
+        cssInline: List<String> = emptyList()      // 混合渲染: 原文档 <style> 块原文
     ) {
         // 盒样式表: 按 BoxStyle 去重(相邻段落共享同一实例,序列化后经 equals 聚合还原同组)
         val boxIndex = LinkedHashMap<com.yukino.tool.module.reader.common.BoxStyle, Int>()
@@ -191,7 +203,10 @@ object ChapterFileCodec {
                 },
                 fs = p.floatSide,
                 ba = p.breakAll,
-                brb = p.brBefore
+                brb = p.brBefore,
+                wb = if (p.kind == ParaKind.WEBVIEW && p.blockHtml != null) {
+                    WbDto(p.blockHtml, p.ancestorShell ?: "", p.blockDocDir)
+                } else null
             )
         }
         val dto = ChapterDto(
@@ -199,6 +214,8 @@ object ChapterFileCodec {
             boxes = boxes.indices.associate { it to boxes[it] },
             fonts = fonts.entries.withIndex().associate { (i, e) -> i to e.key },
             fontPaths = fonts,
+            cssHrefs = cssHrefs,
+            cssInline = cssInline,
             v = FORMAT_VERSION
         )
         file.writeText(json.encodeToString(ChapterDto.serializer(), dto))
@@ -206,8 +223,9 @@ object ChapterFileCodec {
 
     // 七期批次三格式版本: 对象化 runs(字号倍率/颜色/阴影/@font-face 字体下标)。
     // v18: 选择器完整化/命名色全表/缩进 px-%/larger-smaller/dataURI 图片/表格格内图片。
+    // v19: 混合渲染——章首装饰表格不再剥除(S1 信号命中块降级),存量书升级重提取。
     // 低版本文件打开时自动升级重提取
-    const val FORMAT_VERSION = 18
+    const val FORMAT_VERSION = 19
 
     private fun BoxDto.toBoxStyle() = com.yukino.tool.module.reader.common.BoxStyle(
         bg = bg, bgImage = bgImg,
@@ -225,12 +243,14 @@ object ChapterFileCodec {
 
     private fun CssLenDto.toCssLen() = com.yukino.tool.module.reader.common.CssLen(v, pct)
 
-    // 读结果: 段落 + 脚注 + 字体表(下标 → family)+ family → 字体文件相对路径
+    // 读结果: 段落 + 脚注 + 字体表(下标 → family)+ family → 字体文件相对路径 + 章级 CSS 资源
     data class ReadResult(
         val paragraphs: List<Paragraph>,
         val notes: Map<String, String>,
         val fonts: Map<Int, String>,
-        val fontPaths: Map<String, String> = emptyMap()
+        val fontPaths: Map<String, String> = emptyMap(),
+        val cssHrefs: List<String> = emptyList(),
+        val cssInline: List<String> = emptyList()
     )
 
     fun read(file: File): ReadResult {
@@ -241,7 +261,10 @@ object ChapterFileCodec {
             runCatching {
                 val dto = json.decodeFromString(ChapterDto.serializer(), text)
                 val boxStyles = dto.boxes.mapValues { it.value.toBoxStyle() }
-                return ReadResult(dto.p.map { it.toParagraph(boxStyles, dto.fonts) }, dto.notes, dto.fonts, dto.fontPaths)
+                return ReadResult(
+                    dto.p.map { it.toParagraph(boxStyles, dto.fonts) }, dto.notes, dto.fonts, dto.fontPaths,
+                    dto.cssHrefs, dto.cssInline
+                )
             }
         }
         if (trimmed.startsWith("[")) {
@@ -271,6 +294,19 @@ object ChapterFileCodec {
             rs
         }
         val inlines = ii.map { InlineImg(it.s, it.ref) }
+        val wb = wb
+        if (wb != null) {
+            return Paragraph(
+                t, emptyList(), ParaKind.WEBVIEW,
+                anchor = a,
+                notes = n.map { NoteAnchor(it.s, it.e, it.id) },
+                align = al ?: 0,
+                spaceAboveEm = mt?.toCssLen(), spaceBelowEm = mb?.toCssLen(),
+                marginLeftEm = ml?.toCssLen(), marginRightEm = mr?.toCssLen(),
+                boxStyle = b?.let { boxStyles[it] },
+                blockHtml = wb.html, ancestorShell = wb.shell, blockDocDir = wb.doc
+            )
+        }
         val table = tb?.let { td ->
             com.yukino.tool.module.reader.common.TableData(
                 rows = td.rows, cols = td.cols,

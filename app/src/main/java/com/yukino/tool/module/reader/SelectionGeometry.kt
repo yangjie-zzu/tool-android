@@ -40,7 +40,8 @@ object SelectionGeometry {
     }
 
     // ---- 垂直定位: cy → 行下标。行竖直区间 = [baseline-ascent, baseline+descent],
-    // 命中区间直接返回;行间空隙/上下越界取中心最近的一行
+    // 命中区间直接返回;行间空隙/上下越界取中心最近的一行。
+    // WEBVIEW 块行的竖直区间 = [baseline(行顶), baseline+blockHeight](位图整高)
     internal fun locateLine(page: BookPage, cy: Float, m: Metrics): Int? {
         val lines = page.lines
         if (lines.isEmpty()) return null
@@ -48,6 +49,17 @@ object SelectionGeometry {
         var bestDist = Float.MAX_VALUE
         for (i in lines.indices) {
             val ln = lines[i]
+            if (ln.blockRef != null) {
+                val top = ln.baseline
+                val bottom = ln.baseline + ln.blockHeight
+                if (cy >= top && cy <= bottom) return i
+                val dist = abs(cy - (top + bottom) / 2f)
+                if (dist < bestDist) {
+                    bestDist = dist
+                    best = i
+                }
+                continue
+            }
             val a = if (ln.title) m.titleAscent else m.bodyAscent
             val d = if (ln.title) m.titleDescent else m.bodyDescent
             val top = ln.baseline - a
@@ -63,8 +75,29 @@ object SelectionGeometry {
     }
 
     // ---- 水平定位: cx → 行内字符下标。以字符中心为界就近吸附。
-    // 两端对齐行必须先按 seg.x 定位分段再段内二分——justify 行字符 x ≠ 自然宽度
-    internal fun charOffsetInLine(ln: DrawLine, cx: Float, m: Metrics): Int {
+    // 两端对齐行必须先按 seg.x 定位分段再段内二分——justify 行字符 x ≠ 自然宽度。
+    // WEBVIEW 块行: 字符几何来自几何表(位图显示域坐标),按字符矩形中心最近吸附
+    internal fun charOffsetInLine(ln: DrawLine, cx: Float, cy: Float, m: Metrics): Int {
+        val geom = ln.blockGeom
+        if (ln.blockRef != null) {
+            geom ?: return 0   // 无几何表: 块上选择退化(长按不建选区)
+            val x = cx - ln.x
+            val y = cy - ln.baseline
+            var best = -1
+            var bestD = Float.MAX_VALUE
+            for (i in 0 until geom.charCount) {
+                val rx = geom.rects[i * 4]
+                val ry = geom.rects[i * 4 + 1]
+                val rw = geom.rects[i * 4 + 2]
+                val rh = geom.rects[i * 4 + 3]
+                val d = abs(x - (rx + rw / 2f)) + abs(y - (ry + rh / 2f))
+                if (d < bestD) {
+                    bestD = d
+                    best = i
+                }
+            }
+            return best.coerceIn(0, ln.text.length)
+        }
         val measure = { t: String -> m.measure(t, ln.title) }
         val segs = ln.segments
         if (segs == null) {
@@ -104,7 +137,7 @@ object SelectionGeometry {
     fun hit(page: BookPage, cx: Float, cy: Float, m: Metrics): Pair<Int, Int>? {
         val li = locateLine(page, cy, m) ?: return null
         val ln = page.lines[li]
-        return li to charOffsetInLine(ln, cx, m)
+        return li to charOffsetInLine(ln, cx, cy, m)
     }
 
     // 行/字符下标 → 全书偏移
@@ -131,7 +164,9 @@ object SelectionGeometry {
     }
 
     // ---- 选区可视化: 选区 ∩ 本页 → 高亮矩形 + 手柄锚 + 跨页延续标志。
-    // 首尾留 2px 纵向余量,视觉上包住字形
+    // 首尾留 2px 纵向余量,视觉上包住字形。
+    // WEBVIEW 块行: 高亮 = 几何表字符矩形并集(按 y 分组横条,画在位图上层 Canvas,
+    // 与自绘高亮同一绘制路径);几何缺失(采集失败)时块行不产高亮
     fun visual(page: BookPage, sel: ReaderSelection, m: Metrics): SelectionVisual? {
         val lines = page.lines
         if (lines.isEmpty()) return null
@@ -144,6 +179,42 @@ object SelectionGeometry {
             val a = (sel.startGlobal - ln.lineStartGlobal).coerceIn(0, ln.text.length.toLong()).toInt()
             val b = (sel.endGlobal - ln.lineStartGlobal).coerceIn(0, ln.text.length.toLong()).toInt()
             if (b <= a) continue
+            if (ln.blockRef != null) {
+                val g = ln.blockGeom ?: continue
+                // 块内几何矩形按 y 分组合并横条(同位图行的字符 y 对齐,分组容差 = 行高一半)。
+                // 空白字符(折叠空格)的矩形是前一字符的近似位置,不可见字符不画高亮
+                var idx = a
+                while (idx < b) {
+                    while (idx < b && idx < g.chars.length && g.chars[idx] == ' ') idx++
+                    if (idx >= b) break
+                    val (r0x, r0y, r0w, r0h) = geomRect(g, idx)
+                    val cy0 = r0y + r0h / 2f
+                    var j = idx + 1
+                    var minX = r0x
+                    var maxX = r0x + r0w
+                    var minY = r0y
+                    var maxY = r0y + r0h
+                    while (j < b) {
+                        if (j < g.chars.length && g.chars[j] == ' ') { j++; continue }
+                        val (rx, ry, rw, rh) = geomRect(g, j)
+                        if (abs(ry + rh / 2f - cy0) > rh / 2f + r0h / 2f) break
+                        minX = minOf(minX, rx)
+                        maxX = maxOf(maxX, rx + rw)
+                        minY = minOf(minY, ry)
+                        maxY = maxOf(maxY, ry + rh)
+                        j++
+                    }
+                    // 行框顶部裁剪 30%: Range 矩形是行内框(大字号艺术字行框远高于字形,
+                    // 顶部悬空明显),保留贴近字形的下部 70%
+                    val topCut = minY + (maxY - minY) * 0.30f
+                    val rect = SelRect(ln.x + minX, ln.baseline + topCut - 2f, ln.x + maxX, ln.baseline + maxY + 2f)
+                    if (startAnchor == null) startAnchor = SelRect(ln.x + r0x, rect.top, ln.x + r0x, rect.bottom)
+                    endAnchor = SelRect(ln.x + maxX, rect.top, ln.x + maxX, rect.bottom)
+                    rects += rect
+                    idx = j
+                }
+                continue
+            }
             val measure = { t: String -> m.measure(t, ln.title) }
             val x0 = charLeft(ln, a, measure)
             val x1 = charLeft(ln, b, measure)
@@ -161,6 +232,12 @@ object SelectionGeometry {
         val extendsBottom = sel.endGlobal > last.lineStartGlobal + last.text.length
         return SelectionVisual(rects, startAnchor!!, endAnchor!!, extendsTop, extendsBottom)
     }
+
+    // 几何表第 i 字符矩形([x,y,w,h] ×4)
+    private fun geomRect(g: BlockGeom, i: Int): Quad =
+        Quad(g.rects[i * 4], g.rects[i * 4 + 1], g.rects[i * 4 + 2], g.rects[i * 4 + 3])
+
+    private data class Quad(val x: Float, val y: Float, val w: Float, val h: Float)
 
     // 行内第 idx 字符的左缘 x(第 text.length 个 = 行尾右缘)。justify 行走分段
     private fun charLeft(ln: DrawLine, idx: Int, measure: (String) -> Float): Float {

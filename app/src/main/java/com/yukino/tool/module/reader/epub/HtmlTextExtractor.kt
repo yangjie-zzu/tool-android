@@ -63,6 +63,139 @@ object HtmlTextExtractor {
         fun accept(mime: String, base64: String): String
     }
 
+    // ---------- 混合渲染: 自绘能力边界外的块级降级(docs/epub-hybrid-render-boundary.md) ----------
+    //
+    // 信号白名单制: 只命中"自绘明确画不了"的信号才降级,默认自绘。信号:
+    //   S1 行内元素盒装饰(span 带 border/background,如圆圈章号 sbox1)
+    //   S2 嵌套表格 / 超 500 格表格
+    //   S3 内嵌 <svg> 标签(非 svg 文件)
+    //   S4 position:absolute/fixed、flex/grid 布局块
+    //   S5 渐变背景(linear-gradient 等)
+    //
+    // 管辖归属: 行内/子树信号向上找"最近管辖祖先"——先遇 table 归表格(表格特判分支判定,
+    // 果青1 章首装饰表格场景: sbox1 在 td 内,整个 table 降级一张位图,正文 p 不受牵连),
+    // 先遇 BLOCK 元素即该块。body 直接子信号无管辖分支,忽略(罕见)。
+
+    // S1 子树扫描跳过的元素: 块级元素的盒样式自绘支持(边界内);img/br 为替换/空元素非行内盒装饰
+    private val S1_SCAN_SKIP = BLOCK + hashSetOf(
+        "img", "br", "table", "tr", "td", "th", "tbody", "thead", "tfoot", "caption", "ruby", "rt", "rp"
+    )
+
+    // 信号元素的管辖块: 信号在表格内(td/tr 均是 BLOCK,但 td 级位图塞不进表格管线)
+    // → 归属 table 整体(表格特判分支判定);否则归属最近的 BLOCK 祖先
+    private fun ownerBlockOf(el: Element): Element? {
+        val tbl = el.parents().firstOrNull { it.tagName().lowercase() == "table" }
+        if (tbl != null) return tbl
+        return el.parents().firstOrNull { it.tagName().lowercase() in BLOCK }
+    }
+
+    // 行内元素盒装饰判定(S1): 有效边框/背景色(非 transparent)/背景图(含渐变)
+    private fun inlineBoxDecorated(props: Map<String, String>): Boolean {
+        if (props.isEmpty()) return false
+        if (parseEdges(props).any { it.widthEm > 0f && it.style > 0 }) return true
+        val bg = props["background-color"]?.let { parseColor(it) }
+        if (bg != null && bg != 0L) return true
+        for (key in listOf("background", "background-image")) {
+            val v = props[key] ?: continue
+            if (parseUrlValue(v) != null) return true
+            if (v.contains("gradient(", ignoreCase = true)) return true
+        }
+        return false
+    }
+
+    // 块级元素降级判定(walkElement 对每个非 table 块级元素调用): 自身 S4/S5 + 归属本块的子树 S3/S1
+    internal fun needsWebViewBlock(node: Element, cssRules: List<CssRule>): Boolean {
+        val props = propsFor(node, cssRules)
+        // S4: position:absolute/fixed、flex/grid 布局块
+        when (props["position"]?.trim()?.lowercase()) {
+            "absolute", "fixed" -> return true
+        }
+        when (props["display"]?.trim()?.lowercase()) {
+            "flex", "inline-flex", "grid", "inline-grid" -> return true
+        }
+        // S5: 渐变背景
+        for (key in listOf("background", "background-image")) {
+            if (props[key]?.contains("gradient(", ignoreCase = true) == true) return true
+        }
+        if (subtreeSignalsOwnedBy(node, cssRules)) return true
+        return false
+    }
+
+    // 表格降级判定(emitTable 入口调用): S2 嵌套/超 500 格 + 表内 S3/S1
+    internal fun needsWebViewTable(node: Element, cssRules: List<CssRule>): Boolean {
+        if (node.selectFirst("table table") != null) return true
+        if (node.select("td,th").size > 500) return true
+        return subtreeSignalsOwnedBy(node, cssRules)
+    }
+
+    // 子树信号(归属 node 的): S3 内嵌 svg + S1 行内盒装饰
+    private fun subtreeSignalsOwnedBy(node: Element, cssRules: List<CssRule>): Boolean {
+        for (svg in node.select("svg")) {
+            if (ownerBlockOf(svg) === node) return true
+        }
+        for (el in node.select("*")) {
+            if (el.tagName().lowercase() in S1_SCAN_SKIP) continue
+            if (!inlineBoxDecorated(propsFor(el, cssRules))) continue
+            if (ownerBlockOf(el) === node) return true
+        }
+        return false
+    }
+
+    // 祖先壳: body 到块元素的逐层开标签(cloneNode(false) 语义: 标签名+全部属性)。
+    // body 自身属性并入壳首;html/#root 不入壳(渲染 mini HTML 自带 html/body 框架)
+    internal fun ancestorShellOf(node: Element): String {
+        val chain = ArrayList<Element>()
+        var cur: Element? = node.parent() as? Element
+        while (cur != null) {
+            chain += cur
+            cur = cur.parent() as? Element
+        }
+        chain.reverse()   // [#root/html, body, ..., 直接父] → 外层在前
+        val sb = StringBuilder()
+        for (el in chain) {
+            val tn = el.tagName().lowercase()
+            if (tn == "html" || tn == "#root") continue
+            sb.append('<').append(el.tagName())
+            for (attr in el.attributes()) {
+                sb.append(' ').append(attr.key).append("=\"")
+                    .append(attr.value.replace("\"", "&quot;")).append('"')
+            }
+            sb.append('>')
+        }
+        return sb.toString()
+    }
+
+    // 块投影扁平化(与 WebView 几何采集 JS 同一条规则,对拍单测钉死):
+    // 文本节点原样;块级子元素边界与 <br> 折空格;连续空白(\t\n\x0B\f\r 空格)压一;
+    // 首尾 ASCII 空白裁剪(U+3000 是 CJK 排版实字符,不折叠不裁剪,与浏览器/采集 JS 同语义)。
+    // svg/script 等不可见子树跳过(与 SKIP 同集合);UTF-16 code unit 两侧同构
+    internal fun flattenBlockText(node: Element): String {
+        val sb = StringBuilder()
+        // 只遍历子树(与采集 JS 从 body.childNodes 起遍历同构;node 自身是块级入口不折空格)
+        for (c in node.childNodes()) appendFlat(c, sb)
+        return sb.toString()
+            .replace(Regex("[\\t\\n\\x0B\\f\\r ]+"), " ")
+            .trim(' ', '\t', '\n', '\u000B', '\u000C', '\r')
+    }
+
+    private fun appendFlat(node: Node, sb: StringBuilder) {
+        when (node) {
+            is TextNode -> sb.append(node.text())
+            is Element -> {
+                val name = node.tagName().lowercase()
+                if (name == "br") {
+                    sb.append(' ')
+                    return
+                }
+                if (name in SKIP) return
+                // 块级边界折空格(连续块折叠为一个),子树继续遍历——块内文本是可见文字
+                if (name in BLOCK) sb.append(' ')
+                for (c in node.childNodes()) appendFlat(c, sb)
+            }
+            else -> {}
+        }
+    }
+
     // data:URI 拆解: "data:[mime];base64,payload" → (mime, payload);非 base64/形态不符 null
     internal fun parseDataUri(src: String): Pair<String, String>? {
         if (!src.startsWith("data:", true)) return null
@@ -79,7 +212,9 @@ object HtmlTextExtractor {
     class ExtractResult(
         val paragraphs: List<Paragraph>,
         val footnotes: Map<String, String>,
-        val fonts: Map<String, String> = emptyMap()   // 七期: @font-face family -> 字体文件相对路径
+        val fonts: Map<String, String> = emptyMap(),   // 七期: @font-face family -> 字体文件相对路径
+        val cssHrefs: List<String> = emptyList(),      // 混合渲染: head 外部样式 href 原样(块渲染 mini HTML 引用)
+        val cssInline: List<String> = emptyList()      // 混合渲染: <style> 块原文(块渲染 mini HTML 内联)
     )
 
     fun extract(file: File, docDir: String = "", dataUriSink: DataUriSink? = null): ExtractResult {
@@ -91,12 +226,19 @@ object HtmlTextExtractor {
             mergeCssRules(cssRules, parseStyleBlock(style.data()))
             mergeFontFaces(fontFaces, parseFontFaces(style.data()))
         }
+        // head 内 <style> 原文收集(body 内的由 extract(body) 统一收,避免重复)
+        val cssInline = ArrayList<String>()
+        for (style in doc.head().select("style")) {
+            if (style.data().isNotBlank()) cssInline += style.data()
+        }
         // 六期 A1: 外部 CSS 文件(<link rel="stylesheet">,真实 EPUB 样式的主要载体)。
         // 相对文档文件解析;单层引用不追 import;大小上限 2MB 防病态;缺失/失败宽容跳过
+        val cssHrefs = ArrayList<String>()
         for (link in doc.select("link")) {
             if (link.attr("rel").trim().lowercase() != "stylesheet") continue
             val href = link.attr("href").trim()
             if (href.isEmpty() || href.startsWith("http", true)) continue
+            cssHrefs += href
             runCatching {
                 val f = File(file.parentFile, percentDecode(href))
                 if (f.exists() && f.isFile && f.length() in 1..2_000_000L) {
@@ -105,7 +247,7 @@ object HtmlTextExtractor {
                 }
             }
         }
-        return extract(doc.body(), docDir, cssRules, fontFaces, dataUriSink)
+        return extract(doc.body(), docDir, cssRules, fontFaces, dataUriSink, cssHrefs, cssInline)
     }
 
     // 文档内首个标题(h1..h6,按序),供章节名兜底;无标题返回 null
@@ -126,7 +268,9 @@ object HtmlTextExtractor {
         docDir: String = "",
         cssRulesIn: List<CssRule>?,
         fontsIn: Map<String, String>? = null,
-        dataUriSink: DataUriSink? = null
+        dataUriSink: DataUriSink? = null,
+        cssHrefsIn: List<String> = emptyList(),
+        cssInlineIn: List<String> = emptyList()
     ): ExtractResult {
         // 预扫描 noteref 引用的 fragment: id 命中的元素即脚注容器(宽容覆盖无类型标记的脚注)
         val noteRefs = LinkedHashSet<String>()
@@ -139,13 +283,15 @@ object HtmlTextExtractor {
         // body 内联的 <style> 也收集(测试入口 parseBodyFragment 场景);外部传入的规则优先合并
         val cssRules = ArrayList<CssRule>()
         if (cssRulesIn != null) cssRules.addAll(cssRulesIn)
+        val cssInline = ArrayList<String>(cssInlineIn)
         for (style in body.select("style")) {
             mergeCssRules(cssRules, parseStyleBlock(style.data()))
+            if (style.data().isNotBlank()) cssInline += style.data()
         }
         val b = Builder(docDir, null, dataUriSink)
         walk(body, b, ArrayDeque(), noteRefs, cssRules)
         b.flush()
-        return ExtractResult(b.result(), b.notes, fontsIn ?: emptyMap())
+        return ExtractResult(b.result(), b.notes, fontsIn ?: emptyMap(), cssHrefsIn, cssInline)
     }
 
     // noteref 判定(保守: 仅显式标记;EPUB2 无标记内链不识别以免误伤普通链接)
@@ -190,20 +336,22 @@ object HtmlTextExtractor {
                 (if (it.id != null) 100 else 0)
         }
 
-    private val SEL_NAME = Regex("^[A-Za-z][A-Za-z0-9-]*$")
+    // 裸标签名前缀匹配(无 $ 锚定——"div.abs" 需匹配到前缀 "div",锚定会使 tag.cls 复合选择器解析失败)
+    private val SEL_NAME = Regex("^[A-Za-z][A-Za-z0-9-]*")
     private val SEL_TOKEN = Regex("^[A-Za-z0-9_-]+")
 
-    // 解析单个简单选择器段("p" / ".cls" / "p#x.y[z=v]");含 :pseudo 等不支持语法返回 null
+    // 解析单个简单选择器段("p" / ".cls" / "*"(通配) / "p#x.y[z=v]");含 :pseudo 等不支持语法返回 null
     private fun parseSimpleSel(part: String): SimpleSel? {
         val s = part.trim()
         var tag: String? = null
+        var any = false
         val classes = LinkedHashSet<String>()
         var id: String? = null
         val attrs = ArrayList<AttrSel>()
         var i = 0
         while (i < s.length) {
             when (s[i]) {
-                '*' -> { if (tag != null) return null; i++ }   // 通配: 不加约束
+                '*' -> { if (tag != null) return null; any = true; i++ }   // 通配: 全空 SimpleSel = 任意元素
                 '#' -> {
                     if (id != null) return null
                     val m = SEL_TOKEN.find(s.substring(i + 1)) ?: return null
@@ -230,7 +378,7 @@ object HtmlTextExtractor {
                 }
             }
         }
-        if (tag == null && classes.isEmpty() && id == null && attrs.isEmpty()) return null
+        if (tag == null && !any && classes.isEmpty() && id == null && attrs.isEmpty()) return null
         return SimpleSel(tag, classes, id, attrs)
     }
 
@@ -985,6 +1133,23 @@ object HtmlTextExtractor {
             )
         }
 
+        // WEBVIEW 块段: 投影放完整文本(非 U+FFFC,目录/TTS/搜索不跳过内容);
+        // 位图自带盒样式/对齐,不设 boxStyle(防绘制层双重画盒)
+        fun addWebViewBlock(text: String, html: String, shell: String, docDir: String) {
+            out += Paragraph(
+                text, emptyList(), ParaKind.WEBVIEW,
+                anchor = openAnchors.firstOrNull()?.also { openAnchors.removeFirst() },
+                align = paraAlign,
+                spaceAboveEm = paraAboveEm,
+                spaceBelowEm = paraBelowEm,
+                marginLeftEm = effectiveLeft(),
+                marginRightEm = effectiveRight(),
+                blockHtml = html,
+                ancestorShell = shell,
+                blockDocDir = docDir
+            )
+        }
+
         fun addImage(ref: String, width: CssLen? = null) {
             out += Paragraph(
                 IMAGE_PLACEHOLDER, emptyList(), ParaKind.IMAGE, imageRef = ref,
@@ -1119,7 +1284,15 @@ object HtmlTextExtractor {
         b.applyLayout(parseParaLayout(layoutProps))
 
         try {
-            when {
+            // 混合渲染: 块级元素命中自绘边界信号 → 整块降级 WebView 位图(子树不走常规提取)。
+            // table 有专属判定(嵌套/超 500 格/表内信号),在 emitTable 的入口处理
+            if (name != "table" && name in BLOCK && needsWebViewBlock(node, cssRules)) {
+                b.flush()
+                b.addWebViewBlock(
+                    flattenBlockText(node).ifBlank { IMAGE_PLACEHOLDER },
+                    node.outerHtml(), ancestorShellOf(node), b.docDir
+                )
+            } else when {
                 name == "br" -> {
                     // br = 同段内强制换行: 前面的内容先收口,再标记"下一段与上一段 br 相邻"
                     // (排版层据此跳过段距)
@@ -1216,8 +1389,13 @@ object HtmlTextExtractor {
     // 嵌套表与超阈值(>500 格)仍降级占位。单元格内容经子 Builder 提取投影与 runs
     // (段间单空格拼接,runs 平移),格级样式取 class/style(对齐/垂直对齐/底色/边框/th 加粗)
     private fun emitTable(node: Element, b: Builder, cssRules: List<CssRule>, noteIds: Set<String>) {
-        if (node.selectFirst("table table") != null) {
-            b.addPlainPara(TABLE_PLACEHOLDER)
+        // 混合渲染: 嵌套表/超 500 格/表内行内装饰(圆圈章号)等边界外信号 → 整表降级 WebView 位图
+        if (needsWebViewTable(node, cssRules)) {
+            b.flush()
+            b.addWebViewBlock(
+                flattenBlockText(node).ifBlank { IMAGE_PLACEHOLDER },
+                node.outerHtml(), ancestorShellOf(node), b.docDir
+            )
             return
         }
         val occupied = HashMap<Int, MutableSet<Int>>()   // row -> 被上方 rowspan 占用的列
@@ -1289,6 +1467,9 @@ object HtmlTextExtractor {
         el: Element, b: Builder, cssRules: List<CssRule>, noteIds: Set<String>
     ): Triple<String, List<Run>, String?> {
         val sub = Builder(b.docDir, null, b.dataUriSink)
+        // td/th 自身的 run 级样式(颜色/字号/粗斜)随格内文字落地——格内容提取 walk 的是
+        // td 的孩子,td 分支不经 walkElement,装饰上下文需在此预置
+        sub.cur = mergeRunCtx(sub.cur, runDecoFromProps(propsFor(el, cssRules)))
         for (c in el.childNodes()) walk(c, sub, ArrayDeque(), noteIds, cssRules)
         sub.flush()
         var text = ""

@@ -4,6 +4,11 @@ package com.yukino.tool.module.reader
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Canvas
@@ -12,6 +17,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -62,13 +68,20 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.RoundRect
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.Outline
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -85,9 +98,11 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.foundation.layout.WindowInsets
@@ -106,8 +121,12 @@ import com.yukino.tool.module.reader.common.ReaderBook
 import com.yukino.tool.module.reader.common.ReaderSettings
 import com.yukino.tool.module.reader.common.ReaderPageView
 import com.yukino.tool.module.reader.common.Typography
+import com.yukino.tool.module.reader.common.BlockCache
+import com.yukino.tool.module.reader.epub.BlockSpec
 import com.yukino.tool.module.reader.epub.DecorSnapshot
+import com.yukino.tool.module.reader.epub.EpubBookContent
 import com.yukino.tool.module.reader.epub.EpubImporter
+import com.yukino.tool.module.reader.epub.WebViewBlockRenderer
 import com.yukino.tool.util.findActivity
 import kotlin.math.abs
 import kotlin.math.max
@@ -252,6 +271,18 @@ fun ReaderScreen(
         val t = typo ?: return@LaunchedEffect
         val key = typoKey ?: return@LaunchedEffect
         if (specs != null && specsTypoKey == key) return@LaunchedEffect   // 已是当前版式,不重排
+        // 混合渲染: WEBVIEW 块按需渲染(串行闸 + 缓存,缓存命中零成本)。必须先于分页——
+        // 断行按块位图高占行,specs 持久缓存命中的页界同样按位图高分页
+        if (cnt is EpubBookContent) {
+            val blockSpecs = withContext(Dispatchers.IO) { collectWebBlockSpecs(cnt, t.fontPx, t.textWidth) }
+            if (blockSpecs.isNotEmpty()) {
+                initStage = "渲染装饰块…"
+                WebViewBlockRenderer.ensureAllBlocking(
+                    context, cnt.webBlockRoot(), blockSpecs, t.fontPx, t.textWidth
+                ) { done, total -> initStage = "渲染装饰块 $done/$total" }
+                initStage = null
+            }
+        }
         // 锚点 = 当前页页首偏移(阅读中改版式不丢位置);无当前页(刚打开书)才用持久化进度
         val anchor = specs?.getOrNull(pageIndex)?.globalCharOffset ?: book.progress.globalCharOffset
         // 缓存命中: 直接用,跳过整本重排
@@ -359,6 +390,12 @@ fun ReaderScreen(
         footnoteShow = null
     }
 
+    // 图片预览(混合渲染 §8): 点击书内图片(块级图/行内图/格内图)全屏查看大图
+    var previewImage by remember(book.id) { mutableStateOf<String?>(null) }
+    BackHandler(enabled = previewImage != null) {
+        previewImage = null
+    }
+
     // 出版信息页(四期实验项): 书籍元数据弹层,菜单顶栏"信息"入口
     var showBookInfo by remember(book.id) { mutableStateOf(false) }
 
@@ -433,6 +470,46 @@ fun ReaderScreen(
                 ?: cnt.footnoteAt(global + 1)
         }
         return hitNote?.let { FootnotePopup(it.first, it.second, offset) }
+    }
+
+    // 图片命中(混合渲染 §8): 版心坐标 → 图片文件绝对路径。优先级: 块级图片行矩形 →
+    // 行内图片矩形(物化预计算) → 表格格内图片矩形(drawTable 布局坐标)。
+    // 命中则不呼菜单直接预览;WEBVIEW 块位图不响应点击(位图语义,原图入口已失)
+    fun imageHitAt(offset: Offset): String? {
+        val bp = livePage ?: return null
+        val t = liveTypo ?: return null
+        val cnt = liveContent ?: return null
+        if (bp.spec.kind != PageKind.CONTENT) return null
+        val cx = offset.x - t.marginPx
+        val cy = offset.y - contentTopPx
+        for (ln in bp.lines) {
+            if (ln.imageRef != null && ln.imageWidth > 0f &&
+                cx >= ln.x && cx <= ln.x + ln.imageWidth &&
+                cy >= ln.baseline && cy <= ln.baseline + ln.imageHeight
+            ) return ln.imageRef
+        }
+        for (ln in bp.lines) {
+            for (im in ln.inlineImages) {
+                if (cx >= im.x && cx <= im.x + im.width &&
+                    cy >= im.y && cy <= im.y + im.height
+                ) {
+                    // 脚注角标图(行内图片即 noteref 徽标)不进预览——让位给脚注弹层
+                    if (cnt.footnoteAt(ln.lineStartGlobal + im.charIdx) != null) continue
+                    return im.ref
+                }
+            }
+        }
+        for (dt in bp.tables) {
+            for (cb in dt.layout.cells) {
+                val img = cb.img ?: continue
+                val ix = dt.x + cb.x + (cb.w - img.width) / 2f
+                val iy = dt.y + cb.y
+                if (cx >= ix && cx <= ix + img.width &&
+                    cy >= iy && cy <= iy + img.height
+                ) return cb.cell.imgRef
+            }
+        }
+        return null
     }
 
     // 工具栏延迟弹出: 长按建选区后不能同步 startActionMode——选区坐标要等重组后才算好,
@@ -753,9 +830,14 @@ fun ReaderScreen(
                 detectTapGestures(
                     onTap = { offset ->
                         if (selection == null) {
-                            // 角标点击优先于菜单开关(仅菜单收起时检测;弹层自身拦截后续触摸)
-                            val note = if (!menuVisible) footnoteHitAt(offset) else null
-                            if (note != null) footnoteShow = note else menuVisible = !menuVisible
+                            // 图片预览命中优先于角标与菜单(仅菜单收起时检测)
+                            val img = if (!menuVisible && previewImage == null) imageHitAt(offset) else null
+                            if (img != null) previewImage = img
+                            else {
+                                // 角标点击优先于菜单开关(仅菜单收起时检测;弹层自身拦截后续触摸)
+                                val note = if (!menuVisible) footnoteHitAt(offset) else null
+                                if (note != null) footnoteShow = note else menuVisible = !menuVisible
+                            }
                         } else {
                             val sv = selVisualRef.value
                             val t = liveTypo
@@ -772,9 +854,9 @@ fun ReaderScreen(
                     }
                 )
             }
-            .pointerInput(menuVisible, selection != null, typoKey, specs) {
-                // 菜单打开或选择激活期间翻页手势让位(选择下翻页只经由手柄驻留自动翻页)
-                if (menuVisible || selection != null) return@pointerInput
+            .pointerInput(menuVisible, selection != null, previewImage != null, typoKey, specs) {
+                // 菜单打开/选择激活/图片预览期间翻页手势让位(选择下翻页只经由手柄驻留自动翻页)
+                if (menuVisible || selection != null || previewImage != null) return@pointerInput
                 var startX = 0f
                 var totalDrag = 0f
                 var velocityPxPerSec = 0f
@@ -1180,60 +1262,93 @@ fun ReaderScreen(
         }
     }
 
-    // 脚注就近卡片: 优先放在角标上方(底边贴角标), 上方空间放不下时落下方(顶边贴角标);
-    // 长脚注钳到所在区域内部滚动。SubcomposeLayout 先量内容实际高再定位, 无两帧回环。
-    // scrim 层关闭, 卡片自身消费点击; 配色与菜单浮层同源(跟随阅读主题)
-    footnoteShow?.let { note ->
+    // 脚注就近气泡卡片: 优先放在角标上方(底边贴角标), 上方空间放不下时落下方;
+    // 长脚注钳到所在区域内部滚动。朝角标一侧带三角箭头, 尖角水平跟随角标
+    // (钳在卡片边缘内)。进出动画: 淡入淡出 + 轻微缩放; footnoteShow 置空后由
+    // lastNote 撑住退出动画期间的内容。scrim 层关闭, 卡片自身消费点击;
+    // 配色与菜单浮层同源(跟随阅读主题)
+    var lastNote by remember { mutableStateOf<FootnotePopup?>(null) }
+    if (footnoteShow != null) lastNote = footnoteShow
+    lastNote?.let { note ->
         val gapPx = with(density) { 20.dp.toPx() }
         val cardMarginPx = with(density) { 16.dp.toPx() }
-        SubcomposeLayout { constraints ->
-            val vw = viewport?.width ?: 0
-            val screenBottom = topInsetPx + (viewport?.height ?: 0)
-            val cardW = (vw - cardMarginPx * 2).roundToInt().coerceAtLeast(1)
-            val spaceAbove = (note.anchor.y - gapPx - topInsetPx).roundToInt().coerceAtLeast(0)
-            val spaceBelow = (screenBottom - gapPx - note.anchor.y).roundToInt().coerceAtLeast(0)
-            fun card(maxHp: Int) = subcompose(note.noteId) {
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = menuBg,
-                    tonalElevation = 0.dp,
-                    shadowElevation = 8.dp,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = with(density) { maxHp.toDp() })
-                ) {
-                    Column(
-                        Modifier.verticalScroll(rememberScrollState())
-                            .padding(horizontal = 16.dp, vertical = 12.dp)
+        val arrowW = with(density) { 18.dp.toPx() }
+        val arrowH = with(density) { 11.dp.toPx() }
+        val arrowEdge = with(density) { 16.dp.toPx() }   // 尖角离卡片左右缘的最小距离
+        AnimatedVisibility(
+            visible = footnoteShow != null,
+            enter = fadeIn(tween(150)) + scaleIn(initialScale = 0.96f, animationSpec = tween(150)),
+            exit = fadeOut(tween(120)) + scaleOut(targetScale = 0.96f, animationSpec = tween(120))
+        ) {
+            SubcomposeLayout { constraints ->
+                val vw = viewport?.width ?: 0
+                val screenBottom = topInsetPx + (viewport?.height ?: 0)
+                val cardW = (vw - cardMarginPx * 2).roundToInt().coerceAtLeast(1)
+                // 箭头尖角 x(卡片内坐标): 跟随角标, 钳在卡片边缘内
+                val arrowX = (note.anchor.x - cardMarginPx - arrowW / 2f)
+                    .coerceIn(arrowEdge, (cardW - arrowEdge - arrowW).coerceAtLeast(arrowEdge))
+                val spaceAbove = (note.anchor.y - gapPx - arrowH - topInsetPx).roundToInt().coerceAtLeast(0)
+                val spaceBelow = (screenBottom - gapPx - arrowH - note.anchor.y).roundToInt().coerceAtLeast(0)
+                fun card(k: String, maxHp: Int, above: Boolean) = subcompose(k) {
+                    val tipPad = with(density) { arrowH.toDp() }
+                    Surface(
+                        // 气泡形状(圆角矩形 + 朝角标三角), 投影沿轮廓含箭头
+                        shape = BubbleShape(
+                            radius = with(density) { 12.dp.toPx() },
+                            tipX = arrowX, tipW = arrowW, tipH = arrowH, down = above
+                        ),
+                        color = menuBg,
+                        tonalElevation = 0.dp,
+                        shadowElevation = 8.dp,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = with(density) { maxHp.toDp() })
                     ) {
-                        Text(
-                            note.text,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = fgColor
-                        )
+                        Column(
+                            Modifier.verticalScroll(rememberScrollState())
+                                .padding(
+                                    start = 16.dp, end = 16.dp,
+                                    top = if (above) 12.dp + tipPad else 12.dp,
+                                    bottom = if (above) 12.dp else 12.dp + tipPad
+                                )
+                        ) {
+                            Text(
+                                note.text,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = fgColor
+                            )
+                        }
                     }
                 }
-            }
-            val meas = Constraints(minWidth = cardW, maxWidth = cardW, minHeight = 0)
-            // 内容本高(上限整屏); 上方放得下优先上方, 否则下方; 超过所在区域再钳高滚动
-            val natural = card(maxHp = screenBottom).map { it.measure(meas.copy(maxHeight = screenBottom)) }
-            val contentH = natural.maxOf { it.height }
-            val useAbove = contentH <= spaceAbove
-            val areaMax = if (useAbove) spaceAbove else spaceBelow
-            val areaTop = if (useAbove) note.anchor.y - gapPx - contentH else note.anchor.y + gapPx
-            val placed = if (contentH > areaMax) {
-                card(maxHp = areaMax).map { it.measure(meas.copy(maxHeight = areaMax)) }
-            } else natural
-            layout(constraints.maxWidth, constraints.maxHeight) {
-                subcompose("scrim") {
-                    Box(
-                        Modifier.fillMaxSize()
-                            .pointerInput(Unit) { detectTapGestures { footnoteShow = null } }
-                    )
-                }.forEach { it.measure(constraints).place(0, 0) }
-                placed.forEach { it.place(cardMarginPx.roundToInt(), areaTop.roundToInt()) }
+                val meas = Constraints(minWidth = cardW, maxWidth = cardW, minHeight = 0)
+                // 内容本高(上限整屏, 含箭头); 上方放得下优先上方, 否则下方; 超过所在区域再钳高滚动。
+                // 同一测量趟内 subcompose 不可复用同 key(会抛 Key already used):
+                // 首测用 noteId, 落下方/需钳高时的最终组合改用 "#b" 键
+                val natural = card(note.noteId, maxHp = screenBottom, above = true)
+                    .map { it.measure(meas.copy(maxHeight = screenBottom)) }
+                val contentH = natural.maxOf { it.height }
+                val useAbove = contentH <= spaceAbove
+                val areaMax = if (useAbove) spaceAbove else spaceBelow
+                val areaTop = if (useAbove) note.anchor.y - gapPx - contentH else note.anchor.y + gapPx
+                val placed = if (useAbove && contentH <= areaMax) natural
+                else card(note.noteId + "#b", maxHp = areaMax, above = useAbove)
+                    .map { it.measure(meas.copy(maxHeight = areaMax)) }
+                layout(constraints.maxWidth, constraints.maxHeight) {
+                    subcompose("scrim") {
+                        Box(
+                            Modifier.fillMaxSize()
+                                .pointerInput(Unit) { detectTapGestures { footnoteShow = null } }
+                        )
+                    }.forEach { it.measure(constraints).place(0, 0) }
+                    placed.forEach { it.place(cardMarginPx.roundToInt(), areaTop.roundToInt()) }
+                }
             }
         }
+    }
+
+    // 图片预览层(书内图片点击查看大图;关闭即恢复,阅读页翻页手势已在预览期间冻结)
+    previewImage?.let { ref ->
+        ImagePreviewOverlay(ref = ref, onClose = { previewImage = null })
     }
 
     if (showSettings) {
@@ -1245,6 +1360,27 @@ fun ReaderScreen(
     }
 }
 
+// 全书 WEBVIEW 块清单(章文件遍历,一次性;缓存键随字号/版心宽)。
+// IO 线程调用——章文档读取是磁盘 JSON
+private fun collectWebBlockSpecs(
+    content: EpubBookContent,
+    fontPx: Float,
+    textWidth: Int
+): List<Pair<String, BlockSpec>> {
+    val out = ArrayList<Pair<String, BlockSpec>>()
+    for (i in 0 until content.chapterCount) {
+        val doc = content.chapterDoc(i)
+        for (p in doc.paragraphs) {
+            val html = p.blockHtml ?: continue
+            val shell = p.ancestorShell ?: ""
+            val hash = BlockCache.contentHashOf(html, shell, p.blockDocDir, doc.cssHrefs, doc.cssInline)
+            out += BlockCache.keyOf(fontPx, textWidth, hash) to
+                BlockSpec(p.blockDocDir, html, shell, doc.cssHrefs, doc.cssInline)
+        }
+    }
+    return out
+}
+
 // 当前页对应的全书百分比(供页脚与进度条)
 private fun currentPercent(
     content: BookContent?,
@@ -1254,6 +1390,114 @@ private fun currentPercent(
     specs?.getOrNull(pageIndex)?.let { BookPager.percentOf(c, it) }
 } ?: 0.0
 
+
+// 脚注气泡形状: 圆角矩形主体 + 朝角标一侧的三角箭头。tipX = 箭头左缘 x(px, 已在
+// 调用处钳进圆角区); down = 卡片在角标上方, 箭头贴下缘向下方伸出。三角底边与主体
+// 重叠 1px 防缝, 非零环绕填充即并集; 投影沿整个轮廓绘制, 箭头同样带影
+private class BubbleShape(
+    private val radius: Float,
+    private val tipX: Float,
+    private val tipW: Float,
+    private val tipH: Float,
+    private val down: Boolean
+) : Shape {
+    override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline {
+        val bodyH = size.height - tipH
+        val p = Path()
+        p.addRoundRect(RoundRect(0f, 0f, size.width, bodyH, CornerRadius(radius, radius)))
+        val x = tipX.coerceIn(radius, (size.width - radius - tipW).coerceAtLeast(radius))
+        if (down) {
+            val base = bodyH - 1f
+            p.moveTo(x, base); p.lineTo(x + tipW, base); p.lineTo(x + tipW / 2f, size.height); p.close()
+        } else {
+            val base = tipH + 1f
+            p.moveTo(x, base); p.lineTo(x + tipW, base); p.lineTo(x + tipW / 2f, 0f); p.close()
+        }
+        return Outline.Generic(p)
+    }
+}
+
+// 图片预览层(混合渲染 §8): 全屏近黑半透明底 + 图片 fit 屏幕居中;
+// 双指捏合缩放(1x~4x)、放大后拖动平移、双击 1x/2x 切换、单击空白或返回键关闭。
+// 按屏幕尺寸 inSampleSize 采样解码(SVG 走 SvgDecoder 栅格化),GIF 取首帧;不落盘无保存
+@Composable
+private fun ImagePreviewOverlay(ref: String, onClose: () -> Unit) {
+    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+    val screenW = (configuration.screenWidthDp * configuration.densityDpi / 160f).toInt().coerceAtLeast(1)
+    val screenH = (configuration.screenHeightDp * configuration.densityDpi / 160f).toInt().coerceAtLeast(1)
+    var bitmap by remember(ref) { mutableStateOf<android.graphics.Bitmap?>(null) }
+    LaunchedEffect(ref) {
+        bitmap = withContext(Dispatchers.IO) { decodePreviewBitmap(ref, screenW, screenH) }
+    }
+    var scale by remember { mutableStateOf(1f) }
+    var off by remember { mutableStateOf(Offset.Zero) }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xD9000000L))
+            .pointerInput(Unit) {
+                detectTransformGestures { _, pan, zoom, _ ->
+                    val next = (scale * zoom).coerceIn(1f, 4f)
+                    scale = next
+                    off = if (next > 1f) {
+                        Offset(
+                            (off.x + pan.x).coerceIn(-screenW.toFloat(), screenW.toFloat()),
+                            (off.y + pan.y).coerceIn(-screenH.toFloat(), screenH.toFloat())
+                        )
+                    } else Offset.Zero
+                }
+            }
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onTap = { onClose() },
+                    onDoubleTap = {
+                        if (scale > 1.5f) {
+                            scale = 1f
+                            off = Offset.Zero
+                        } else {
+                            scale = 2f
+                        }
+                    }
+                )
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        val bmp = bitmap
+        if (bmp != null) {
+            Image(
+                bitmap = bmp.asImageBitmap(),
+                contentDescription = "图片预览",
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        scaleX = scale
+                        scaleY = scale
+                        translationX = off.x
+                        translationY = off.y
+                    }
+            )
+        } else {
+            CircularProgressIndicator(color = Color.White)
+        }
+    }
+}
+
+// 预览解码: 位图按屏幕尺寸 inSampleSize 采样(解码宽钳到屏幕 1~2 倍,捏合 2x 仍清晰);
+// SVG 按屏幕尺寸栅格化;GIF 天然取首帧;失败返回 null(预览层转圈后无图可看,点击关闭)
+private fun decodePreviewBitmap(ref: String, screenW: Int, screenH: Int): android.graphics.Bitmap? {
+    return runCatching {
+        if (com.yukino.tool.module.reader.common.SvgDecoder.isSvg(ref)) {
+            return@runCatching com.yukino.tool.module.reader.common.SvgDecoder.decode(ref, screenW, screenH)
+        }
+        val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        android.graphics.BitmapFactory.decodeFile(ref, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@runCatching null
+        var sample = 1
+        while (bounds.outWidth / (sample * 2) >= screenW * 2) sample *= 2
+        val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
+        android.graphics.BitmapFactory.decodeFile(ref, opts)
+    }.getOrNull()
+}
 
 // 选择双柄: 左右倾斜水滴图标挂在各自锚点下方(参考系统选区柄样式),
 // 共用一个触摸区——按下/拖动时按指针在两锚点中点的左右判定拖的是哪个柄,

@@ -100,7 +100,10 @@ class EpubBookContent(
             } else if (paras.any { it.boxStyle != boxAbs(it.boxStyle) }) {
                 paras.map { it.copyBox(boxAbs(it.boxStyle)) }
             } else paras
-            ChapterDocument(chapters[index].title, resolved, footnotes, read.fonts, docFontFiles)
+            ChapterDocument(
+                chapters[index].title, resolved, footnotes, read.fonts, docFontFiles,
+                read.cssHrefs, read.cssInline
+            )
         }
     }
 
@@ -185,6 +188,9 @@ class EpubBookContent(
     override fun isDecorative(chapterIndex: Int): Boolean =
         chapterIndex in chapters.indices &&
             chapterDoc(chapterIndex).paragraphs.firstOrNull()?.boxStyle != null
+
+    // 混合渲染: WEBVIEW 块位图缓存根目录 = 解压根(章文件目录即解压根)
+    override fun webBlockRoot(): java.io.File = chapterDir
 
     override fun decoSnapshot(chapterIndex: Int): String? {
         if (!isDecorative(chapterIndex)) return null

@@ -29,7 +29,7 @@ data class Run(
     val fontId: Int? = null
 )
 
-enum class ParaKind { TEXT, IMAGE, TABLE }
+enum class ParaKind { TEXT, IMAGE, TABLE, WEBVIEW }
 
 // 段内脚注角标区间(纯文本投影坐标): 角标文本保留在投影中(如 "[1]"),
 // noteId 指向章级 footnotes 表(不进正文阅读流)
@@ -154,7 +154,10 @@ class Paragraph(
     val floatSide: Int = 0,           // 批次四b: 浮动盒(1=right 2=left;带 width+height 才真环绕,否则六期右对齐降级)
     val breakAll: Boolean = false,    // 批次四e: word-break:break-all(词中可断,手动逐字折行)
     val brBefore: Boolean = false,    // 七期补: 与上一段是 <br/> 相邻(同段内强制换行,排版层段距归零)
-    val indentCss: CssLen? = null     // text-indent 全单位形态(em/px/%;优先于老字段 indentEm)
+    val indentCss: CssLen? = null,    // text-indent 全单位形态(em/px/%;优先于老字段 indentEm)
+    val blockHtml: String? = null,    // 混合渲染: WEBVIEW 段的块 HTML 片段(jsoup 序列化,原样)
+    val ancestorShell: String? = null, // 祖先壳: body 到块元素的逐层开标签(重建 CSS 上下文)
+    val blockDocDir: String = ""      // 块来源文档相对解压根的目录(片段内相对引用的解析基准)
 ) {
     val isImage: Boolean get() = kind == ParaKind.IMAGE
     val isTable: Boolean get() = table != null
@@ -169,7 +172,9 @@ class ChapterDocument(
     val paragraphs: List<Paragraph>,
     val footnotes: Map<String, String> = emptyMap(),
     val fontIds: Map<Int, String> = emptyMap(),       // 七期: run.fontId → family
-    val fontFiles: Map<String, String> = emptyMap()   // family → 字体文件绝对路径
+    val fontFiles: Map<String, String> = emptyMap(),  // family → 字体文件绝对路径
+    val cssHrefs: List<String> = emptyList(),  // 混合渲染: 原文档 head 外部样式 href 原样列表
+    val cssInline: List<String> = emptyList()  // 混合渲染: 原文档 <style> 块原文列表
 ) {
     val bodyText: String get() = paragraphs.joinToString("\n") { it.text }
 }
@@ -215,6 +220,10 @@ interface BookContent {
 
     // 装饰章快照位图文件绝对路径;null = 未生成(页面临时以近似排版占位,生成完成后重物化)
     fun decoSnapshot(chapterIndex: Int): String? = null
+
+    // ---- 混合渲染(WEBVIEW 块级降级): 块位图缓存根目录(解压根) ----
+    // TXT/无实现返回 null → 块渲染整体不生效,WEBVIEW 段按普通段落自绘兜底
+    fun webBlockRoot(): java.io.File? = null
 }
 
 // TXT 内容源: 全书单文本流 + 章节偏移表切片。无章节书归一化为"整本单章"

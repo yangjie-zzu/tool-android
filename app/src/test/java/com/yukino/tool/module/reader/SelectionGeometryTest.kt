@@ -71,12 +71,12 @@ class SelectionGeometryTest {
     fun `自然行按字符中心吸附`() {
         val ln = line("四个汉字", 0L, 20f)
         // 每字宽 10: 中心 5 为界
-        assertEquals(0, SelectionGeometry.charOffsetInLine(ln, 4f, metrics))
-        assertEquals(1, SelectionGeometry.charOffsetInLine(ln, 6f, metrics))
-        assertEquals(3, SelectionGeometry.charOffsetInLine(ln, 35f, metrics))
+        assertEquals(0, SelectionGeometry.charOffsetInLine(ln, 4f, 0f, metrics))
+        assertEquals(1, SelectionGeometry.charOffsetInLine(ln, 6f, 0f, metrics))
+        assertEquals(3, SelectionGeometry.charOffsetInLine(ln, 35f, 0f, metrics))
         // 越界钳制
-        assertEquals(0, SelectionGeometry.charOffsetInLine(ln, -5f, metrics))
-        assertEquals(4, SelectionGeometry.charOffsetInLine(ln, 999f, metrics))
+        assertEquals(0, SelectionGeometry.charOffsetInLine(ln, -5f, 0f, metrics))
+        assertEquals(4, SelectionGeometry.charOffsetInLine(ln, 999f, 0f, metrics))
     }
 
     @Test
@@ -87,12 +87,12 @@ class SelectionGeometryTest {
             segments = listOf(LineSeg("六个汉", 0f), LineSeg("字整行", 60f))
         )
         // 段内自然度量
-        assertEquals(1, SelectionGeometry.charOffsetInLine(ln, 12f, metrics))
+        assertEquals(1, SelectionGeometry.charOffsetInLine(ln, 12f, 0f, metrics))
         // 落到第二段: rel=65 → 段1 内 local=5 → 字符3(第4字)
-        assertEquals(3, SelectionGeometry.charOffsetInLine(ln, 65f, metrics))
+        assertEquals(3, SelectionGeometry.charOffsetInLine(ln, 65f, 0f, metrics))
         // 不走分段会错位: rel=50 在自然度量下落在第5字,分段定位应为段1 的第2字(下标4)
-        assertEquals(4, SelectionGeometry.charOffsetInLine(ln, 72f, metrics))
-        assertEquals(6, SelectionGeometry.charOffsetInLine(ln, 999f, metrics))
+        assertEquals(4, SelectionGeometry.charOffsetInLine(ln, 72f, 0f, metrics))
+        assertEquals(6, SelectionGeometry.charOffsetInLine(ln, 999f, 0f, metrics))
     }
 
     // ---- wordRange ----

@@ -367,6 +367,10 @@ class ReaderPageView(context: Context) : View(context) {
             // 批次四: 表格片段(同样在文字下层;表格行不产文字行)
             for (tb in page.tables) drawTable(canvas, tb, t)
             for (ln in page.lines) {
+                if (ln.blockRef != null) {
+                    drawBlockBitmap(canvas, ln, t)
+                    continue
+                }
                 if (ln.imageRef != null) {
                     drawImageLine(canvas, ln)
                     continue
@@ -414,6 +418,26 @@ class ReaderPageView(context: Context) : View(context) {
     // 装饰章快照绘制: 与封面同族的 contain 绘制;夜间套原 WebView 呈现同参数的反色滤镜
     private val decoPaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
     private var nightDecoFilter: android.graphics.ColorFilter? = null
+
+    // 混合渲染: WEBVIEW 块位图行(与装饰章快照同族绘制 + 夜间同参数反色滤镜;
+    // 位图上叠画选择高亮由 selRects 统一承担)
+    private fun drawBlockBitmap(canvas: Canvas, ln: DrawLine, t: ResolvedTypography) {
+        val w = ln.blockWidth
+        val h = ln.blockHeight
+        if (w <= 0f || h <= 0f) return
+        val bmp = imageFor(ln.blockRef ?: return, w.toInt(), h.toInt())
+        if (bmp == null) {
+            drawPlaceholder(canvas, ln.x, ln.baseline, w, h)
+            return
+        }
+        if (t.night) {
+            if (nightDecoFilter == null) nightDecoFilter = android.graphics.ColorMatrixColorFilter(nightDecoMatrix())
+            decoPaint.colorFilter = nightDecoFilter
+        } else {
+            decoPaint.colorFilter = null
+        }
+        canvas.drawBitmap(bmp, null, android.graphics.RectF(ln.x, ln.baseline, ln.x + w, ln.baseline + h), decoPaint)
+    }
 
     private fun drawDecoBitmap(canvas: Canvas, ref: String, x: Float, y: Float, w: Float, h: Float, night: Boolean) {
         val bmp = imageFor(ref, w.toInt(), h.toInt())

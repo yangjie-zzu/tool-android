@@ -553,9 +553,9 @@ class EpubRichContentTest {
             <p style="text-indent: 0">style覆盖元素缩进</p>
         """.trimIndent()
         val paras = extractHtml(html)
-        assertEquals(2f, paras[0].indentEm)          // p 元素规则
-        assertEquals(1, paras[1].align)              // .center(类,spec 10) 覆盖 p(spec 1)
-        assertEquals(0f, paras[2].indentEm)          // style 属性最高
+        assertEquals(CssLen(2f), paras[0].indentCss)   // p 元素规则(v18 起缩进统一 CssLen)
+        assertEquals(1, paras[1].align)                // .center(类,spec 10) 覆盖 p(spec 1)
+        assertEquals(CssLen(0f), paras[2].indentCss)   // style 属性最高
     }
 
     @Test
@@ -571,8 +571,8 @@ class EpubRichContentTest {
               <ul><li>深层li</li></ul></ul>
         """.trimIndent()
         val paras = extractHtml(html)
-        assertNull(paras[0].indentEm)                // div.contents 不命中 ul.contents
-        assertEquals(0f, paras[1].indentEm)          // ul.contents 命中
+        assertNull(paras[0].indentCss)                // div.contents 不命中 ul.contents
+        assertEquals(CssLen(0f), paras[1].indentCss)  // ul.contents 命中
         // li.c-rules: 命中后代链(祖先链 ul→li)
         val deep = paras.first { it.text.contains("深层规则项") }
         assertEquals(CssLen(-0.5f), deep.spaceAboveEm)
@@ -610,8 +610,8 @@ class EpubRichContentTest {
         val l4 = HtmlTextExtractor.parseParaLayout(mapOf("margin" to "1em"))
         assertEquals(CssLen(1f), l4!!.aboveEm)
         assertEquals(CssLen(1f), l4.belowEm)
-        // px/百分比单位忽略仅限 text-indent;left 现为显式对齐 3
-        assertNull(HtmlTextExtractor.parseParaLayout(mapOf("text-indent" to "20px")))
+        // v18 起缩进全单位(em/px/%);px 折 em(20px/16);left 现为显式对齐 3
+        assertEquals(CssLen(1.25f), HtmlTextExtractor.parseParaLayout(mapOf("text-indent" to "20px"))!!.indentCss)
         assertEquals(3, HtmlTextExtractor.parseParaLayout(mapOf("text-align" to "left"))!!.align)
     }
 
@@ -627,7 +627,7 @@ class EpubRichContentTest {
         """.trimIndent()
         val paras = extractHtml(html)
         assertEquals(1, paras[0].align)
-        assertEquals(0f, paras[0].indentEm)
+        assertEquals(CssLen(0f), paras[0].indentCss)
         assertEquals(2, paras[1].align)              // style 覆盖 class
         assertEquals(CssLen(1f), paras[2].spaceAboveEm)   // 继承容器的 margin-top
     }
@@ -777,8 +777,11 @@ class EpubRichContentTest {
         assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v16))
         val v17 = File.createTempFile("v17ch", ".txt")
         v17.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":17}""")
-        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v17))
-        legacy.delete(); v2.delete(); v4.delete(); v5.delete(); v6.delete(); v7.delete(); v8.delete(); v9.delete(); v10b.delete(); v11.delete(); v12.delete(); v13.delete(); v15.delete(); v16.delete(); v17.delete()
+        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v17))   // v19 混合渲染(装饰表格不再剥除), v17 旧缓存需重提取
+        val v19 = File.createTempFile("v19ch", ".txt")
+        v19.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":19}""")
+        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v19))
+        legacy.delete(); v2.delete(); v4.delete(); v5.delete(); v6.delete(); v7.delete(); v8.delete(); v9.delete(); v10b.delete(); v11.delete(); v12.delete(); v13.delete(); v15.delete(); v16.delete(); v17.delete(); v19.delete()
     }
 
     // ---- 老书升级: 章号映射(顺序保持的标题匹配) ----
@@ -1320,7 +1323,8 @@ class EpubRichContentTest {
             "<style>div > p#k{color:#0d0d0d}</style><div><p id=\"k\">内</p></div><p id=\"k\">外</p>"
         )
         assertEquals(0xFF0D0D0DL, paras[0].runs[0].color)   // div 子代命中
-        assertNull(paras[1].runs[0].color)                  // body 直下的 p#k 无 div 父,不命中
+        // body 直下的 p#k 无 div 父,不命中(无有效样式 runs 退化为空)
+        assertTrue(paras[1].runs.isEmpty() || paras[1].runs[0].color == null)
     }
 
     // ---- 颜色: rgb/rgba(既有) + 命名色全表 + border 简写函数色含空格 ----
@@ -1365,8 +1369,8 @@ class EpubRichContentTest {
     }
 
     @Test
-    fun `缩进字段章文件往返且v18不再升级`() {
-        val f = File.createTempFile("ch_v18", ".txt")
+    fun `缩进字段章文件往返且v19不再升级`() {
+        val f = File.createTempFile("ch_v19", ".txt")
         val td = com.yukino.tool.module.reader.common.TableData(
             rows = 1, cols = 1,
             cells = listOf(com.yukino.tool.module.reader.common.TableCell(0, 0, text = "格", imgRef = "d/i.png"))
@@ -1378,10 +1382,10 @@ class EpubRichContentTest {
         ChapterFileCodec.write(f, paras)
         val read = ChapterFileCodec.read(f)
         assertEquals(CssLen(2f, false), read.paragraphs[0].indentCss)
-        assertEquals("d/i.png", read.paragraphs[0].table!!.cells[0].imgRef)
+        assertEquals("d/i.png", read.paragraphs[1].table!!.cells[0].imgRef)
         assertTrue(!ChapterFileCodec.needsUpgrade(f))
         // 降版本号模拟旧缓存: 可读但触发重提取
-        f.writeText(f.readText().replace("\"v\": 18", "\"v\": 17").replace("\"v\":18", "\"v\":17"))
+        f.writeText(f.readText().replace("\"v\": 19", "\"v\": 17").replace("\"v\":19", "\"v\":17"))
         assertTrue(ChapterFileCodec.needsUpgrade(f))
         f.delete()
     }
@@ -1407,8 +1411,9 @@ class EpubRichContentTest {
         val seen = ArrayList<Pair<String, String>>()
         val paras = HtmlTextExtractor.extract(
             Jsoup.parseBodyFragment("<p><img src=\"data:image/png;base64,iVBORw0KGgo=\"></p>").body(),
-            "", null, null
-        ) { mime, b64 -> seen += mime to b64; "datauri/x.png" }.paragraphs
+            "", null, null,
+            dataUriSink = { mime, b64 -> seen += mime to b64; "datauri/x.png" }
+        ).paragraphs
         assertEquals(listOf("image/png" to "iVBORw0KGgo="), seen)
         assertEquals("datauri/x.png", paras[0].imageRef)
     }
@@ -1419,15 +1424,17 @@ class EpubRichContentTest {
         assertTrue(dropped.isEmpty() || !dropped[0].isImage)
         val rejected = HtmlTextExtractor.extract(
             Jsoup.parseBodyFragment("<p><img src=\"data:image/png;base64,iVBORw0KGgo=\"></p>").body(),
-            "", null, null
-        ) { _, _ -> "" }.paragraphs
+            "", null, null,
+            dataUriSink = { _, _ -> "" }
+        ).paragraphs
         assertTrue(rejected.isEmpty() || !rejected[0].isImage)
         // 非 base64 形态不进 sink
         val notB64 = ArrayList<Pair<String, String>>()
         HtmlTextExtractor.extract(
             Jsoup.parseBodyFragment("<p><img src=\"data:image/svg+xml,%3Csvg%3E\"></p>").body(),
-            "", null, null
-        ) { m, b -> notB64 += m to b; "x" }
+            "", null, null,
+            dataUriSink = { m, b -> notB64 += m to b; "x" }
+        )
         assertTrue(notB64.isEmpty())
     }
 
