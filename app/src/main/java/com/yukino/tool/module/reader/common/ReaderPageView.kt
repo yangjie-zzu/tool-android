@@ -597,9 +597,9 @@ class ReaderPageView(context: Context) : View(context) {
             if (inl.width > 0 && inl.height > 0) {
                 val bmp = imageFor(inl.ref, inl.width, inl.height)
                 val left = charX(inl.charIdx)
-                // sup(noteref 图片角标)按浏览器 <sup><img> 实测: 底缘在基线上方
-                // 0.52 字号(含 smaller 缩小后直径 0.96 字号);普通行内图底缘在
-                // 基线下方 0.18 字号
+                // sup(noteref 图片角标)上标形态: 底缘在基线上方 0.52 字号,
+                // 图片 1:1 原始像素显示(不放大);普通行内图底缘在基线下方
+                // 0.18 字号。与物化回填 iy 同一公式
                 val top = ln.baseline - inl.height +
                     base.textSize * (if (inl.sup) -0.52f else 0.18f)
                 if (bmp != null) {

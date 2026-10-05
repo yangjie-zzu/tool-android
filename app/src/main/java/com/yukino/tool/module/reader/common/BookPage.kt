@@ -308,14 +308,13 @@ object ChapterComposer {
 
     // 五期: 行内图片显示尺寸——高约 1.2 倍字号、宽等比;上限 1.6 倍字号/版心宽(通用行内图防撑爆);
     // 坏图(bounds null)按一个字宽方框占位
-    // sup(noteref 图片角标)按浏览器 <sup><img> 实测还原: 直径 ≈ 0.96×字号
-    // (sup smaller 缩放 × 1.2em);普通行内图维持 1.2×字号
+    // sup(noteref 图片角标)1:1 原始像素显示(零放大不糊;素材通常 16~32px 小图);
+    // 普通行内图维持 1.2×字号
     internal fun inlineImageDisplaySizeSized(bounds: Rect?, typo: ResolvedTypography, sup: Boolean): ImageSize {
-        val s = inlineImageDisplaySize(bounds, typo)
-        if (!sup) return s
-        val h = (typo.fontPx * 0.96f).roundToInt().coerceAtLeast(1)
-        val w = (h.toFloat() * s.width / s.height).roundToInt().coerceAtLeast(1)
-        return ImageSize(w, h)
+        if (sup && bounds != null && bounds.width() > 0 && bounds.height() > 0) {
+            return ImageSize(bounds.width(), bounds.height())
+        }
+        return inlineImageDisplaySize(bounds, typo)
     }
 
     internal fun inlineImageDisplaySize(bounds: Rect?, typo: ResolvedTypography): ImageSize {
@@ -1442,7 +1441,11 @@ object BookPager {
                                     ?: ImageSize(typo.fontPx.roundToInt(), typo.fontPx.roundToInt())
                                 val ci = abs - ln.start
                                 val ix = x + if (ci > 0) measure(text.substring(0, ci)) else 0f
-                                val iy = (y + above + ln.ascentAbs) - sz.height + typo.fontPx * 0.18f
+                                // 与绘制层(drawInlineLine)同一垂直公式: sup 角标底缘在基线上方
+                                // 0.52 字号, 普通行内图底缘在基线下方 0.18 字号——
+                                // 命中矩形/气泡锚点/共位起点全部以此为准
+                                val iy = (y + above + ln.ascentAbs) - sz.height +
+                                    typo.fontPx * (if (im.sup) -0.52f else 0.18f)
                                 DrawInline(ci, im.ref, sz.width, sz.height, ix, iy, im.sup)
                             } else null
                         }
