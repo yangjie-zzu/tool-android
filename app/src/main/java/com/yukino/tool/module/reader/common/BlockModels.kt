@@ -45,9 +45,7 @@ object BlockCache {
     // v11: 放弃注入缩放,视口直接撑到内容实际宽(桥上报),完整截取后由显示层按位图
     // 比例缩放到版心——零布局干预,断行/定位与浏览器原样;超高仍以 transform:scale
     // 缩到位图上限(绘制级,不触发重排)
-    // v12: 离屏 WebView 画布透明——位图只含书内显式声明的背景,无声明区域透明
-    // (露出阅读主题纸底,不再压白色画布矩形);像素抽检门兼容透明底墨迹
-    const val RENDERER_VERSION = 12
+    const val RENDERER_VERSION = 11
     const val DIR_NAME = "wblocks"
 
     fun md5(s: String): String =

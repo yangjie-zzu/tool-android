@@ -169,10 +169,7 @@ object WebViewBlockRenderer {
                     // 块位图与正文同视觉比例(默认缩放比不保证,必须显式)
                     setInitialScale((density * 100).toInt())
                     isVerticalScrollBarEnabled = false
-                    // 画布透明: 位图只含书内显式声明的背景(元素底色/背景图),无声明区域
-                    // 透明——显示时露出阅读主题纸底,不再压白色画布矩形(纸张非白主题下
-                    // 块位图边界可见的缺陷);fillPage 聚合块背景 cover 铺满,不受影响
-                    setBackgroundColor(Color.TRANSPARENT)
+                    setBackgroundColor(Color.WHITE)
                 }
                 val webView = view
                 val handled = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -429,8 +426,6 @@ object WebViewBlockRenderer {
     // 像素抽检: 前 4 个非空格字符矩形内采样, 明暗跨度 > 40 视为有字形;有效采样 ≥2 个
     // 命中即通过(越界矩形不计入——横向溢出块视口外的字符本就不可见,几何仍可信)。
     // (深底白字/浅底黑字均表现为双色调跨度;空矩形区域近似单色)
-    // 透明画布(v12): 无背景块的墨迹为不透明像素、周围为透明(alpha<32)——跨度为 0,
-    // 改按"不透明与透明双态并存"判字形(全透明 = 空矩形,不命中)
     private fun rectsHitInk(geom: BlockGeom, bmp: Bitmap): Boolean {
         var checked = 0
         var hit = 0
@@ -445,8 +440,6 @@ object WebViewBlockRenderer {
             checked++
             var lo = 255
             var hi = 0
-            var opaque = 0
-            var transparent = 0
             val sy = maxOf(1, rh / 6)
             val sx = maxOf(1, rw / 5)
             var yy = y
@@ -454,7 +447,6 @@ object WebViewBlockRenderer {
                 var xx = x
                 while (xx < x + rw) {
                     val p = bmp.getPixel(xx, yy)
-                    if (p ushr 24 and 0xFF < 32) transparent++ else opaque++
                     val lum = (p shr 16 and 0xFF) * 299 + (p shr 8 and 0xFF) * 587 + (p and 0xFF) * 114
                     val l = (lum / 1000).coerceIn(0, 255)
                     if (l < lo) lo = l
@@ -463,7 +455,7 @@ object WebViewBlockRenderer {
                 }
                 yy += sy
             }
-            if (hi - lo > 40 || (opaque > 0 && transparent > 0)) hit++
+            if (hi - lo > 40) hit++
         }
         return checked > 0 && hit >= 2
     }
