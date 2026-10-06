@@ -319,3 +319,20 @@ data class Run(val start: Int, val end: Int, val style: Int)  // style 位标记
   density)vs 浏览器全屏;③宿主引擎与字体栈:系统 WebView(FreeType+Noto CJK fallback)
   vs 桌面 Chrome(DirectWrite+雅黑),同 ttf 的行盒度量解释不同→叠死程度不同;④块位图
   裁空白/缩放摆放等后处理。对照实验已把①②对齐,残余差异集中在③字体度量与④拼版。
+
+- **title 页两个圆的渲染归属实证(debug 包 run-as 读章缓存,2026-10-07)**:title 章 v22
+  缓存 11 段全部 `wb=null`(无 WEBVIEW 段),段经 `b` 下标挂 BoxStyle(B0=t-box1: 白底/
+  rad100%/11em/mgl-1.8em/edges 0.3125em none-solid-solid-none 与 CSS 逐项对应;B2=t-box2
+  3.5em)——**两个圆是 Canvas 自绘(drawBoxShape 椭圆模式),不是 WEBVIEW 块**;此前"两圆是
+  WEBVIEW 块"的表述有误。机制:needsWebViewBlock 的 ownerBlockOf 用 parents() 不含自身,
+  元素自身装饰被 parseBoxStyle 捕获为 BoxStyle 自绘,只有子树信号归属本块才降级。
+  wblocks 位图缓存 30 张清点无 title 圆位图,自洽。
+- **自绘叠死根因(待修)**:书名被 `<br/>` 拆为三个独立段(P0-P2,字号 1.6em=28.8px,
+  lh=1.1),行推进按 1.1×根字号(19.8px)而非 1.1×段字号(31.7px)计算,段推进量 < 字形高
+  → 下一段叠上来(实测基线间距 ~55 物理 px ≈ 19.8×2.75 吻合)。桌面 Chrome 按 CSS em
+  语义(自身字号)行盒 31.68px>字形 → 不叠,即"应用与浏览器不一样"的真正来源。
+  修复方向:自绘行高按段字号缩放(代码改动,待用户确认)。
+- **debug 包调试实战**:run-as 可读章缓存 JSON(v22 段级 wb/b/lh 字段)、块位图缓存
+  (`cache/reader/epub/<bookId>/wblocks/*.png+json`,导出须 `adb exec-out run-as cat`,
+  `adb shell` 重定向会 CRLF 损坏二进制);WebView DevTools flag 是进程级静态
+  (开一次"web"工具即激活),但离屏块渲染 WebView 生命周期过短,轮询 /json 难抓到。
