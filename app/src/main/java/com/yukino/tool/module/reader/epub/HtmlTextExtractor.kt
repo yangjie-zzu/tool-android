@@ -103,7 +103,8 @@ object HtmlTextExtractor {
         return false
     }
 
-    // 块级元素降级判定(walkElement 对每个非 table 块级元素调用): 自身 S4/S5 + 归属本块的子树 S3/S1
+    // 块级元素降级判定(walkElement 对每个非 table 块级元素调用): 自身 S4/S5 + 自身
+    // "大圆角+部分边框"气泡轮廓 + 归属本块的子树 S3/S1
     internal fun needsWebViewBlock(node: Element, cssRules: List<CssRule>): Boolean {
         val props = propsFor(node, cssRules)
         // S4: position:absolute/fixed、flex/grid 布局块
@@ -117,8 +118,23 @@ object HtmlTextExtractor {
         for (key in listOf("background", "background-image")) {
             if (props[key]?.contains("gradient(", ignoreCase = true) == true) return true
         }
+        // 自身大圆角+部分边框(整页气泡/装饰盒): 绘制层椭圆模式下部分边框只能画象限弧
+        // (弧端悬空于边中点), 弧段切分与完整形态不一致——降级位图由块渲染管线完整还原;
+        // 小圆角(直边/角弧)与均匀四边框自绘正确,不在此列(避免存量装饰段落大面积位图化)
+        if (bubbleOutlineBox(props) != null) return true
         if (subtreeSignalsOwnedBy(node, cssRules)) return true
         return false
+    }
+
+    // 气泡轮廓盒: 部分边框(四边有/无混杂) + 大圆角(百分比≥50% 必超限入椭圆模式;
+    // em 值≥2 在常见版心/盒宽下超限)。命中返回 BoxStyle(仅作判定,复用解析),否则 null
+    private fun bubbleOutlineBox(props: Map<String, String>): com.yukino.tool.module.reader.common.BoxStyle? {
+        val box = parseBoxStyle(props, "") ?: return null
+        if (box.edges.size != 4) return null
+        val styles = box.edges.map { it.style }
+        if (!(styles.any { it > 0 } && styles.any { it == 0 })) return null   // 需部分边框
+        val rad = box.radius ?: return null
+        return if ((rad.pct && rad.v >= 50f) || (!rad.pct && rad.v >= 2f)) box else null
     }
 
     // 表格降级判定(emitTable 入口调用): S2 嵌套/超 500 格 + 表内 S3/S1

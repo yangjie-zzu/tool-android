@@ -240,7 +240,9 @@ object ChapterFileCodec {
     // v21: 页面级背景章聚合块(bd/bhtml/bshell——整章 body 聚合为单 WEBVIEW 块),存量书升级重提取
     // v22: 章级 docDir(doc——章源文档目录,聚合块 CSS/图片相对引用解析基准;无它聚合章
     // 全段无 wb 时 docDir 为空,外链 CSS/背景图 404 整章裸样式),存量书升级重提取
-    const val FORMAT_VERSION = 22
+    // v23: 分流细化——自身"大圆角+部分边框"气泡轮廓盒(整页装饰)降级 WEBVIEW 块位图,
+    // 不再走 BoxStyle 自绘(绘制层椭圆模式部分边框只能象限弧近似),存量书升级重提取
+    const val FORMAT_VERSION = 23
 
     private fun BoxDto.toBoxStyle() = com.yukino.tool.module.reader.common.BoxStyle(
         bg = bg, bgImage = bgImg,
