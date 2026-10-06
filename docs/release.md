@@ -83,6 +83,11 @@ curl -s -X POST -H "Authorization: token $TOKEN" -H "Content-Type: application/o
 
 ## 6. 历史记录
 
+- 2026-10-06：v1.5.22 release（版本收尾：移除装饰章快照残留 DecorSnapshot.kt，渲染与
+  v1.5.21 一致无功能变化），commit `af9bc08`，tag `v1.5.22`，GitHub Release 含
+  release/debug 两个 APK，模拟器验证通过（与 v1.5.21 基线截图逐页一致）。注意：本机
+  直连 github.com 经常超时/重置，git push 与 API 调用需加本地代理
+  （`git -c http.proxy=http://127.0.0.1:7890` / `curl -x http://127.0.0.1:7890`）。
 - 2026-10-06：v1.5.21 release（渲染器量宽重构 v11 + 重复绘制/裁切/CSS 404 修复 +
   装饰章快照体系移除 + 块渲染流水线并发），commit `3b6c04f`，tag `v1.5.21`，
   GitHub Release 含 release/debug 两个 APK，模拟器验证通过。
