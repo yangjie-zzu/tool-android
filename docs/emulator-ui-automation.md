@@ -5,6 +5,10 @@
 
 ## 应用与包名
 
+- **模拟器调试一律用 debug 包(`com.yukino.tool.pub.debug`),不允许用 release 包调试;
+  仅当 debug 无法复现问题时才允许换 release 验证**(2026-10-07 定,用户硬性要求)。
+  debug 包优势:可 `run-as` 读私有数据(章缓存 JSON/块位图缓存)、WebView 支持
+  chrome://inspect 远程调试、无混淆日志可读。release 包只用于发布前的最终冒烟验证。
 - 本项目模拟器上同时装有三个包：`com.yukino.tool.pub`、`com.yukino.tool.pub.debug`、
   `com.yukino.tool.pri.debug`，界面完全相同但**数据互相独立**（书架/进度/设置各自一套）。
   验证前必须确认目标包名；启动统一用
