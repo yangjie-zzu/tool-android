@@ -217,7 +217,8 @@ object HtmlTextExtractor {
         val cssInline: List<String> = emptyList(),     // 混合渲染: <style> 块原文(块渲染 mini HTML 内联)
         val bodyDecor: Boolean = false,                // 页面级背景信号: body 带背景图/色(装饰章判定用)
         val bodyHtml: String = "",                     // 页面级背景章聚合: 整章 body innerHTML(原始结构浏览器同源渲染)
-        val bodyShell: String = ""                     // 页面级背景章聚合: body 开标签(类/属性并入块壳)
+        val bodyShell: String = "",                    // 页面级背景章聚合: body 开标签(类/属性并入块壳)
+        val docDir: String = ""                        // 章源文档目录(相对解压根): 聚合块 CSS/图片相对引用的解析基准
     )
 
     fun extract(file: File, docDir: String = "", dataUriSink: DataUriSink? = null): ExtractResult {
@@ -308,7 +309,7 @@ object HtmlTextExtractor {
         b.flush()
         return ExtractResult(
             b.result(), b.notes, fontsIn ?: emptyMap(), cssHrefsIn, cssInline, bodyDecor,
-            bodyHtml, bodyShell
+            bodyHtml, bodyShell, docDir
         )
     }
 

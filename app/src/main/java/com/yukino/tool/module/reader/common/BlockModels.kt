@@ -40,7 +40,12 @@ object BlockCache {
     // v8: draw 白板重试(离屏帧产出节流,首绘可能空白,250ms×3);主线程销毁 WebView。
     // v9: 修 cropBottomBlank 别名回收(无裁剪时返回原图,被 recycle 后压缩必失败静默丢盘);
     // 像素门越界字符不再计入有效采样(横向溢出块视口外字符本就不可见)
-    const val RENDERER_VERSION = 9
+    // v10: 内容宽超视口时 zoom 等比缩小(fitZoom 与高度上限同机制,双向)——修复
+    // 定宽内容(学籍表/人物介绍聚合块等)横向溢出被视口裁切的缺陷
+    // v11: 放弃注入缩放,视口直接撑到内容实际宽(桥上报),完整截取后由显示层按位图
+    // 比例缩放到版心——零布局干预,断行/定位与浏览器原样;超高仍以 transform:scale
+    // 缩到位图上限(绘制级,不触发重排)
+    const val RENDERER_VERSION = 11
     const val DIR_NAME = "wblocks"
 
     fun md5(s: String): String =
@@ -67,7 +72,7 @@ object BlockCache {
             if (extra.isEmpty()) "" else "\u0000$extra"
     )
 
-    fun fileOf(chapterDir: File, key: String): File = File(File(chapterDir, DIR_NAME), "$key.webp")
+    fun fileOf(chapterDir: File, key: String): File = File(File(chapterDir, DIR_NAME), "$key.png")
 
     fun geomFileOf(chapterDir: File, key: String): File = File(File(chapterDir, DIR_NAME), "$key.json")
 
@@ -78,7 +83,7 @@ object BlockCache {
 
     fun inMemory(key: String): Boolean = mem.containsKey(key)
 
-    // 查块: 内存 → 磁盘(WebP+JSON 双在才算完整)。null = 未渲染/失败(调用方走兜底自绘)
+    // 查块: 内存 → 磁盘(PNG+JSON 双在才算完整)。null = 未渲染/失败(调用方走兜底自绘)
     fun lookup(chapterDir: File, key: String): CachedBlock? {
         mem[key]?.let { return it }
         val f = fileOf(chapterDir, key)

@@ -339,15 +339,7 @@ class ReaderPageView(context: Context) : View(context) {
         canvas.clipRect(offsetX, contentTop, offsetX + width, contentBottom)
         val cover = page.coverImage
         val virtual = page.virtualLayout
-        val deco = page.decoImage
         when {
-            deco != null && page.decoWidth > 0 && page.decoHeight > 0 -> {
-                // 装饰章快照: 版心内等比居中(尺寸物化时按版心宽换算好);夜间套反色滤镜
-                val availH = height - topInsetPx - bottomInsetPx - 2 * pagePadPx
-                val x = offsetX + t.marginPx + (t.textWidth - page.decoWidth) / 2f
-                val y = contentTop + (availH - page.decoHeight) / 2f
-                drawDecoBitmap(canvas, deco, x, y, page.decoWidth.toFloat(), page.decoHeight.toFloat(), t.night)
-            }
             cover != null && page.coverWidth > 0 && page.coverHeight > 0 -> {
                 // 封面页: 图片在版心内等比居中(尺寸物化时按版心宽换算好)
                 val availH = height - topInsetPx - bottomInsetPx - 2 * pagePadPx
@@ -437,21 +429,6 @@ class ReaderPageView(context: Context) : View(context) {
             decoPaint.colorFilter = null
         }
         canvas.drawBitmap(bmp, null, android.graphics.RectF(ln.x, ln.baseline, ln.x + w, ln.baseline + h), decoPaint)
-    }
-
-    private fun drawDecoBitmap(canvas: Canvas, ref: String, x: Float, y: Float, w: Float, h: Float, night: Boolean) {
-        val bmp = imageFor(ref, w.toInt(), h.toInt())
-        if (bmp == null) {
-            drawPlaceholder(canvas, x, y, w, h)
-            return
-        }
-        if (night) {
-            if (nightDecoFilter == null) nightDecoFilter = android.graphics.ColorMatrixColorFilter(nightDecoMatrix())
-            decoPaint.colorFilter = nightDecoFilter
-        } else {
-            decoPaint.colorFilter = null
-        }
-        canvas.drawBitmap(bmp, null, android.graphics.RectF(x, y, x + w, y + h), decoPaint)
     }
 
     // invert(0.92) × hue-rotate(180°): 白底变暗、彩色近似保留(与原 WebView 滤镜同参数)

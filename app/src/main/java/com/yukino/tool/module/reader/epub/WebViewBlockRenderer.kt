@@ -20,10 +20,9 @@ import com.yukino.tool.module.reader.common.CachedBlock
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayInputStream
 import java.io.File
@@ -34,15 +33,19 @@ import kotlin.math.ceil
 // 复用装饰章快照基建(离屏 WebView + 虚拟域拦截器),粒度从整章降到块级片段。
 // mini HTML = 原文档样式(head 外链 + <style> 原文)+ 祖先壳逐层嵌套 + 块 HTML;
 // 注入 html{font-size:根字号} 使块随阅读字号整体缩放;渲染稳定后 JS 量内容高并
-// 逐字符采集 Range 矩形(字符几何表,选择用),截图 WebP + 几何 JSON 落盘。
+// 逐字符采集 Range 矩形(字符几何表,选择用),截图 PNG + 几何 JSON 落盘。
 // 按需生成 + 缓存:缓存键见 BlockCache(渲染器版本|字号|版心宽|块内容 hash),失效即重渲;
 // 失败/超时记入进程内黑名单,排版兜底纯文本投影自绘,绝不阻塞打开书。
 
 private const val BLK_HOST = "book.local"
 private const val BLK_FALLBACK_MS = 12000L
 private const val BLK_PAINT_SETTLE_MS = 100L
-private const val BLK_WEBP_QUALITY = 88
 private const val GEOM_MAX_CHARS = 5000
+
+// 剥书内脚本(JS 引擎只为注入的采集脚本服务, 书内代码无源可跑)
+internal fun stripScripts(html: String): String = html
+    .replace(Regex("<script\\b[^>]*>[\\s\\S]*?</script>", RegexOption.IGNORE_CASE), "")
+    .replace(Regex("<script\\b[^>]*/>", RegexOption.IGNORE_CASE), "")
 // 离屏 WebView 帧产出被节流,draw 可能画到空白帧: 白板重试参数
 private const val BLK_DRAW_TRIES = 3
 private const val BLK_DRAW_RETRY_MS = 250L
@@ -62,14 +65,21 @@ class BlockSpec(
 object WebViewBlockRenderer {
 
     private val ioScope = kotlinx.coroutines.CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val failed = HashSet<String>()
-    private val inFlight = HashSet<String>()
+    private val failed = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<String, Boolean>())
+    private val inFlight = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<String, Boolean>())
 
-    // 串行闸: 同一时刻只允许一个离屏 WebView(与 DecorSnapshot 同因: 并发渲染击穿 tile 内存)
-    private val gate = Mutex(false)
+    // 绘制互斥: view.draw 触发 Chromium tile 光栅化,并发绘制会击穿 tile 内存上限
+    // (历史实测白板)——加载/稳定期可流水线并发,绘制段全局串行
+    private val drawLock = Any()
 
-    // 阻塞补齐(串行): specs 里缓存未命中的块逐个渲染,全部处理完(含失败)才返回。
-    // 在 buildSpecs 前调用(主线程调度,loading 遮盖),断行时块位图尺寸即已就绪。
+    // 加载流水线并发度: 同时处于加载/稳定期的离屏 WebView 数(等待字体/图片期间
+    // 几乎不占 tile);过高会叠加内存与光栅化压力
+    private const val RENDER_CONCURRENCY = 3
+
+    // 流水线补齐(并发加载 + 串行绘制): N 个 worker 从队列取块并发创建/加载离屏
+    // WebView(等待字体/图片期间不占 tile),页内稳定环自治;view.draw 光栅化段全局
+    // 互斥(drawLock)。全部处理完(含失败)才返回;阻塞在打开书 load 路径,断行时
+    // 块位图尺寸即已就绪。取消(中途退出阅读页)即中止,未落盘的块下次打开重试。
     // root = 解压根目录(chapterDir,css/字体/图片拦截映射的基准)
     // 行距注入: lineOverride=false 时 line-height 只作 body 默认(书内元素声明层叠优先),
     // true 时 !important 压过书内声明(设置"行距跟随书内"关闭)
@@ -87,18 +97,29 @@ object WebViewBlockRenderer {
         val app = context.applicationContext
         val missing = specs.filter { (key, _) -> !BlockCache.inMemory(key) && !BlockCache.fileOf(root, key).exists() }
         val total = missing.size
-        for ((i, pair) in missing.withIndex()) {
-            coroutineContext.ensureActive()
-            val (key, spec) = pair
-            if (key in failed || !inFlight.add(key)) { onProgress(i + 1, total); continue }
-            val ok = gate.withLock {
-                runCatching {
-                    capture(app, root, key, spec, fontPx, textWidth, textHeight, lineSpacingPercent, lineOverride)
-                }.getOrDefault(false)
+        if (total == 0) return
+        val next = java.util.concurrent.atomic.AtomicInteger(0)
+        val doneCount = java.util.concurrent.atomic.AtomicInteger(0)
+        coroutineScope {
+            repeat(minOf(RENDER_CONCURRENCY, total)) {
+                launch(Dispatchers.Default) {
+                    while (true) {
+                        coroutineContext.ensureActive()
+                        val i = next.getAndIncrement()
+                        if (i >= total) return@launch
+                        val (key, spec) = missing[i]
+                        if (key in failed || !inFlight.add(key)) {
+                            onProgress(doneCount.incrementAndGet(), total); continue
+                        }
+                        val ok = runCatching {
+                            capture(app, root, key, spec, fontPx, textWidth, textHeight, lineSpacingPercent, lineOverride)
+                        }.getOrDefault(false)
+                        inFlight.remove(key)
+                        if (!ok) failed.add(key)
+                        onProgress(doneCount.incrementAndGet(), total)
+                    }
+                }
             }
-            inFlight.remove(key)
-            if (!ok) failed.add(key)
-            onProgress(i + 1, total)
         }
     }
 
@@ -131,6 +152,7 @@ object WebViewBlockRenderer {
             lineMultCss(lineSpacingPercent, lineOverride, fill),
             collectJs(limitPxOf(screenH))
         )
+        val limitPx = limitPxOf(screenH)
         val done = CompletableDeferred<Boolean>()
         Handler(Looper.getMainLooper()).post {
             var view: WebView? = null
@@ -153,7 +175,7 @@ object WebViewBlockRenderer {
                 val handled = java.util.concurrent.atomic.AtomicBoolean(false)
                 // 兜底死线: 桥丢失/挂死时按现状截(几何空,选择退化)
                 val fallback = Runnable {
-                    if (handled.compareAndSet(false, true)) settle(webView, w, pageH, fill, root, key, null, done)
+                    if (handled.compareAndSet(false, true)) settle(webView, w, pageH, limitPx, fill, root, key, null, done)
                 }
                 Handler(Looper.getMainLooper()).postDelayed(fallback, BLK_FALLBACK_MS)
                 webView.addJavascriptInterface(object {
@@ -163,7 +185,7 @@ object WebViewBlockRenderer {
                         Handler(Looper.getMainLooper()).post {
                             if (handled.compareAndSet(false, true)) {
                                 Handler(Looper.getMainLooper()).postDelayed({
-                                    settle(webView, w, pageH, fill, root, key, json, done)
+                                    settle(webView, w, pageH, limitPx, fill, root, key, json, done)
                                 }, BLK_PAINT_SETTLE_MS)
                             }
                         }
@@ -222,7 +244,11 @@ object WebViewBlockRenderer {
         lineMultCss: String?,
         collectScript: String
     ): String {
-        val rootFontPx = fontPx / density   // CSS px(钉死缩放比 = density)
+        // 根字号(CSS px): 钉死缩放比 = density。
+        // 普通块 = 阅读字号,块随阅读字号整体缩放;
+        // fillPage(页面级背景章聚合块) = 16px 原书设计字号——整页版式固定,随阅读
+        // 字号缩放会使原书临界布局(固定尺寸气泡/负 margin 叠放)断行漂移、版式错乱
+        val rootFontPx = if (spec.fillPage) 16f else fontPx / density
         val sb = StringBuilder()
         sb.append("<!DOCTYPE html><html><head><meta charset=\"utf-8\">")
         for (href in spec.cssHrefs) {
@@ -268,6 +294,7 @@ object WebViewBlockRenderer {
         view: WebView,
         w: Int,
         pageH: Int,
+        limitPx: Int,
         fillPage: Boolean,
         root: File,
         key: String,
@@ -276,18 +303,27 @@ object WebViewBlockRenderer {
     ) {
         try {
             val contentH = ceil(view.contentHeight * view.scale).toInt()
+            // 超高钳制: 页内 scale 已把视觉内容缩进上限,位图按布局高截,下部空白由
+            // cropBottomBlank 裁除
             val h = if (fillPage) pageH else (if (contentH > 0) contentH else view.height)
+                .coerceAtMost(limitPx)
+            // 内容宽: 桥上报的布局宽(物理 px)超视口时撑开视口完整截取——定宽溢出块
+            // (学籍表/人物介绍聚合块等)由此完整呈现,显示层按位图比例缩放到版心
+            val contentW = geomJson?.let {
+                runCatching { org.json.JSONObject(it).getDouble("w").toInt() }.getOrNull()
+            } ?: 0
+            val layoutW = maxOf(w, contentW)
             android.util.Log.d(
                 "BlkRender",
-                "settle key=${key.take(8)} contentH=$contentH h=$h viewH=${view.height} scale=${view.scale} json=${geomJson?.take(60)}"
+                "settle key=${key.take(8)} contentH=$contentH h=$h contentW=$contentW layoutW=$layoutW scale=${view.scale} json=${geomJson?.take(60)}"
             )
-            if (w <= 0 || h <= 0) {
+            if (layoutW <= 0 || h <= 0) {
                 view.destroy()
                 done.complete(false)
                 return
             }
-            view.layout(0, 0, w, h)
-            attemptDraw(view, w, h, root, key, geomJson, 0, done)
+            view.layout(0, 0, layoutW, h)
+            attemptDraw(view, layoutW, h, root, key, geomJson, 0, done)
         } catch (t: Throwable) {
             runCatching { view.destroy() }
             done.complete(false)
@@ -308,7 +344,8 @@ object WebViewBlockRenderer {
     ) {
         val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         try {
-            view.draw(Canvas(bmp))
+            // 光栅化段全局互斥(并发绘制击穿 tile 内存上限,历史实测白板)
+            synchronized(drawLock) { view.draw(Canvas(bmp)) }
         } catch (t: Throwable) {
             bmp.recycle()
             runCatching { view.destroy() }
@@ -334,7 +371,7 @@ object WebViewBlockRenderer {
     }
 
     // 白板防御(末次仍白 = 放弃,该块本次失败走兜底自绘) + 底部裁剪 + 像素抽检门 +
-    // WebP/几何落盘(view 在收割回调后在此销毁)
+    // PNG/几何落盘(view 在收割回调后在此销毁)
     private fun saveBlockBitmap(
         view: WebView,
         bmp: Bitmap,
@@ -368,7 +405,7 @@ object WebViewBlockRenderer {
                 val ok = runCatching {
                     File(root, BlockCache.DIR_NAME).mkdirs()
                     val out = BlockCache.fileOf(root, key)
-                    out.outputStream().use { cropped.compress(Bitmap.CompressFormat.WEBP, BLK_WEBP_QUALITY, it) }
+                    out.outputStream().use { cropped.compress(Bitmap.CompressFormat.PNG, 0, it) }
                     if (finalGeom != null) BlockCache.geomFileOf(root, key).writeText(geomJson!!)
                     else BlockCache.geomFileOf(root, key).writeText("{\"ok\":0}")
                     BlockCache.remember(key, CachedBlock(out, cropped.width, cropped.height, finalGeom))
@@ -492,9 +529,12 @@ object WebViewBlockRenderer {
     // resolve 时惰性启动的 @font-face 未必已应用、大图经拦截器加载慢,都会迟到重排使坐标
     // 整体过期(实测 22/22 块错位)。尺寸稳定后再做两遍完整采集(隔 2×rAF),字符矩形序列
     // 完全一致(布局确已定格,坐标与位图同源)才上报,10 轮仍抖动则上报 ok:0 自弃用;
-    // 超高按比例缩小根 zoom 重排重采;逐字符 Range.getClientRects 采集(dpr 换算到位图
+    // 超高/超宽适配: 超宽由视口直接撑到内容宽(零布局干预);超高以 transform:scale
+    // 等比缩到位图上限(绘制级,布局/断行零变化);逐字符
+    // Range.getClientRects 采集(dpr 换算到位图
     // 像素域,相对 body 左上);字符数超上限只量高(几何空,选择退化);页内 6s 硬超时
     // 直接 ok:0(位图仍由 native 按现状截取,兜底不挂死)。
+    // 采集脚本: limitPx=位图高度上限(物理 px)。
     private fun collectJs(limitPx: Int): String =
         "<script>window.__blkDone=false;" +
         "(function(){" +
@@ -599,7 +639,16 @@ object WebViewBlockRenderer {
         "if(window.__blkDone)return;window.__blkDone=true;" +
         "dpr=window.devicePixelRatio||1;" +
         "var m=measure();" +
-        "if(m.h>" + limitPx + "&&m.h>0){document.documentElement.style.zoom=(" + limitPx + "/m.h);}" +
+        // 超高防御: 位图高上限(物理 px),超出以 transform:scale 等比缩(绘制级,布局/
+        // 断行零变化);html 底色补 body 背景,防缩放后右侧余量露白
+        "var ph=m.h*dpr;" +
+        "if(ph>" + limitPx + "){" +
+        "var z=" + limitPx + "/ph;" +
+        "document.body.style.transformOrigin='0 0';" +
+        "document.body.style.transform='scale('+z+')';" +
+        "var bg='';try{bg=getComputedStyle(document.body).backgroundColor;}catch(e){}" +
+        "if(bg&&bg!=='transparent'&&bg!=='rgba(0, 0, 0, 0)')" +
+        "document.documentElement.style.backgroundColor=bg;}" +
         "collect();" +
         "m=measure();" +
         "console.log('BLK finish h='+m.h+' chars='+chars.length+' t='+ts());" +
@@ -611,7 +660,12 @@ object WebViewBlockRenderer {
         "window.__blkRecollect=function(){" +
         "dpr=window.devicePixelRatio||1;" +
         "var m=measure();" +
-        "if(m.h>" + limitPx + "&&m.h>0){document.documentElement.style.zoom=(" + limitPx + "/m.h);}" +
+        // 超高缩放兜底(finish 未跑时在此执行;与 finish 同值幂等)
+        "var ph=m.h*dpr;" +
+        "if(ph>" + limitPx + "){" +
+        "var z=" + limitPx + "/ph;" +
+        "document.body.style.transformOrigin='0 0';" +
+        "document.body.style.transform='scale('+z+')';}" +
         "collect();" +
         "m=measure();" +
         "if(chars.length>" + GEOM_MAX_CHARS + "){return '{\\\"ok\\\":0}';}" +

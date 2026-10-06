@@ -59,7 +59,9 @@ class EpubBookContent(
                     sb.append(p.text); sb.append('\n')
                     off += p.text.length + 1
                 }
-                val docDirOf = paras.firstOrNull()?.blockDocDir ?: ""
+                // docDir 优先取章级(提取期落盘);全段无 wb 的章段级取不到,空值会让
+                // 聚合块的 CSS/背景图相对引用 404,整章裸样式渲染
+                val docDirOf = read.docDir.ifBlank { paras.firstOrNull()?.blockDocDir ?: "" }
                 paras = listOf(
                     com.yukino.tool.module.reader.common.Paragraph(
                         sb.toString(), emptyList(), com.yukino.tool.module.reader.common.ParaKind.WEBVIEW,
@@ -131,7 +133,8 @@ class EpubBookContent(
             } else paras
             ChapterDocument(
                 chapters[index].title, resolved, footnotes, read.fonts, docFontFiles,
-                read.cssHrefs, read.cssInline, read.bodyDecor, read.bodyHtml, read.bodyShell
+                read.cssHrefs, read.cssInline, read.bodyDecor, read.bodyHtml, read.bodyShell,
+                read.docDir
             )
         }
     }
@@ -212,19 +215,8 @@ class EpubBookContent(
         return null
     }
 
-    // ---- 装饰章(七期): 判定复用章文档缓存;快照落盘于书目录 deco/,按需存在性检查 ----
-
-    override fun isDecorative(chapterIndex: Int): Boolean =
-        chapterIndex in chapters.indices &&
-            chapterDoc(chapterIndex).paragraphs.firstOrNull()?.boxStyle != null
-
     // 混合渲染: WEBVIEW 块位图缓存根目录 = 解压根(章文件目录即解压根)
     override fun webBlockRoot(): java.io.File = chapterDir
-
-    override fun decoSnapshot(chapterIndex: Int): String? {
-        if (!isDecorative(chapterIndex)) return null
-        return EpubImporter.decoFileOf(chapterDir, chapterIndex).takeIf { it.exists() }?.absolutePath
-    }
 
     // 图片像素尺寸: 位图只读文件头(decodeBounds),SVG 解析矢量尺寸;
     // 排版断行时按版心宽换算占位高

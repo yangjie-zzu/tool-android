@@ -31,18 +31,8 @@ object EpubImporter {
     fun chapterFile(context: Context, bookId: String, index: Int): File =
         File(File(chapterDir(context, bookId), "chapters"), "ch_%04d.txt".format(index))
 
-    // 装饰章快照位图(离屏 WebView 渲染原书 xhtml 落盘的 WebP): 书目录下按代目子目录命名。
-    // v2 = 自适应 CSS(border-box+max-width)与 JS 就绪探测的渲染语义, 旧代随渲染语义变更废弃
-    private const val DECO_DIR = "deco_v2"
-
     // data URI 图片落盘子目录(相对解压根)
     private const val DATAURI_DIR = "datauri"
-
-    fun decoFileOf(chapterDir: File, index: Int): File =
-        File(File(chapterDir, DECO_DIR), "ch_%04d.webp".format(index))
-
-    fun decoFile(context: Context, bookId: String, index: Int): File =
-        decoFileOf(chapterDir(context, bookId), index)
 
     // data URI 图片落盘: base64 解码写入解压根 datauri/(文件名 = 载荷 MD5,幂等),
     // 返回相对解压根 ref;不认识的 mime/解码失败/写盘失败返回空串(该图忽略)
@@ -73,55 +63,6 @@ object EpubImporter {
         java.security.MessageDigest.getInstance("MD5").digest(s.toByteArray(Charsets.UTF_8))
             .joinToString("") { "%02x".format(it) }
 
-    // 装饰章判定: 章首段带装饰盒(boxStyle)的章为 CSS 排版页(扉页/封面等),
-    // 阅读器排版引擎只做近似,这类章由 WebView 按原书样式呈现
-    fun isDecorativeChapter(context: Context, bookId: String, index: Int): Boolean {
-        val cf = chapterFile(context, bookId, index)
-        if (!cf.exists()) return false
-        val rr = runCatching { ChapterFileCodec.read(cf) }.getOrNull() ?: return false
-        return rr.paragraphs.firstOrNull()?.boxStyle != null
-    }
-
-    // 反查装饰章的源 xhtml 文档与解压根目录(WebView 加载与 css 相对引用都用):
-    // 遍历 OPF spine 的 xhtml 文档,以章首段文本与文档内容匹配(h2 拆章/多文档均适用)。
-    // 非装饰章返回 null
-    fun findDecorativeSourceDoc(
-        context: Context,
-        bookId: String,
-        index: Int
-    ): Pair<File, File>? {
-        val cf = chapterFile(context, bookId, index)
-        if (!cf.exists()) return null
-        val rr = runCatching { ChapterFileCodec.read(cf) }.getOrNull() ?: return null
-        if (rr.paragraphs.firstOrNull()?.boxStyle == null) return null
-        val head = rr.paragraphs.firstNotNullOfOrNull { p ->
-            p.text.takeIf { it.isNotBlank() }
-        }?.take(24) ?: return null
-        val outDir = chapterDir(context, bookId)   // 解压根: META-INF/OEBPS 所在
-        val opfFile = runCatching {
-            File(outDir, parseContainerXml(File(outDir, "META-INF/container.xml").readText()))
-        }.getOrNull() ?: return null
-        val opfDir = opfFile.path.substringBeforeLast('/', "")
-        val pkg = runCatching { parseOpf(opfFile.readText(), opfDir) }.getOrNull() ?: return null
-        for (ref in pkg.spine) {
-            val item = pkg.items[ref.idref] ?: continue
-            if (!ref.linear) continue
-            if (item.mediaType.isNotBlank() && item.mediaType != MEDIA_TYPE_XHTML &&
-                item.mediaType != "text/html" && !item.href.endsWith(".xhtml", true) &&
-                !item.href.endsWith(".html", true) && !item.href.endsWith(".htm", true)
-            ) continue
-            // resolveHref 的结果规范化为绝对路径(相对路径基于进程 cwd 解析)
-            val f = File(resolveHref(opfDir, percentDecode(stripFragment(item.href).first))).absoluteFile
-            if (!f.exists()) continue
-            val hit = runCatching {
-                val docText = HtmlTextExtractor.extract(f, f.parent ?: "")
-                    .paragraphs.joinToString("\n") { it.text }
-                docText.contains(head)
-            }.getOrDefault(false)
-            if (hit) return f to outDir
-        }
-        return null
-    }
 
     // 初始化到可读状态。返回更新后的书;失败抛 BookInitException(由 BookContents 收敛为文案)。
     // 二期升级: ready 且章文件在但为一期纯文本格式时,自动重新提取获得富文本/图片/封面,
@@ -206,8 +147,9 @@ object EpubImporter {
                 throw BookInitException("升级写入失败")   // chapters 未就位: bak 还在,删 tmp 后下次重试
             }
             // 章序列可能变化(如封面文档去重使章号前移), 按章号缓存的装饰快照随之失效
+            // 旧装饰章快照体系(DecoSnapshot/deco_v2)已移除,清理历史书目录残留
             File(dir, "deco").deleteRecursively()
-            File(dir, DECO_DIR).deleteRecursively()
+            File(dir, "deco_v2").deleteRecursively()
             // 混合渲染块位图按内容 hash 键控,升级后块 HTML 变化即换键,旧位图清理防积累
             File(dir, com.yukino.tool.module.reader.common.BlockCache.DIR_NAME).deleteRecursively()
             ReaderStore.upsertBook(context, final)
@@ -405,7 +347,7 @@ object EpubImporter {
                         ChapterFileCodec.write(
                             f, section.paras, extracted.footnotes, extracted.fonts,
                             extracted.cssHrefs, extracted.cssInline, extracted.bodyDecor,
-                            extracted.bodyHtml, extracted.bodyShell
+                            extracted.bodyHtml, extracted.bodyShell, extracted.docDir
                         )
                         // 投影长度 = 各段 text 之和 + 段间换行(与 bodyText joinToString 同构)
                         val bodyLen = section.paras.sumOf { it.text.length.toLong() } + (section.paras.size - 1)

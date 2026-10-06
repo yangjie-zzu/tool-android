@@ -131,7 +131,6 @@ import com.yukino.tool.module.reader.common.ReaderPageView
 import com.yukino.tool.module.reader.common.Typography
 import com.yukino.tool.module.reader.common.BlockCache
 import com.yukino.tool.module.reader.epub.BlockSpec
-import com.yukino.tool.module.reader.epub.DecorSnapshot
 import com.yukino.tool.module.reader.epub.EpubBookContent
 import com.yukino.tool.module.reader.epub.EpubImporter
 import com.yukino.tool.module.reader.epub.WebViewBlockRenderer
@@ -1455,8 +1454,9 @@ private fun collectWebBlockSpecs(
         // 铺满版心(fillPage 位图占整页), 完整保留页面级布局; hash 拼版心高
         if (doc.bodyDecor && doc.bodyHtml.isNotBlank()) {
             // docDir = 该章文档目录(相对解压根): 聚合块内 CSS/图片相对引用的解析基准,
-            // 传空会导致书内 CSS 404(裸 HTML 渲染)
-            val docDir = doc.paragraphs.firstOrNull()?.blockDocDir ?: ""
+            // 传空会导致书内 CSS 404(裸 HTML 渲染)。优先章级(提取期落盘,全段无 wb
+            // 的聚合章段级取不到),旧书数据回退段级值
+            val docDir = doc.docDir.ifBlank { doc.paragraphs.firstOrNull()?.blockDocDir ?: "" }
             val hash = BlockCache.contentHashOf(
                 doc.bodyHtml, doc.bodyShell, docDir, doc.cssHrefs, doc.cssInline,
                 "th=${typo.textHeight}"

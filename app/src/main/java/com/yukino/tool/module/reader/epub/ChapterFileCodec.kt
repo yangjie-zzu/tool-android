@@ -128,7 +128,8 @@ object ChapterFileCodec {
         val bd: Boolean = false,      // 页面级背景信号: body 带背景图/色(装饰章判定)
         val bhtml: String = "",       // 页面级背景章聚合: 整章 body innerHTML
         val bshell: String = "",      // 页面级背景章聚合: body 开标签壳
-        val v: Int = 0   // 格式版本: 21 = 页面级背景章聚合块;旧文件缺省 0
+        val doc: String = "",         // 章源文档目录(相对解压根): 聚合块相对引用解析基准
+        val v: Int = 0   // 格式版本: 22 = 章级 docDir;21 = 页面级背景章聚合块;旧文件缺省 0
     )
 
     private val json = Json { ignoreUnknownKeys = true }
@@ -142,7 +143,8 @@ object ChapterFileCodec {
         cssInline: List<String> = emptyList(),     // 混合渲染: 原文档 <style> 块原文
         bodyDecor: Boolean = false,                // 页面级背景信号: body 带背景图/色(装饰章判定)
         bodyHtml: String = "",                     // 页面级背景章聚合: 整章 body innerHTML
-        bodyShell: String = ""                     // 页面级背景章聚合: body 开标签壳
+        bodyShell: String = "",                    // 页面级背景章聚合: body 开标签壳
+        docDir: String = ""                        // 章源文档目录: 聚合块 CSS/图片相对引用解析基准
     ) {
         // 盒样式表: 按 BoxStyle 去重(相邻段落共享同一实例,序列化后经 equals 聚合还原同组)
         val boxIndex = LinkedHashMap<com.yukino.tool.module.reader.common.BoxStyle, Int>()
@@ -225,6 +227,7 @@ object ChapterFileCodec {
             bd = bodyDecor,
             bhtml = bodyHtml,
             bshell = bodyShell,
+            doc = docDir,
             v = FORMAT_VERSION
         )
         file.writeText(json.encodeToString(ChapterDto.serializer(), dto))
@@ -235,7 +238,9 @@ object ChapterFileCodec {
     // v19: 混合渲染——章首装饰表格不再剥除(S1 信号命中块降级),存量书升级重提取。
     // 低版本文件打开时自动升级重提取
     // v21: 页面级背景章聚合块(bd/bhtml/bshell——整章 body 聚合为单 WEBVIEW 块),存量书升级重提取
-    const val FORMAT_VERSION = 21
+    // v22: 章级 docDir(doc——章源文档目录,聚合块 CSS/图片相对引用解析基准;无它聚合章
+    // 全段无 wb 时 docDir 为空,外链 CSS/背景图 404 整章裸样式),存量书升级重提取
+    const val FORMAT_VERSION = 22
 
     private fun BoxDto.toBoxStyle() = com.yukino.tool.module.reader.common.BoxStyle(
         bg = bg, bgImage = bgImg,
@@ -263,7 +268,8 @@ object ChapterFileCodec {
         val cssInline: List<String> = emptyList(),
         val bodyDecor: Boolean = false,
         val bodyHtml: String = "",
-        val bodyShell: String = ""
+        val bodyShell: String = "",
+        val docDir: String = ""   // 章源文档目录(v22;旧文件为空)
     )
 
     fun read(file: File): ReadResult {
@@ -276,7 +282,7 @@ object ChapterFileCodec {
                 val boxStyles = dto.boxes.mapValues { it.value.toBoxStyle() }
                 return ReadResult(
                     dto.p.map { it.toParagraph(boxStyles, dto.fonts) }, dto.notes, dto.fonts, dto.fontPaths,
-                    dto.cssHrefs, dto.cssInline, dto.bd, dto.bhtml, dto.bshell
+                    dto.cssHrefs, dto.cssInline, dto.bd, dto.bhtml, dto.bshell, dto.doc
                 )
             }
         }

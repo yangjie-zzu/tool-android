@@ -195,10 +195,7 @@ class BookPage(
     val virtualLayout: StaticLayout? = null,   // 封面/封底: 居中布局,与 lines 二选一
     val coverImage: String? = null,            // 封面页: 封面图路径(与 virtualLayout 二选一,优先图)
     val coverWidth: Int = 0,                   // 封面显示尺寸(物化时按版心宽等比换算;0 = 未就绪)
-    val coverHeight: Int = 0,
-    val decoImage: String? = null,             // 装饰章: 整页快照位图路径(优先于 lines 绘制)
-    val decoWidth: Int = 0,                    // 装饰快照显示尺寸(物化时按版心宽等比换算;0 = 未就绪)
-    val decoHeight: Int = 0
+    val coverHeight: Int = 0
 )
 
 // 行网格高度计算(纯函数,本地单测覆盖): 行距增量加在行下方,段前距加在行上方
@@ -713,10 +710,15 @@ object BookPager {
             if (isParaStart) {
                 while (rangeCursor < paraRanges.size && paraRanges[rangeCursor].first != s) rangeCursor++
             }
-            // 行所属段(rangeCursor 已指向段首所在段;段中行不推进)
+            // 行所属段(rangeCursor 已指向段首所在段;段中行不推进)。
+            // 兜底: rangeCursor 越界(末位 overrides 段——如整章聚合 WEBVIEW 段——的段中
+            // 换行行会把 rangeCursor 推出界)时按行首直接定位段落,让溢出行回到所属段,
+            // 被 emittedOverride 挡住吞掉;否则这些行被当普通文字行排版,物化时又命中
+            // 该段块位图,逐行重复绘制整块(同图叠加成"标签残条"页)
             val curPi = if (rangeCursor < paraRanges.size && s >= paraRanges[rangeCursor].first &&
                 s <= paraRanges[rangeCursor].last
-            ) rangeCursor else -1
+            ) rangeCursor
+            else paraRanges.indexOfFirst { s >= it.first && s <= it.last }.takeIf { it >= 0 } ?: -1
             // 右缩进段: 首个主行位置展开独立断行行,该段其余主行丢弃
             if (curPi >= 0 && curPi in overrides) {
                 if (emittedOverride.add(curPi)) {
@@ -1181,18 +1183,10 @@ object BookPager {
         s >= bodyStart && (s == bodyStart || composed[s - 1] == '\n')
 
     // 章 → 页窗口: 网格化行高切页(页首首个非空行豁免段前距)+ 裁掉尾部空白页。
-    // 装饰章(章首段带装饰盒): 整章一页——页面按快照位图整体呈现,内容不跨页切分
     internal fun paginate(cl: ChapterLines, typo: ResolvedTypography): List<PageSlice> =
-        if (isDecorative(cl)) {
-            listOf(PageSlice(0, cl.lines.size))
-        } else {
-            PaginationEngine.trimTrailingBlank(
-                PaginationEngine.splitPages(cl.lines, typo.textHeight)
-            ) { w -> (w.startLine until w.endLineExclusive).all { cl.lines[it].kind == LineKind.BLANK } }
-        }
-
-    // 装饰章判定(章模型,纯函数): 章首段带装饰盒即 CSS 排版页
-    internal fun isDecorative(cl: ChapterLines): Boolean = cl.paras.firstOrNull()?.boxStyle != null
+        PaginationEngine.trimTrailingBlank(
+            PaginationEngine.splitPages(cl.lines, typo.textHeight)
+        ) { w -> (w.startLine until w.endLineExclusive).all { cl.lines[it].kind == LineKind.BLANK } }
 
     // 页窗口 → 页描述。页首行在标题区内(章首页)锚定章起点;正文页从正文零点换算
     private fun specsOf(
@@ -1249,27 +1243,6 @@ object BookPager {
             return BookPage(spec, "", "", virtualLayout = Typography.buildVirtualLayout(text, typo))
         }
         val idx = spec.chapterIndex.coerceIn(0, content.chapterCount - 1)
-        // 装饰章: 整页快照位图(尺寸按版心宽等比换算,超高缩到一页内;与封面页同一 contain 语义)。
-        // 快照未生成时返回 null 走下方近似排版占位,生成完成后调用方重物化换真身
-        content.decoSnapshot(idx)?.let { path ->
-            val bounds = content.imageBounds(path)
-            if (bounds != null && bounds.width() > 0 && bounds.height() > 0) {
-                var dw = typo.textWidth
-                var dh = (dw.toFloat() * bounds.height() / bounds.width()).roundToInt().coerceAtLeast(1)
-                if (dh > typo.textHeight) {
-                    dh = typo.textHeight
-                    dw = (dh.toFloat() * bounds.width() / bounds.height()).roundToInt().coerceAtLeast(1)
-                }
-                val percent = percentOf(content, spec)
-                val pagePart =
-                    if (globalPageCount > 0) "${globalPageIndex + 1}/$globalPageCount"
-                    else "${spec.chapterPageIndex + 1}/${spec.chapterPageCount}"
-                return BookPage(
-                    spec, spec.chapterTitle, "$pagePart ${(percent * 100).roundToInt()}%",
-                    decoImage = path, decoWidth = dw, decoHeight = dh
-                )
-            }
-        }
         val cl = chapterLines(content, idx, typo)
         val windows = paginate(cl, typo)
         val slice = windows[spec.chapterPageIndex.coerceIn(0, windows.lastIndex)]

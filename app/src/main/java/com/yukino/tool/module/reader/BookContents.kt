@@ -5,7 +5,6 @@ import com.yukino.tool.module.reader.common.BookContent
 import com.yukino.tool.module.reader.common.BookFormat
 import com.yukino.tool.module.reader.common.ReaderBook
 import com.yukino.tool.module.reader.common.TxtBookContent
-import com.yukino.tool.module.reader.epub.DecorSnapshot
 import com.yukino.tool.module.reader.epub.EpubBookContent
 import com.yukino.tool.module.reader.epub.EpubDrmException
 import com.yukino.tool.module.reader.epub.EpubFormatException
@@ -34,23 +33,6 @@ object BookContents {
                 BookFormat.EPUB -> {
                     val refreshed = EpubImporter.ensureReady(context, book, onStage)
                     val content = EpubBookContent(refreshed, EpubImporter.chapterDir(context, refreshed.id))
-                    // 装饰章快照阻塞补齐: 缺失的串行生成完才进入阅读——内容就绪即快照齐备,
-                    // 不出现近似排版占位与事后换身; 失败章保持占位, 下次打开重试
-                    if (refreshed.ready) {
-                        val missing = withContext(Dispatchers.IO) {
-                            refreshed.chapters.indices.filter { i ->
-                                runCatching { EpubImporter.isDecorativeChapter(context, refreshed.id, i) }
-                                    .getOrDefault(false) &&
-                                    !EpubImporter.decoFile(context, refreshed.id, i).exists()
-                            }
-                        }
-                        if (missing.isNotEmpty()) {
-                            onStage("生成装饰页…")
-                            DecorSnapshot.ensureAllBlocking(context, refreshed.id, missing) { done, total ->
-                                onStage("生成装饰页 $done/$total")
-                            }
-                        }
-                    }
                     Pair(content, refreshed)
                 }
                 else -> {

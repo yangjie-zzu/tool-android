@@ -178,7 +178,8 @@ class ChapterDocument(
     val cssInline: List<String> = emptyList(), // 混合渲染: 原文档 <style> 块原文列表
     val bodyDecor: Boolean = false,            // 页面级背景信号: body 带背景图/色
     val bodyHtml: String = "",                 // 页面级背景章聚合: 整章 body innerHTML
-    val bodyShell: String = ""                 // 页面级背景章聚合: body 开标签壳
+    val bodyShell: String = "",                // 页面级背景章聚合: body 开标签壳
+    val docDir: String = ""                    // 章源文档目录(epub): 聚合块相对引用解析基准
 ) {
     val bodyText: String get() = paragraphs.joinToString("\n") { it.text }
 }
@@ -216,14 +217,6 @@ interface BookContent {
     // 全书偏移处的脚注角标 → (noteId, 脚注内容);非角标位置返回 null。
     // 供点击命中: tap → 字符全书偏移 → 本查询
     fun footnoteAt(globalOffset: Long): Pair<String, String>? = null
-
-    // ---- 装饰章(七期): 章首段带装饰盒的 CSS 排版页,整章一页按快照位图呈现 ----
-
-    // 该章是否装饰章(分页语义: 整章一页不跨页;TXT 恒否)
-    fun isDecorative(chapterIndex: Int): Boolean = false
-
-    // 装饰章快照位图文件绝对路径;null = 未生成(页面临时以近似排版占位,生成完成后重物化)
-    fun decoSnapshot(chapterIndex: Int): String? = null
 
     // ---- 混合渲染(WEBVIEW 块级降级): 块位图缓存根目录(解压根) ----
     // TXT/无实现返回 null → 块渲染整体不生效,WEBVIEW 段按普通段落自绘兜底
