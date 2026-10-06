@@ -55,7 +55,34 @@ py -m http.server 8766 --bind 0.0.0.0   # 后台运行
 - 下载不通时排查：换绑定的网卡 IP 重试；Windows 防火墙放行 Python 入站。
 - 服务是前台/后台进程，电脑关机即失效，属临时分发，长期分发请用网盘/应用市场。
 
-## 5. 历史记录
+## 5. 发布到 GitHub Release
+
+```bash
+git push origin master
+git tag -f v<版本> master && git push origin v<版本>   # tag 已在远程时先 push :refs/tags/<tag> 删除重推
+
+# 取 git 凭证 token(https push 的 PAT/.oauth,不回显)
+TOKEN=$(printf "protocol=https\nhost=github.com\n" | git credential fill | grep "^password=" | cut -d= -f2-)
+
+# 创建 Release(tag 已存在则关联;中文说明建议用 python 构造 json 避免转义问题)
+curl -s -X POST -H "Authorization: token $TOKEN" -H "Accept: application/vnd.github+json" \
+  https://api.github.com/repos/yangjie-zzu/tool-android/releases \
+  -d '{"tag_name":"v<版本>","name":"v<版本>","body":"说明"}'
+
+# 上传 APK(github.com 创建 / uploads.github.com 上传;Content-Type 必须 octet-stream)
+RID=$(curl -s -H "Authorization: token $TOKEN" \
+  https://api.github.com/repos/yangjie-zzu/tool-android/releases/tags/v<版本> | grep -o '"id": *[0-9]*' | head -1 | grep -o '[0-9]\+')
+curl -s -X POST -H "Authorization: token $TOKEN" -H "Content-Type: application/octet-stream" \
+  --data-binary @<release.apk> \
+  "https://uploads.github.com/repos/yangjie-zzu/tool-android/releases/$RID/assets?name=<apk 文件名>"
+```
+
+- 下载地址格式：`https://github.com/yangjie-zzu/tool-android/releases/download/v<版本>/<apk 文件名>`
+- Release 管理页：`https://github.com/yangjie-zzu/tool-android/releases`
+- gh CLI 未安装时用上述 API 方式；token 来自 git credential helper（https push 同源），scope 够用。
+
+## 6. 历史记录
 
 - 2026-10-06：v1.5.21 release（渲染器量宽重构 v11 + 重复绘制/裁切/CSS 404 修复 +
-  装饰章快照体系移除 + 块渲染流水线并发），commit `6d72d4c`，模拟器验证通过。
+  装饰章快照体系移除 + 块渲染流水线并发），commit `3b6c04f`，tag `v1.5.21`，
+  GitHub Release 含 release/debug 两个 APK，模拟器验证通过。
