@@ -311,3 +311,11 @@ data class Run(val start: Int, val end: Int, val style: Int)  // style 位标记
   inlineBoxDecorated(bodyProps)(支持 background-image/gradient/背景色/边框)。
 - 注意点:根目录 `果青1.epub` 为调试工作副本(混有 fix*.py/device_*.txt),与真机
   当初导入的原始文件不一定同源,对照实验需留意。
+
+- **块渲染与桌面 Chrome 非像素级同源的分层原因**(361px 视口+根字号 18px+margin 清零
+  注入版对照实验,browser_injected.png):①应用主动重组输入——body 块化拆分为多个
+  WEBVIEW 块(t-box1/t-box2 各自成块,t-box2 的 float 文档流上下文丢失,位置由自绘排版
+  摆放决定)+注入根字号/行距/margin 清零+剥脚本;②视口=版心宽(361CSS px,zoom 钉死
+  density)vs 浏览器全屏;③宿主引擎与字体栈:系统 WebView(FreeType+Noto CJK fallback)
+  vs 桌面 Chrome(DirectWrite+雅黑),同 ttf 的行盒度量解释不同→叠死程度不同;④块位图
+  裁空白/缩放摆放等后处理。对照实验已把①②对齐,残余差异集中在③字体度量与④拼版。
