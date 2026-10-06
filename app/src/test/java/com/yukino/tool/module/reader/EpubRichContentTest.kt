@@ -792,8 +792,11 @@ class EpubRichContentTest {
         assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v22))
         val v23 = File.createTempFile("v23ch", ".txt")
         v23.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":23}""")
-        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v23))
-        legacy.delete(); v2.delete(); v4.delete(); v5.delete(); v6.delete(); v7.delete(); v8.delete(); v9.delete(); v10b.delete(); v11.delete(); v12.delete(); v13.delete(); v15.delete(); v16.delete(); v17.delete(); v19.delete(); v20.delete(); v21.delete(); v22.delete(); v23.delete()
+        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v23))   // v24 容器级聚合, v23 需重提取
+        val cur = File.createTempFile("curch", ".txt")
+        cur.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":${com.yukino.tool.module.reader.epub.ChapterFileCodec.FORMAT_VERSION}}""")
+        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(cur))   // 当前版本豁免
+        legacy.delete(); v2.delete(); v4.delete(); v5.delete(); v6.delete(); v7.delete(); v8.delete(); v9.delete(); v10b.delete(); v11.delete(); v12.delete(); v13.delete(); v15.delete(); v16.delete(); v17.delete(); v19.delete(); v20.delete(); v21.delete(); v22.delete(); v23.delete(); cur.delete()
     }
 
     // ---- 老书升级: 章号映射(顺序保持的标题匹配) ----
@@ -1397,7 +1400,11 @@ class EpubRichContentTest {
         assertEquals("d/i.png", read.paragraphs[1].table!!.cells[0].imgRef)
         assertTrue(!ChapterFileCodec.needsUpgrade(f))
         // 降版本号模拟旧缓存: 可读但触发重提取
-        f.writeText(f.readText().replace("\"v\": 23", "\"v\": 17").replace("\"v\":23", "\"v\":17"))
+        f.writeText(
+            f.readText()
+                .replace("\"v\": ${com.yukino.tool.module.reader.epub.ChapterFileCodec.FORMAT_VERSION}", "\"v\": 17")
+                .replace("\"v\":${com.yukino.tool.module.reader.epub.ChapterFileCodec.FORMAT_VERSION}", "\"v\":17")
+        )
         assertTrue(ChapterFileCodec.needsUpgrade(f))
         f.delete()
     }

@@ -51,14 +51,24 @@ class BubbleOutlineDemoteTest {
         assertEquals(1, n)
     }
 
-    // 真书 title 章: t-box1/t-box2 两块降级
-    @Test fun realTitleChapterTwoWebBlocks() {
+    // 真书 title 章: body 容器聚合(子级全为气泡盒/空段) → 单个 WEBVIEW 段
+    @Test fun realTitleChapterBodyContainerDemoted() {
         val f = File("D:/projects/tool/tmp_browser_cmp/epub/OEBPS/Text/title.xhtml")
         if (!f.exists()) return   // 环境无关性: 样书缺失时跳过
         val r = HtmlTextExtractor.extract(f, "OEBPS/Text")
         assertEquals(false, r.bodyDecor)
-        assertEquals(2, r.paragraphs.count { it.kind == ParaKind.WEBVIEW })
-        assertTrue(r.paragraphs.any { it.kind == ParaKind.WEBVIEW && it.blockHtml?.contains("青春恋爱喜剧") == true })
-        assertTrue(r.paragraphs.any { it.kind == ParaKind.WEBVIEW && it.blockHtml?.contains("false") == true })
+        val webs = r.paragraphs.filter { it.kind == ParaKind.WEBVIEW }
+        assertEquals(1, webs.size)
+        val html = webs[0].blockHtml ?: ""
+        assertTrue(html.contains("青春恋爱喜剧"))
+        assertTrue(html.contains("false"))
+    }
+
+    // 容器含实质文本子段 → 不聚合(正常章节路径不变)
+    @Test fun containerWithRealTextNotDemoted() {
+        val html = style + """<div class="bubble"><p>气泡段</p></div><p>正文文本段</p>"""
+        val r = extractFull(html)
+        assertEquals(1, r.paragraphs.count { it.kind == ParaKind.WEBVIEW })
+        assertTrue(r.paragraphs.any { it.kind == ParaKind.TEXT && it.text.contains("正文文本段") })
     }
 }

@@ -137,6 +137,25 @@ object HtmlTextExtractor {
         return if ((rad.pct && rad.v >= 50f) || (!rad.pct && rad.v >= 2f)) box else null
     }
 
+    // 气泡容器: 块级子元素全部为"气泡轮廓盒"或空内容段(无实质文本),且气泡盒 ≥1——
+    // 整页气泡设计(兄弟气泡盒+空行间隔),逐块降级会把兄弟盒子拆成独立位图,
+    // 盒间布局关系(空行/定位)被割裂;容器整体降级为单个位图完整还原
+    private fun isBubbleContainer(node: Element, cssRules: List<CssRule>): Boolean {
+        if (node.ownText().isNotBlank()) return false   // 容器自身直接文本不聚合
+        var children = 0
+        var bubbles = 0
+        for (c in node.children()) {
+            val cn = c.tagName().lowercase()
+            if (cn == "style") continue
+            if (cn !in BLOCK) return false   // 子级含行内等非块元素 → 不聚合
+            children++
+            if (bubbleOutlineBox(propsFor(c, cssRules)) != null) { bubbles++; continue }
+            if (flattenBlockText(c).isBlank()) continue   // 空段(如 <p><br/></p>)
+            return false   // 有实质文本的非气泡子块 → 不聚合
+        }
+        return children > 0 && bubbles > 0
+    }
+
     // 表格降级判定(emitTable 入口调用): S2 嵌套/超 500 格 + 表内 S3/S1
     internal fun needsWebViewTable(node: Element, cssRules: List<CssRule>): Boolean {
         if (node.selectFirst("table table") != null) return true
@@ -1319,9 +1338,13 @@ object HtmlTextExtractor {
         b.applyLayout(parseParaLayout(layoutProps))
 
         try {
-            // 混合渲染: 块级元素命中自绘边界信号 → 整块降级 WebView 位图(子树不走常规提取)。
-            // table 有专属判定(嵌套/超 500 格/表内信号),在 emitTable 的入口处理
-            if (name != "table" && name in BLOCK && needsWebViewBlock(node, cssRules)) {
+        // 混合渲染: 块级元素命中自绘边界信号 → 整块降级 WebView 位图(子树不走常规提取)。
+        // 容器级: 块级子元素全部为气泡盒/空段的容器(body/div 等整页气泡设计)整体降级——
+        // 逐块降级会把兄弟气泡盒拆成独立位图,盒间布局关系(空行间隔/定位)被割裂。
+        // table 有专属判定(嵌套/超 500 格/表内信号),在 emitTable 的入口处理
+        if (name != "table" && (name in BLOCK || name == "body") &&
+            (needsWebViewBlock(node, cssRules) || isBubbleContainer(node, cssRules))
+        ) {
                 b.flush()
                 b.addWebViewBlock(
                     flattenBlockText(node).ifBlank { IMAGE_PLACEHOLDER },
