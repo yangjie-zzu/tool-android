@@ -295,3 +295,19 @@ data class Run(val start: Int, val end: Int, val style: Int)  // style 位标记
 - 所有 epub 解析单元保持"字符串/文件进、纯数据出",配套样本书测试集(EPUB2/EPUB3/前缀化 OPF/空 NCX/含图/含脚注/DRM 各一,见 `sample_测试书.epub` 与真书《龙魔传说》);
 - 每期发布前 TXT 回归:同一 TXT 分页结果逐页比对无差异(单 Run 退化路径);
 - 期与期独立可发布:二期完成即比一期多"像书",三期纯功能叠加,四期任意挑选。
+
+---
+
+## 书源兼容对照结论(2026-10-07,果青1 v1.5.22 真机 vs 浏览器)
+
+- **title 页文字重叠**:无头 Chrome 渲染 title.xhtml 同样重叠(行距塌陷+固定 em 圆框溢出)。
+  根因是书源自带排版——`line-height:1em/1.1em` 紧压 + title.ttf/tt1.ttf 自定义字体度量
+  偏大,标准浏览器照旧叠字;应用(WEBVIEW 聚合块)与浏览器表现一致,属忠实还原,非渲染 bug。
+- **contents 页空白(真机)vs 正常(模拟器/Chrome)**:当前源码 JVM 探针验证
+  bodyDecor=true、整章聚合单 WEBVIEW 块、9 段全 WEBVIEW kind,模拟器 v22 数据渲染与
+  Chrome 一致(红底标题/8 条目/背景图)。真机空白系该书章缓存为旧版提取数据且未触发
+  升级重提取(真机 607 页 vs 模拟器 412 页亦为旧排版引擎分页特征);重导入或完成
+  "解析章节中…"升级即恢复。判定入口:HtmlTextExtractor.extract 的
+  inlineBoxDecorated(bodyProps)(支持 background-image/gradient/背景色/边框)。
+- 注意点:根目录 `果青1.epub` 为调试工作副本(混有 fix*.py/device_*.txt),与真机
+  当初导入的原始文件不一定同源,对照实验需留意。
