@@ -74,7 +74,6 @@ class ChapterLines(
     val tableRowOfLine: Map<Int, Int> = emptyMap(),        // 批次四: lines 下标 → 表格行号(表格段)
     val avoidX: Map<Int, Float> = emptyMap(),              // 批次四b: float 环绕避让偏移(paraIndex → 行 x 偏移)
     val webBlocks: Map<Int, WebBlockInfo> = emptyMap(),    // 混合渲染: WEBVIEW 块段(paraIndex → 块信息)
-    val hideTitleRow: Boolean = false                      // 混合渲染: 章首 WEBVIEW 装饰块顶替章名 → 隐藏合成章名行
 )
 
 // 图片行的显示尺寸(版心坐标系;按版心宽等比缩放,超高图缩到一页内)
@@ -522,11 +521,6 @@ object BookPager {
         // 七期: margin 支持 em/px/%(百分比相对版心宽),此处直接折 px
         val paraRanges = ArrayList<IntRange>(paras.size)
         val extraAbove = FloatArray(paras.size)
-        // 混合渲染: 章首 WEBVIEW 块(位图段)隐藏合成章名行——原书页面没有阅读器章名行,
-        // 整页设计/装饰结构不该被章名行挤压;零占位维持投影轴,页眉仍显示章名
-        val hideTitlePara = paras.firstOrNull()?.let { p ->
-            p.kind == ParaKind.WEBVIEW && p.text.isNotBlank()
-        } == true
         run {
             var p = bodyStart
             var prevBelowPx = 0f
@@ -771,12 +765,7 @@ object BookPager {
             val curPara = if (curPi >= 0 && curPi < paras.size) paras[curPi] else null
             val (pitch, ascentAbs) = when (kind) {
                 LineKind.BLANK -> LineGrid.blankPitch(Typography.GRID_PX) to bodyAscentAbs
-                LineKind.TITLE ->
-                    // 装饰章(首段带装饰盒)/章首 WEBVIEW 装饰块不显示阅读器章名行——
-                    // 原书页面没有它,它会把整个装饰版面往下挤;
-                    // 行保留为零占位以维持文本投影轴
-                    if (paras.firstOrNull()?.boxStyle != null || hideTitlePara) 0 to bodyAscentAbs
-                    else titlePitch to (titleAscentAbs + titleShift)
+                LineKind.TITLE -> titlePitch to (titleAscentAbs + titleShift)
                 LineKind.BODY -> {
                     val (bp, ba) = paraLinePitch(curPara)
                     // <br/> 相邻段: 连全局段前距一并跳过(br 是同段内紧凑换行)
@@ -885,8 +874,7 @@ object BookPager {
         return ChapterLines(
             composed, bodyStart, content.chapterStart(chapterIndex) + stripped, lines,
             paras, paraRanges, imageSizes, inlineSizes, overrides, doc.fontIds, doc.fontFiles,
-            tableLayouts, tableRowOfLine, avoidX, webBlocks,
-            paras.firstOrNull()?.boxStyle != null || hideTitlePara
+            tableLayouts, tableRowOfLine, avoidX, webBlocks
         )
     }
 
@@ -1302,12 +1290,11 @@ object BookPager {
         val tableTopY = HashMap<Int, Float>()               // 窗口内表格首行顶 y
         val linePara = ArrayList<Int>()                     // out 每行 → 段落下标(盒基准修正用)
         // 装饰章/章首 WEBVIEW 装饰块: 章名行零占位且不绘制
-        val hideTitleRow = cl.hideTitleRow
         var y = 0
         for (li in slice.startLine until slice.endLineExclusive) {
             val ln = cl.lines[li]
             val above = if (li == head) 0 else ln.paraAbove
-            if (ln.kind != LineKind.BLANK && !(hideTitleRow && ln.kind == LineKind.TITLE)) {
+            if (ln.kind != LineKind.BLANK) {
                 val global = globalOffset(ln.start, cl.bodyStart, cl.bodyZero, chapterStartGlobal)
                 val pi = paraIndexOf(cl, ln.start)
                 val para = if (pi >= 0) cl.paras[pi] else null
