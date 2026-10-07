@@ -110,3 +110,17 @@
 - WebView DevTools 开关(`WebView.setWebContentsDebuggingEnabled`)是**进程级静态**:
   进程内开过一次"web"工具即对所有 WebView 生效;但离屏块渲染的 WebView 生命周期短
   (渲染完即销毁),DevTools `/json` 轮询很难抓到,块内排查优先走位图缓存+章缓存。
+
+## 二进制文件抓取陷阱(2026-10-07)
+
+- `adb shell`/`adb shell run-as ... cat` 通道会把 LF 转 CRLF——拉 APK/PNG/JPG 等
+  二进制必须用 `adb exec-out "run-as <pkg> cat <path>"`,否则文件被污染出现假
+  "损坏"证据(文件头 0d0d0a、体积变大)。验证过 exec-out 拉出的图片与 epub 内
+  逐字节一致。
+- 书目录 `cache/reader/epub/<bookId>/` 下残留大量历史调试脚本(fix*.py/patch*.py
+  等),是既往会话 run-as 写入的,与应用无关;判断"解压是否干净"勿被干扰。
+- 无 `wblocks` 目录 = 该书 WEBVIEW 块位图从未成功落盘(渲染失败或全书自绘分流);
+  块位图缓存按书目录存放。
+- 阅读页翻页方向再确认:900→150 左滑=下一页,150→900 右滑=上一页。
+- OBJ 虚线框 = U+FFFC 占位符被当正文文字绘制的缺字 tofu(框内字面 "OBJ"),
+  见到即说明图片段/行内图未走图片绘制管线被降级成文本行,与 Chromium 破图无关。

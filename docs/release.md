@@ -83,6 +83,11 @@ curl -s -X POST -H "Authorization: token $TOKEN" -H "Content-Type: application/o
 
 ## 6. 历史记录
 
+- 2026-10-07：v1.5.24 release（块渲染修复：拦截器路径 percent-decode 修中文文件名
+  图片整页 OBJ 破图；量宽并取 documentElement.scrollWidth 修正文聚合位图右缘视口
+  裁切；RENDERER_VERSION 补齐至 13 使旧位图缓存失效），commit `0ae3362`，tag
+  `v1.5.24`，GitHub Release 含 release/debug 两个 APK，单元测试 207 通过；真机两
+  场景待复验。
 - 2026-10-06：v1.5.22 release（版本收尾：移除装饰章快照残留 DecorSnapshot.kt，渲染与
   v1.5.21 一致无功能变化），commit `af9bc08`，tag `v1.5.22`，GitHub Release 含
   release/debug 两个 APK，模拟器验证通过（与 v1.5.21 基线截图逐页一致）。注意：本机
