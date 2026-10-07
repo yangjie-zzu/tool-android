@@ -1450,25 +1450,6 @@ private fun collectWebBlockSpecs(
     val out = ArrayList<Pair<String, BlockSpec>>()
     for (i in 0 until content.chapterCount) {
         val doc = content.chapterDoc(i)
-        // 页面级背景章聚合(统一为装饰块): 整章 body innerHTML 单块——背景 cover
-        // 铺满版心(fillPage 位图占整页), 完整保留页面级布局; hash 拼版心高
-        if (doc.bodyDecor && doc.bodyHtml.isNotBlank()) {
-            // docDir = 该章文档目录(相对解压根): 聚合块内 CSS/图片相对引用的解析基准,
-            // 传空会导致书内 CSS 404(裸 HTML 渲染)。优先章级(提取期落盘,全段无 wb
-            // 的聚合章段级取不到),旧书数据回退段级值
-            val docDir = doc.docDir.ifBlank { doc.paragraphs.firstOrNull()?.blockDocDir ?: "" }
-            val hash = BlockCache.contentHashOf(
-                doc.bodyHtml, doc.bodyShell, docDir, doc.cssHrefs, doc.cssInline,
-                "th=${typo.textHeight}"
-            )
-            out += BlockCache.keyOf(
-                typo.fontPx, typo.textWidth, typo.lineSpacingPercent, typo.bookLineHeight, hash
-            ) to BlockSpec(
-                docDir, doc.bodyHtml, doc.bodyShell.ifBlank { "<body>" },
-                doc.cssHrefs, doc.cssInline, fillPage = true
-            )
-            continue
-        }
         for (p in doc.paragraphs) {
             val html = p.blockHtml ?: continue
             val shell = p.ancestorShell ?: ""

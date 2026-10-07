@@ -41,37 +41,6 @@ class EpubBookContent(
             val read = ChapterFileCodec.read(f)
             var paras = read.paragraphs
             val footnotes = read.notes
-            // 页面级背景章聚合(统一为装饰块): body 带背景图/色的章整章聚合为单个
-            // WEBVIEW 段(整章原始 body innerHTML 一个块, 浏览器同源渲染)——页面级
-            // 背景铺满整页, 逐块降级会截断背景并拆散布局。投影文本平移拼接供选择/TTS
-            if (read.bodyDecor && read.bodyHtml.isNotBlank()) {
-                val sb = StringBuilder()
-                val imgs = ArrayList<com.yukino.tool.module.reader.common.InlineImg>()
-                val anchors = ArrayList<com.yukino.tool.module.reader.common.NoteAnchor>()
-                var off = 0
-                for (p in paras) {
-                    for (im in p.inlineImages) {
-                        imgs += com.yukino.tool.module.reader.common.InlineImg(off + im.start, im.ref, im.sup)
-                    }
-                    for (na in p.notes) {
-                        anchors += com.yukino.tool.module.reader.common.NoteAnchor(off + na.start, off + na.end, na.noteId)
-                    }
-                    sb.append(p.text); sb.append('\n')
-                    off += p.text.length + 1
-                }
-                // docDir 优先取章级(提取期落盘);全段无 wb 的章段级取不到,空值会让
-                // 聚合块的 CSS/背景图相对引用 404,整章裸样式渲染
-                val docDirOf = read.docDir.ifBlank { paras.firstOrNull()?.blockDocDir ?: "" }
-                paras = listOf(
-                    com.yukino.tool.module.reader.common.Paragraph(
-                        sb.toString(), emptyList(), com.yukino.tool.module.reader.common.ParaKind.WEBVIEW,
-                        notes = anchors, inlineImages = imgs,
-                        blockHtml = read.bodyHtml,
-                        ancestorShell = read.bodyShell.ifBlank { "<body>" },
-                        blockDocDir = docDirOf
-                    )
-                )
-            }
             // 七期批次三: 章内字体表(family → 相对路径)绝对化(重复登记幂等,首见为准)
             val docFontFiles = LinkedHashMap<String, String>()
             synchronized(fontFiles) {
@@ -133,8 +102,7 @@ class EpubBookContent(
             } else paras
             ChapterDocument(
                 chapters[index].title, resolved, footnotes, read.fonts, docFontFiles,
-                read.cssHrefs, read.cssInline, read.bodyDecor, read.bodyHtml, read.bodyShell,
-                read.docDir
+                read.cssHrefs, read.cssInline, read.docDir
             )
         }
     }

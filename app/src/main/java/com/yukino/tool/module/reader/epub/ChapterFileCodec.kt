@@ -141,9 +141,6 @@ object ChapterFileCodec {
         fonts: Map<String, String> = emptyMap(),   // 七期: family → 字体文件相对路径
         cssHrefs: List<String> = emptyList(),      // 混合渲染: 原文档 head 外部样式 href 原样
         cssInline: List<String> = emptyList(),     // 混合渲染: 原文档 <style> 块原文
-        bodyDecor: Boolean = false,                // 页面级背景信号: body 带背景图/色(装饰章判定)
-        bodyHtml: String = "",                     // 页面级背景章聚合: 整章 body innerHTML
-        bodyShell: String = "",                    // 页面级背景章聚合: body 开标签壳
         docDir: String = ""                        // 章源文档目录: 聚合块 CSS/图片相对引用解析基准
     ) {
         // 盒样式表: 按 BoxStyle 去重(相邻段落共享同一实例,序列化后经 equals 聚合还原同组)
@@ -224,9 +221,6 @@ object ChapterFileCodec {
             fontPaths = fonts,
             cssHrefs = cssHrefs,
             cssInline = cssInline,
-            bd = bodyDecor,
-            bhtml = bodyHtml,
-            bshell = bodyShell,
             doc = docDir,
             v = FORMAT_VERSION
         )
@@ -244,7 +238,9 @@ object ChapterFileCodec {
     // 不再走 BoxStyle 自绘(绘制层椭圆模式部分边框只能象限弧近似),存量书升级重提取
     // v24: 容器级聚合——块级子元素全为气泡盒/空段的容器(body 等)整体降级单个位图,
     // 兄弟气泡盒不再拆成独立块(盒间空行/定位随位图保留),存量书升级重提取
-    const val FORMAT_VERSION = 24
+    // v25: 白名单制分流+删除 bodyDecor 整章聚合——默认块位图,白名单子树(纯行内段/
+    // 简单盒装饰段/递归白名单容器)才自绘;聚合统一走块级路径且尽量上提,存量书升级重提取
+    const val FORMAT_VERSION = 25
 
     private fun BoxDto.toBoxStyle() = com.yukino.tool.module.reader.common.BoxStyle(
         bg = bg, bgImage = bgImg,
@@ -270,9 +266,6 @@ object ChapterFileCodec {
         val fontPaths: Map<String, String> = emptyMap(),
         val cssHrefs: List<String> = emptyList(),
         val cssInline: List<String> = emptyList(),
-        val bodyDecor: Boolean = false,
-        val bodyHtml: String = "",
-        val bodyShell: String = "",
         val docDir: String = ""   // 章源文档目录(v22;旧文件为空)
     )
 
@@ -286,7 +279,7 @@ object ChapterFileCodec {
                 val boxStyles = dto.boxes.mapValues { it.value.toBoxStyle() }
                 return ReadResult(
                     dto.p.map { it.toParagraph(boxStyles, dto.fonts) }, dto.notes, dto.fonts, dto.fontPaths,
-                    dto.cssHrefs, dto.cssInline, dto.bd, dto.bhtml, dto.bshell, dto.doc
+                    dto.cssHrefs, dto.cssInline, dto.doc
                 )
             }
         }

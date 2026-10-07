@@ -30,7 +30,8 @@ class BubbleOutlineDemoteTest {
         assertEquals(1, n)
     }
 
-    @Test fun uniformBorderLargeRadiusNotDemoted() {
+    @Test fun uniformBorderLargeRadiusSelfPaint() {
+        // 均匀四边+大圆角 = 完整椭圆描边,与标准缩减语义一致,自绘正确不降级
         val n = webCount(style + """<div class="even"><p>第一段</p><p>第二段</p></div>""")
         assertEquals(0, n)
     }
@@ -40,8 +41,16 @@ class BubbleOutlineDemoteTest {
         assertEquals(1, n)
     }
 
-    @Test fun smallRadiusPartialBorderNotDemoted() {
+    @Test fun smallRadiusPartialBorderSelfPaint() {
+        // 小圆角部分边框走直线段/角点路径(与大圆角椭圆象限弧不同),自绘正确不降级
         val n = webCount(style + """<p class="small">普通带框段落文本</p>""")
+        assertEquals(0, n)
+    }
+
+    @Test fun plainParagraphStillSelfPaint() {
+        // 白名单核心回归: 纯文本段/简单均匀装饰段仍自绘(正文不受影响)
+        val html = style + """<p>纯文本段落</p><p class="plain">均匀底色边框段</p>"""
+        val n = webCount(html.replace("</style>", ".plain{background-color:#fffae0;border:1px solid #ddd}</style>"))
         assertEquals(0, n)
     }
 
@@ -56,7 +65,6 @@ class BubbleOutlineDemoteTest {
         val f = File("D:/projects/tool/tmp_browser_cmp/epub/OEBPS/Text/title.xhtml")
         if (!f.exists()) return   // 环境无关性: 样书缺失时跳过
         val r = HtmlTextExtractor.extract(f, "OEBPS/Text")
-        assertEquals(false, r.bodyDecor)
         val webs = r.paragraphs.filter { it.kind == ParaKind.WEBVIEW }
         assertEquals(1, webs.size)
         val html = webs[0].blockHtml ?: ""

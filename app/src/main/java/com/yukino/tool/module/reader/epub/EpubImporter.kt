@@ -346,8 +346,7 @@ object EpubImporter {
                         // 章级 CSS 资源(混合渲染块重建样式上下文)同源随落
                         ChapterFileCodec.write(
                             f, section.paras, extracted.footnotes, extracted.fonts,
-                            extracted.cssHrefs, extracted.cssInline, extracted.bodyDecor,
-                            extracted.bodyHtml, extracted.bodyShell, extracted.docDir
+                            extracted.cssHrefs, extracted.cssInline, extracted.docDir
                         )
                         // 投影长度 = 各段 text 之和 + 段间换行(与 bodyText joinToString 同构)
                         val bodyLen = section.paras.sumOf { it.text.length.toLong() } + (section.paras.size - 1)

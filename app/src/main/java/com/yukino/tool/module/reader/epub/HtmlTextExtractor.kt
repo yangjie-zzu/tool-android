@@ -103,57 +103,86 @@ object HtmlTextExtractor {
         return false
     }
 
-    // 块级元素降级判定(walkElement 对每个非 table 块级元素调用): 自身 S4/S5 + 自身
-    // "大圆角+部分边框"气泡轮廓 + 归属本块的子树 S3/S1
-    internal fun needsWebViewBlock(node: Element, cssRules: List<CssRule>): Boolean {
+    // ---------- 白名单制分流(v25) ----------
+    // 默认块位图,白名单子树才自绘。
+    // 位图级装饰(自绘不实现/画不像的形态): 部分边框、超限大圆角、渐变背景、背景图、
+    // 绝对/固定定位、flex/grid、内嵌 svg——命中即整元素(含子树)位图。
+    // 白名单(自绘): 无位图级装饰,且块级子元素递归白名单;纯行内内容(文本+行内标签+
+    // 图片+ruby)直接白名单。
+    // 聚合上提: 非白名单容器若块级子元素全为位图/空段(无白名单实质内容) → 整容器位图
+    // (尽量往上聚合;body 版心容器同理——整页气泡设计聚合为单张整页位图)。
+
+    private enum class ElCls { SELFPAINT, BITMAP }
+
+    private fun classify(node: Element, cssRules: List<CssRule>, cache: MutableMap<Element, ElCls>): ElCls {
+        cache[node]?.let { return it }
+        val cls = if (node.tagName().lowercase() == "body") bodyCls(node, cssRules, cache)
+                  else classifyRaw(node, cssRules, cache)
+        cache[node] = cls
+        return cls
+    }
+
+    // body 为版心容器: 自身位图级装饰(背景图/渐变等) → 整章单张位图(背景铺满,
+    // 等价旧 fillPage 观感);否则按子级构成——全位图/空段 → 整体位图,存在白名单
+    // 实质内容 → 分裂(位图子级成根,白名单子级自绘)
+    private fun bodyCls(node: Element, cssRules: List<CssRule>, cache: MutableMap<Element, ElCls>): ElCls {
+        if (hasBitmapDecor(propsFor(node, cssRules), node)) return ElCls.BITMAP
+        var hasBitmap = false
+        for (c in node.children()) {
+            val cn = c.tagName().lowercase()
+            if (cn == "style" || cn == "link" || cn == "script") continue
+            when (classify(c, cssRules, cache)) {
+                ElCls.BITMAP -> hasBitmap = true
+                ElCls.SELFPAINT -> if (flattenBlockText(c).isNotBlank()) return ElCls.SELFPAINT
+            }
+        }
+        return if (hasBitmap) ElCls.BITMAP else ElCls.SELFPAINT
+    }
+
+    private fun classifyRaw(node: Element, cssRules: List<CssRule>, cache: MutableMap<Element, ElCls>): ElCls {
         val props = propsFor(node, cssRules)
-        // S4: position:absolute/fixed、flex/grid 布局块
+        if (hasBitmapDecor(props, node)) return ElCls.BITMAP   // 位图级装饰: 吞子树
+        // 行内直接子级盒装饰(S1): 自绘无行内盒管线——直接行内子级带边框/底色/背景
+        // 即非白名单(img/br/ruby 等豁免);深层行内装饰由所在容器的分类负责,不深扫
+        var hasBitmapChild = false
+        for (c in node.children()) {
+            val cn = c.tagName().lowercase()
+            if (cn in S1_SCAN_SKIP) continue
+            if (cn !in BLOCK) {
+                if (inlineBoxDecorated(propsFor(c, cssRules)) || cn == "svg") return ElCls.BITMAP
+                continue   // 行内子元素随本元素白名单语义
+            }
+            when (classify(c, cssRules, cache)) {
+                ElCls.BITMAP -> hasBitmapChild = true
+                ElCls.SELFPAINT -> if (flattenBlockText(c).isNotBlank()) return ElCls.SELFPAINT
+            }
+        }
+        return if (hasBitmapChild) ElCls.BITMAP else ElCls.SELFPAINT   // 全位图/空 → 容器上提
+    }
+
+    // 位图级装饰: 自绘不实现/画不像的形态(与"均匀边框/纯底色/小圆角/阴影"等自绘正确形态相对)
+    private fun hasBitmapDecor(props: Map<String, String>, node: Element): Boolean {
         when (props["position"]?.trim()?.lowercase()) {
             "absolute", "fixed" -> return true
         }
         when (props["display"]?.trim()?.lowercase()) {
             "flex", "inline-flex", "grid", "inline-grid" -> return true
         }
-        // S5: 渐变背景
         for (key in listOf("background", "background-image")) {
-            if (props[key]?.contains("gradient(", ignoreCase = true) == true) return true
+            val v = props[key] ?: continue
+            if (parseUrlValue(v) != null) return true                     // 背景图
+            if (v.contains("gradient(", ignoreCase = true)) return true   // 渐变
         }
-        // 自身大圆角+部分边框(整页气泡/装饰盒): 绘制层椭圆模式下部分边框只能画象限弧
-        // (弧端悬空于边中点), 弧段切分与完整形态不一致——降级位图由块渲染管线完整还原;
-        // 小圆角(直边/角弧)与均匀四边框自绘正确,不在此列(避免存量装饰段落大面积位图化)
-        if (bubbleOutlineBox(props) != null) return true
-        if (subtreeSignalsOwnedBy(node, cssRules)) return true
-        return false
-    }
-
-    // 气泡轮廓盒: 部分边框(四边有/无混杂) + 大圆角(百分比≥50% 必超限入椭圆模式;
-    // em 值≥2 在常见版心/盒宽下超限)。命中返回 BoxStyle(仅作判定,复用解析),否则 null
-    private fun bubbleOutlineBox(props: Map<String, String>): com.yukino.tool.module.reader.common.BoxStyle? {
-        val box = parseBoxStyle(props, "") ?: return null
-        if (box.edges.size != 4) return null
+        // 内嵌 svg 由调用方"直接行内子级"检查覆盖(此处不做深扫,深层 svg 归属所在容器)
+        val box = parseBoxStyle(props, "") ?: return false
+        val rad = box.radius ?: return false
+        val bigRadius = (rad.pct && rad.v >= 50f) || (!rad.pct && rad.v >= 2f)
+        if (!bigRadius) return false
+        // 大圆角(椭圆模式) × 部分边框: 象限弧近似画偏(弧段切分/开口位置);
+        // 均匀四边大圆角 = 完整椭圆描边,与标准缩减语义一致,自绘正确
+        if (box.edges.size != 4) return false
         val styles = box.edges.map { it.style }
-        if (!(styles.any { it > 0 } && styles.any { it == 0 })) return null   // 需部分边框
-        val rad = box.radius ?: return null
-        return if ((rad.pct && rad.v >= 50f) || (!rad.pct && rad.v >= 2f)) box else null
-    }
-
-    // 气泡容器: 块级子元素全部为"气泡轮廓盒"或空内容段(无实质文本),且气泡盒 ≥1——
-    // 整页气泡设计(兄弟气泡盒+空行间隔),逐块降级会把兄弟盒子拆成独立位图,
-    // 盒间布局关系(空行/定位)被割裂;容器整体降级为单个位图完整还原
-    private fun isBubbleContainer(node: Element, cssRules: List<CssRule>): Boolean {
-        if (node.ownText().isNotBlank()) return false   // 容器自身直接文本不聚合
-        var children = 0
-        var bubbles = 0
-        for (c in node.children()) {
-            val cn = c.tagName().lowercase()
-            if (cn == "style") continue
-            if (cn !in BLOCK) return false   // 子级含行内等非块元素 → 不聚合
-            children++
-            if (bubbleOutlineBox(propsFor(c, cssRules)) != null) { bubbles++; continue }
-            if (flattenBlockText(c).isBlank()) continue   // 空段(如 <p><br/></p>)
-            return false   // 有实质文本的非气泡子块 → 不聚合
-        }
-        return children > 0 && bubbles > 0
+        return styles.any { it > 0 } && styles.any { it == 0 }
     }
 
     // 表格降级判定(emitTable 入口调用): S2 嵌套/超 500 格 + 表内 S3/S1
@@ -250,9 +279,6 @@ object HtmlTextExtractor {
         val fonts: Map<String, String> = emptyMap(),   // 七期: @font-face family -> 字体文件相对路径
         val cssHrefs: List<String> = emptyList(),      // 混合渲染: head 外部样式 href 原样(块渲染 mini HTML 引用)
         val cssInline: List<String> = emptyList(),     // 混合渲染: <style> 块原文(块渲染 mini HTML 内联)
-        val bodyDecor: Boolean = false,                // 页面级背景信号: body 带背景图/色(装饰章判定用)
-        val bodyHtml: String = "",                     // 页面级背景章聚合: 整章 body innerHTML(原始结构浏览器同源渲染)
-        val bodyShell: String = "",                    // 页面级背景章聚合: body 开标签(类/属性并入块壳)
         val docDir: String = ""                        // 章源文档目录(相对解压根): 聚合块 CSS/图片相对引用的解析基准
     )
 
@@ -327,24 +353,14 @@ object HtmlTextExtractor {
             mergeCssRules(cssRules, parseStyleBlock(style.data()))
             if (style.data().isNotBlank()) cssInline += style.data()
         }
-        // 页面级背景信号: body 自身声明的背景图/背景色(CSS 规则含元素选择器命中 body)
-        val bodyProps = propsFor(body, cssRules)
-        val bodyDecor = inlineBoxDecorated(bodyProps) ||
-            (bodyProps["background-color"]?.let { parseColor(it) ?: 0L } ?: 0L) != 0L
-        // 页面级背景章的聚合渲染: 保留整章 body innerHTML 与开标签壳
-        val bodyHtml = if (bodyDecor) body.html() else ""
-        val bodyShell = if (bodyDecor) {
-            val attrs = body.attributes().joinToString(" ") { (k, v) ->
-                "$k=\"" + v.replace("&", "&amp;").replace("\"", "&quot;") + "\""
-            }
-            if (attrs.isBlank()) "<body>" else "<body $attrs>"
-        } else ""
+        // 白名单制分流(v25): 分类缓存(每章一次;元素按身份缓存分类结果)
+        val clsCache = java.util.IdentityHashMap<Element, ElCls>()
+        classify(body, cssRules, clsCache)
         val b = Builder(docDir, null, dataUriSink)
-        walk(body, b, ArrayDeque(), noteRefs, cssRules)
+        walk(body, b, ArrayDeque(), noteRefs, cssRules, clsCache)
         b.flush()
         return ExtractResult(
-            b.result(), b.notes, fontsIn ?: emptyMap(), cssHrefsIn, cssInline, bodyDecor,
-            bodyHtml, bodyShell, docDir
+            b.result(), b.notes, fontsIn ?: emptyMap(), cssHrefsIn, cssInline, docDir
         )
     }
 
@@ -1251,14 +1267,14 @@ object HtmlTextExtractor {
 
     // ---------- 树遍历 ----------
 
-    private fun walk(node: Node, b: Builder, counters: ArrayDeque<Int?>, noteIds: Set<String>, cssRules: List<CssRule>) {
+    private fun walk(node: Node, b: Builder, counters: ArrayDeque<Int?>, noteIds: Set<String>, cssRules: List<CssRule>, clsCache: MutableMap<Element, ElCls>) {
         when (node) {
             is TextNode -> b.appendText(node.text())
-            is Element -> walkElement(node, b, counters, noteIds, cssRules)
+            is Element -> walkElement(node, b, counters, noteIds, cssRules, clsCache)
         }
     }
 
-    private fun walkElement(node: Element, b: Builder, counters: ArrayDeque<Int?>, noteIds: Set<String>, cssRules: List<CssRule>) {
+    private fun walkElement(node: Element, b: Builder, counters: ArrayDeque<Int?>, noteIds: Set<String>, cssRules: List<CssRule>, clsCache: MutableMap<Element, ElCls>) {
         val name = node.tagName().lowercase()
         if (name in SKIP) return
         // ruby 注音文本(rt 及 rp 括号)不进正文: rt 的内容由 ruby 分支提入脚注表
@@ -1338,12 +1354,11 @@ object HtmlTextExtractor {
         b.applyLayout(parseParaLayout(layoutProps))
 
         try {
-        // 混合渲染: 块级元素命中自绘边界信号 → 整块降级 WebView 位图(子树不走常规提取)。
-        // 容器级: 块级子元素全部为气泡盒/空段的容器(body/div 等整页气泡设计)整体降级——
-        // 逐块降级会把兄弟气泡盒拆成独立位图,盒间布局关系(空行间隔/定位)被割裂。
+        // 白名单制分流(v25): 非白名单元素(位图级装饰/聚合容器)整块降级 WebView 位图
+        // (子树不走常规提取);白名单子树(纯行内段/简单盒装饰段/递归白名单容器)走自绘。
         // table 有专属判定(嵌套/超 500 格/表内信号),在 emitTable 的入口处理
         if (name != "table" && (name in BLOCK || name == "body") &&
-            (needsWebViewBlock(node, cssRules) || isBubbleContainer(node, cssRules))
+            classify(node, cssRules, clsCache) == ElCls.BITMAP
         ) {
                 b.flush()
                 b.addWebViewBlock(
@@ -1358,7 +1373,7 @@ object HtmlTextExtractor {
                     b.brPending = true
                 }
                 name == "img" -> { b.flush(); emitImage(node, b, cssRules) }
-                name == "table" -> { b.flush(); emitTable(node, b, cssRules, noteIds) }
+                name == "table" -> { b.flush(); emitTable(node, b, cssRules, noteIds, clsCache) }
                 name == "ruby" -> {
                     // 七期: 基文本进正文(行内不断段), rt 音译提入脚注表并在基文本区间挂可点锚点
                     val rt = node.children()
@@ -1367,7 +1382,7 @@ object HtmlTextExtractor {
                     val start = b.cursor()
                     for (c in node.childNodes()) {
                         if (c is Element && c.tagName().lowercase().let { it == "rt" || it == "rp" }) continue
-                        walk(c, b, counters, noteIds, cssRules)
+                        walk(c, b, counters, noteIds, cssRules, clsCache)
                     }
                     val end = b.cursor()
                     if (rt.isNotEmpty() && end > start) {
@@ -1380,30 +1395,30 @@ object HtmlTextExtractor {
                     // 标题段: 记 heading 级别(h2 拆章依据)
                     b.flush()
                     b.pendingHeading = name[1] - '0'
-                    for (c in node.childNodes()) walk(c, b, counters, noteIds, cssRules)
+                    for (c in node.childNodes()) walk(c, b, counters, noteIds, cssRules, clsCache)
                     b.flush()
                     b.pendingHeading = 0
                 }
                 INLINE_STYLE.containsKey(name) -> {
                     b.cur = saved.copy(style = saved.style or runDecoFromProps(props).style or (INLINE_STYLE[name] ?: 0))
-                    for (c in node.childNodes()) walk(c, b, counters, noteIds, cssRules)
+                    for (c in node.childNodes()) walk(c, b, counters, noteIds, cssRules, clsCache)
                 }
-                name == "ol" -> { counters.addLast(0); walkBlock(node, b, counters, noteIds, cssRules); counters.removeLast() }
-                name == "ul" -> { counters.addLast(null); walkBlock(node, b, counters, noteIds, cssRules); counters.removeLast() }
+                name == "ol" -> { counters.addLast(0); walkBlock(node, b, counters, noteIds, cssRules, clsCache); counters.removeLast() }
+                name == "ul" -> { counters.addLast(null); walkBlock(node, b, counters, noteIds, cssRules, clsCache); counters.removeLast() }
                 name == "li" -> {
                     b.flush()   // 结束上一段;前缀之后的内容同段,不再 flush(前缀与首行同段落)
                     val n = counters.lastOrNull()
                     if (n != null) { counters[counters.lastIndex] = n + 1; b.appendText("${n + 1}. ") }
                     else b.appendText("• ")
-                    for (c in node.childNodes()) walk(c, b, counters, noteIds, cssRules)
+                    for (c in node.childNodes()) walk(c, b, counters, noteIds, cssRules, clsCache)
                     b.flush()
                 }
                 name in BLOCK -> {
                     b.flush()
-                    for (c in node.childNodes()) walk(c, b, counters, noteIds, cssRules)
+                    for (c in node.childNodes()) walk(c, b, counters, noteIds, cssRules, clsCache)
                     b.flush()
                 }
-                else -> for (c in node.childNodes()) walk(c, b, counters, noteIds, cssRules)
+                else -> for (c in node.childNodes()) walk(c, b, counters, noteIds, cssRules, clsCache)
             }
         } finally {
             if (id.isNotEmpty()) b.openAnchors.removeId(id)
@@ -1419,9 +1434,9 @@ object HtmlTextExtractor {
     }
 
     // 块级元素: 前后都是段落边界
-    private fun walkBlock(node: Element, b: Builder, counters: ArrayDeque<Int?>, noteIds: Set<String>, cssRules: List<CssRule>) {
+    private fun walkBlock(node: Element, b: Builder, counters: ArrayDeque<Int?>, noteIds: Set<String>, cssRules: List<CssRule>, clsCache: MutableMap<Element, ElCls>) {
         b.flush()
-        for (c in node.childNodes()) walk(c, b, counters, noteIds, cssRules)
+        for (c in node.childNodes()) walk(c, b, counters, noteIds, cssRules, clsCache)
         b.flush()
     }
 
@@ -1446,7 +1461,7 @@ object HtmlTextExtractor {
     // 表格(七期批次四): 真渲染数据提取。colspan/rowspan 网格展开(含被占位跳过);
     // 嵌套表与超阈值(>500 格)仍降级占位。单元格内容经子 Builder 提取投影与 runs
     // (段间单空格拼接,runs 平移),格级样式取 class/style(对齐/垂直对齐/底色/边框/th 加粗)
-    private fun emitTable(node: Element, b: Builder, cssRules: List<CssRule>, noteIds: Set<String>) {
+    private fun emitTable(node: Element, b: Builder, cssRules: List<CssRule>, noteIds: Set<String>, clsCache: MutableMap<Element, ElCls>) {
         // 混合渲染: 嵌套表/超 500 格/表内行内装饰(圆圈章号)等边界外信号 → 整表降级 WebView 位图
         if (needsWebViewTable(node, cssRules)) {
             b.flush()
@@ -1471,7 +1486,7 @@ object HtmlTextExtractor {
                 val rs = cellEl.attr("rowspan").toIntOrNull()?.coerceIn(1, 64) ?: 1
                 val cs = cellEl.attr("colspan").toIntOrNull()?.coerceIn(1, 64) ?: 1
                 for (dr in 0 until rs) occupied.getOrPut(ri + dr) { HashSet() }.also { it.addAll(c until c + cs) }
-                val (text, runs, cellImg) = extractCellContent(cellEl, b, cssRules, noteIds)
+                val (text, runs, cellImg) = extractCellContent(cellEl, b, cssRules, noteIds, clsCache)
                 val props = propsFor(cellEl, cssRules)
                 // td style/class 的 width 列宽提示(单列格,同列取首次)
                 if ((cellEl.attr("colspan").toIntOrNull() ?: 1) <= 1) {
@@ -1522,13 +1537,14 @@ object HtmlTextExtractor {
     // 格内图片段(第一张)记 ref 随格返回(布局期按格宽等比撑行高,绘制期画位图);
     // 其图片不进格文本——U+FFFC 在格内无占位管线
     private fun extractCellContent(
-        el: Element, b: Builder, cssRules: List<CssRule>, noteIds: Set<String>
+        el: Element, b: Builder, cssRules: List<CssRule>, noteIds: Set<String>,
+        clsCache: MutableMap<Element, ElCls>
     ): Triple<String, List<Run>, String?> {
         val sub = Builder(b.docDir, null, b.dataUriSink)
         // td/th 自身的 run 级样式(颜色/字号/粗斜)随格内文字落地——格内容提取 walk 的是
         // td 的孩子,td 分支不经 walkElement,装饰上下文需在此预置
         sub.cur = mergeRunCtx(sub.cur, runDecoFromProps(propsFor(el, cssRules)))
-        for (c in el.childNodes()) walk(c, sub, ArrayDeque(), noteIds, cssRules)
+        for (c in el.childNodes()) walk(c, sub, ArrayDeque(), noteIds, cssRules, clsCache)
         sub.flush()
         var text = ""
         var off = 0

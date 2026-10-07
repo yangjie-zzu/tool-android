@@ -57,7 +57,6 @@ class BlockSpec(
     val shell: String,              // 祖先壳(body→块的逐层开标签)
     val cssHrefs: List<String>,     // 原文档 head 外部样式 href 原样
     val cssInline: List<String>,    // 原文档 <style> 块原文
-    val fillPage: Boolean = false   // 页面级背景章聚合块: 视口/位图固定版心高, 背景 cover 铺满整页
 ) {
     fun contentHash(): String = BlockCache.contentHashOf(html, shell, docDir, cssHrefs, cssInline)
 }
@@ -143,13 +142,10 @@ object WebViewBlockRenderer {
         val metrics = app.resources.displayMetrics
         val screenH = metrics.heightPixels
         val density = metrics.density
-        // fillPage(页面级背景章聚合块): 视口/位图固定版心高, 注入 min-height 使
-        // body 背景(cover)铺满整页——目录页等页面级背景完整呈现
-        val fill = spec.fillPage
-        val pageH = if (fill) textHeight.coerceAtLeast(1) else screenH
+        val pageH = screenH
         val html = buildMiniHtml(
             spec, fontPx, density,
-            lineMultCss(lineSpacingPercent, lineOverride, fill),
+            lineMultCss(lineSpacingPercent, lineOverride),
             collectJs(limitPxOf(screenH))
         )
         val limitPx = limitPxOf(screenH)
@@ -175,7 +171,7 @@ object WebViewBlockRenderer {
                 val handled = java.util.concurrent.atomic.AtomicBoolean(false)
                 // 兜底死线: 桥丢失/挂死时按现状截(几何空,选择退化)
                 val fallback = Runnable {
-                    if (handled.compareAndSet(false, true)) settle(webView, w, pageH, limitPx, fill, root, key, null, done)
+                    if (handled.compareAndSet(false, true)) settle(webView, w, pageH, limitPx, root, key, null, done)
                 }
                 Handler(Looper.getMainLooper()).postDelayed(fallback, BLK_FALLBACK_MS)
                 webView.addJavascriptInterface(object {
@@ -185,7 +181,7 @@ object WebViewBlockRenderer {
                         Handler(Looper.getMainLooper()).post {
                             if (handled.compareAndSet(false, true)) {
                                 Handler(Looper.getMainLooper()).postDelayed({
-                                    settle(webView, w, pageH, limitPx, fill, root, key, json, done)
+                                    settle(webView, w, pageH, limitPx, root, key, json, done)
                                 }, BLK_PAINT_SETTLE_MS)
                             }
                         }
@@ -246,9 +242,7 @@ object WebViewBlockRenderer {
     ): String {
         // 根字号(CSS px): 钉死缩放比 = density。
         // 普通块 = 阅读字号,块随阅读字号整体缩放;
-        // fillPage(页面级背景章聚合块) = 16px 原书设计字号——整页版式固定,随阅读
-        // 字号缩放会使原书临界布局(固定尺寸气泡/负 margin 叠放)断行漂移、版式错乱
-        val rootFontPx = if (spec.fillPage) 16f else fontPx / density
+        val rootFontPx = fontPx / density
         val sb = StringBuilder()
         sb.append("<!DOCTYPE html><html><head><meta charset=\"utf-8\">")
         for (href in spec.cssHrefs) {
@@ -277,14 +271,10 @@ object WebViewBlockRenderer {
 
     // 行距注入 CSS 片段: 覆盖模式 body *{line-height:X!important}(压过书内声明);
     // 默认模式 body{line-height:X}(书内元素声明层叠自动优先,null=不注入)。
-    // fillPage(页面级背景章聚合块)时同时注入整页高度, 背景 cover 铺满视口
-    private fun lineMultCss(lineSpacingPercent: Int, lineOverride: Boolean, fillPage: Boolean): String {
+    private fun lineMultCss(lineSpacingPercent: Int, lineOverride: Boolean): String {
         val mult = "%.2f".format((lineSpacingPercent / 100f).coerceIn(0.5f, 5f))
-        return when {
-            lineOverride -> "html{height:100%}body{min-height:100%}body *{line-height:${mult}!important}"
-            fillPage -> "html{height:100%}body{min-height:100%}body{line-height:$mult}"
-            else -> "body{line-height:$mult}"
-        }
+        return if (lineOverride) "body *{line-height:${mult}!important}"
+               else "body{line-height:$mult}"
     }
 
     private fun escapeAttr(s: String) = s.replace("&", "&amp;").replace("\"", "&quot;")
@@ -295,7 +285,6 @@ object WebViewBlockRenderer {
         w: Int,
         pageH: Int,
         limitPx: Int,
-        fillPage: Boolean,
         root: File,
         key: String,
         geomJson: String?,
@@ -305,7 +294,7 @@ object WebViewBlockRenderer {
             val contentH = ceil(view.contentHeight * view.scale).toInt()
             // 超高钳制: 页内 scale 已把视觉内容缩进上限,位图按布局高截,下部空白由
             // cropBottomBlank 裁除
-            val h = if (fillPage) pageH else (if (contentH > 0) contentH else view.height)
+            val h = (if (contentH > 0) contentH else view.height)
                 .coerceAtMost(limitPx)
             // 内容宽: 桥上报的布局宽(物理 px)超视口时撑开视口完整截取——定宽溢出块
             // (学籍表/人物介绍聚合块等)由此完整呈现,显示层按位图比例缩放到版心

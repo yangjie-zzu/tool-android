@@ -176,9 +176,6 @@ class ChapterDocument(
     val fontFiles: Map<String, String> = emptyMap(),  // family → 字体文件绝对路径
     val cssHrefs: List<String> = emptyList(),  // 混合渲染: 原文档 head 外部样式 href 原样列表
     val cssInline: List<String> = emptyList(), // 混合渲染: 原文档 <style> 块原文列表
-    val bodyDecor: Boolean = false,            // 页面级背景信号: body 带背景图/色
-    val bodyHtml: String = "",                 // 页面级背景章聚合: 整章 body innerHTML
-    val bodyShell: String = "",                // 页面级背景章聚合: body 开标签壳
     val docDir: String = ""                    // 章源文档目录(epub): 聚合块相对引用解析基准
 ) {
     val bodyText: String get() = paragraphs.joinToString("\n") { it.text }

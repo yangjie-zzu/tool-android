@@ -70,9 +70,10 @@ class HybridRenderTest {
             "<style>.sbox1{background-color:#fff;border:solid 5px #000}</style>" +
                 "<p>章号<span class=\"sbox1\">1</span>后文</p>"
         )
+        // v25 body 上提: 唯一位图子级并入 body 容器位图
         assertEquals(1, paras.size)
         assertEquals(ParaKind.WEBVIEW, paras[0].kind)
-        assertTrue(paras[0].blockHtml!!.startsWith("<p"))
+        assertTrue(paras[0].blockHtml!!.startsWith("<body"))
         assertEquals("章号1后文", paras[0].text)
     }
 
@@ -123,8 +124,11 @@ class HybridRenderTest {
             "<style>div.abs{position:absolute}div.fx{display:flex}</style>" +
                 "<div class=\"abs\"><p>定位块</p></div><div class=\"fx\"><p>弹性块</p></div>"
         )
-        assertEquals(2, paras.size)
-        assertTrue(paras.all { it.kind == ParaKind.WEBVIEW })
+        // v25 body 上提: 两个位图子级合并为 body 容器单块
+        assertEquals(1, paras.size)
+        assertEquals(ParaKind.WEBVIEW, paras[0].kind)
+        val bh = paras[0].blockHtml!!
+        assertTrue(bh.contains("定位块") && bh.contains("弹性块"))
     }
 
     @Test
