@@ -924,7 +924,9 @@ object BookPager {
         val fontPx = typo.fontPx
         var ml = p.marginLeftEm?.px(fontPx, tw) ?: 0f
         var mr = p.marginRightEm?.px(fontPx, tw) ?: 0f
-        val w = p.widthEm?.px(fontPx, tw)
+        // 书内 em 定宽随字号放大,超版心时钳到全宽(否则 w<tw 前置不成立,收窄被整体
+        // 跳过,文字按全宽断行而盒背景仍较窄 → 文字溢出卡片被屏幕裁切)
+        val w = p.widthEm?.px(fontPx, tw)?.coerceAtMost(tw)
         if (w != null && w < tw) {
             when {
                 p.floatSide == 1 -> { ml = tw - w; mr = 0f }   // float:right: 盒贴右缘
@@ -934,6 +936,18 @@ object BookPager {
                 p.widthAlign == 3 -> { ml = 0f; mr = tw - w }  // 右 auto: 靠左缘
                 else -> mr = (tw - ml - w).coerceAtLeast(0f)
             }
+        }
+        // 盒定宽≥版心(上面钳到全宽)时,文字断行宽需扣除盒自身 padding/左右边框——
+        // 物化层会把盒内文字平移到盒内容区(x += 盒左+pad),断行不扣除则行尾溢出
+        // 盒右缘被屏幕裁切(小字号下盒宽<版心时由 widthEm 分支正常收窄,不受此影响)
+        val bs = p.boxStyle
+        if (bs?.widthCss != null && bs.widthCss.px(fontPx, tw) >= tw) {
+            val borderL = bs.edges.getOrNull(3)?.takeIf { it.widthEm > 0f && it.style > 0 }?.widthEm ?: 0f
+            val borderR = bs.edges.getOrNull(1)?.takeIf { it.widthEm > 0f && it.style > 0 }?.widthEm ?: 0f
+            val inset = (bs.padLeftEm + bs.padRightEm + borderL + borderR) * fontPx
+            val contentW = (tw - inset).coerceAtLeast(fontPx)
+            ml = (tw - contentW) / 2f
+            mr = tw - ml - contentW
         }
         // 防病态: 缩进不吞没行;盒定位场景(float/贴边)的偏移天然占版心大半,放宽到 85%
         val cap = if (p.floatSide != 0 || p.widthAlign == 2 || p.widthAlign == 3) 0.85f else 0.45f
@@ -1005,6 +1019,13 @@ object BookPager {
                     (naturalSum - gapTotal).coerceAtLeast(1f)
                 for (c in widths.indices) widths[c] *= scale
             }
+        }
+        // 总宽兜底: 提示列固定,小屏/大字号下提示列之和即可超可用宽(如登场人物表
+        // 8.5em+14em),全列等比压到可用宽,保底 30% 版心防压没
+        val maxTotal = (availWidth - gapTotal).coerceAtLeast(typo.textWidth * 0.3f)
+        if (widths.sum() > maxTotal) {
+            val s = maxTotal / widths.sum()
+            for (c in widths.indices) widths[c] *= s
         }
         // 列 x 坐标
         val colX = FloatArray(td.cols)
