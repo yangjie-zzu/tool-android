@@ -83,6 +83,14 @@ curl -s -X POST -H "Authorization: token $TOKEN" -H "Content-Type: application/o
 
 ## 6. 历史记录
 
+- 2026-10-08：v1.5.25 release（核心修复：v13 取消章名合成后 compose 仍前置 "\n\n"
+  标题块而 bodyStart=0,EPUB 全章段区间错位 2 字符——图片段行匹配失败降级文本行
+  致彩页/行内注音 OBJ tofu,盒样式段落几何错乱致人物介绍截断/报告页溢出;含
+  v1.5.24 的拦截器 percent-decode + documentElement 量宽 + RENDERER_VERSION 13）,
+  commit `2fe9850`,tag `v1.5.25`,GitHub Release 含 release/debug 两个 APK。
+  **模拟器 UI 实测通过**（debug+release 混淆包:彩页整页插图/人物介绍/目录聚合块/
+  行内注音/报告页）,单元测试 207 通过。教训:v1.5.24 只跑了单测未装机验证即发布,
+  修复未命中真实根因;现已立规:代码修改后必须实际运行验证。
 - 2026-10-07：v1.5.24 release（块渲染修复：拦截器路径 percent-decode 修中文文件名
   图片整页 OBJ 破图；量宽并取 documentElement.scrollWidth 修正文聚合位图右缘视口
   裁切；RENDERER_VERSION 补齐至 13 使旧位图缓存失效），commit `0ae3362`，tag
