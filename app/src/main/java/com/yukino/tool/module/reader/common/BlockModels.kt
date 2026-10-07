@@ -45,7 +45,10 @@ object BlockCache {
     // v11: 放弃注入缩放,视口直接撑到内容实际宽(桥上报),完整截取后由显示层按位图
     // 比例缩放到版心——零布局干预,断行/定位与浏览器原样;超高仍以 transform:scale
     // 缩到位图上限(绘制级,不触发重排)
-    const val RENDERER_VERSION = 11
+    // v12: 拦截器请求路径 percent-decode 后再映射文件(中文/空格文件名图片 404 → OBJ 破图)
+    // v13: 量宽并取 documentElement.scrollWidth(body.scrollWidth 不计视口包含块的
+    // 绝对定位/out-of-flow 溢出,正文聚合位图右缘被视口裁切);补齐 v12/v13 漏递增
+    const val RENDERER_VERSION = 13
     const val DIR_NAME = "wblocks"
 
     fun md5(s: String): String =

@@ -205,7 +205,8 @@ object WebViewBlockRenderer {
                     ): WebResourceResponse? {
                         val u = request.url
                         if (u.host != BLK_HOST) return emptyResponse()
-                        val rel = u.path?.trimStart('/') ?: return emptyResponse()
+                        // Chromium 请求路径是 percent-encoded,磁盘文件名是原始名,必须解码后再映射
+                        val rel = android.net.Uri.decode(u.path?.trimStart('/') ?: return emptyResponse())
                         val f = File(root, rel)
                         if (!f.canonicalFile.path.startsWith(root.canonicalFile.path) || !f.isFile) {
                             return emptyResponse()
@@ -573,7 +574,9 @@ object WebViewBlockRenderer {
         "var kids=document.body.childNodes;" +
         "for(var i=0;i<kids.length;i++)walk(kids[i]);}" +
         "function measure(){" +
-        "return{w:document.body.scrollWidth,h:document.body.scrollHeight};}" +
+        // body.scrollWidth 不计以视口为包含块的绝对定位/out-of-flow 溢出,并取 documentElement 补盲区
+        "return{w:Math.max(document.body.scrollWidth,document.documentElement.scrollWidth)," +
+        "h:Math.max(document.body.scrollHeight,document.documentElement.scrollHeight)};}"+
         "function ts(){return Math.round(performance.now());}" +
         "console.log('BLK parse t='+ts());" +
         "var loaded=new Promise(function(res){if(document.readyState==='complete')res();" +
