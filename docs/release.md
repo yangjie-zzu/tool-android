@@ -83,6 +83,14 @@ curl -s -X POST -H "Authorization: token $TOKEN" -H "Content-Type: application/o
 
 ## 6. 历史记录
 
+- 2026-10-08：v1.5.26 release（定宽元素超版心修复:书内 em 定宽(报告纸 24em/
+  人物表 22em)在大字号下≥版心时,paraMetrics 放弃收窄致文字按全宽断行而卡片/
+  表格仍较窄 → 右缘被屏幕裁切;修:widthEm 钳到版心;盒定宽≥版心时文字断行扣
+  盒 padding/边框;表格提示列总和超可用宽时全列等比压缩兜底）,tag `v1.5.26`,
+  GitHub Release 含 release/debug 两个 APK。模拟器验证:debug/release 包×字号
+  16/19/21,报告页与 Illus4-1 人物表文字均在卡片内;与 Chrome 打开原书 XHTML
+  对比（本机 http.server + 10.0.2.2）:布局结构一致,无裁切;差异为阅读器 em 随
+  阅读字号缩放(大字号时纸片钳为全宽)与两端对齐策略,属自适应重排预期行为。
 - 2026-10-08：v1.5.25 release（核心修复：v13 取消章名合成后 compose 仍前置 "\n\n"
   标题块而 bodyStart=0,EPUB 全章段区间错位 2 字符——图片段行匹配失败降级文本行
   致彩页/行内注音 OBJ tofu,盒样式段落几何错乱致人物介绍截断/报告页溢出;含
