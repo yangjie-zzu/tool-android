@@ -83,6 +83,11 @@ curl -s -X POST -H "Authorization: token $TOKEN" -H "Content-Type: application/o
 
 ## 6. 历史记录
 
+- 2026-10-08：v1.5.27 release（叠字修复:paraLinePitch 行框/基线按段内最大 run
+  字号缩放——原实现只在"行距跟随书内"开启时生效且误取首 run,报告页 em12/em15
+  标题在默认全局行距下与相邻行叠字;普通正文零影响）,tag `v1.5.27`,GitHub
+  Release 含 release/debug 两个 APK。模拟器验证:debug 字号 16 + release 混淆包
+  字号 21,报告页标题三行不叠、正文行距无变化,单测 207 通过。
 - 2026-10-08：v1.5.26 release（定宽元素超版心修复:书内 em 定宽(报告纸 24em/
   人物表 22em)在大字号下≥版心时,paraMetrics 放弃收窄致文字按全宽断行而卡片/
   表格仍较窄 → 右缘被屏幕裁切;修:widthEm 钳到版心;盒定宽≥版心时文字断行扣
