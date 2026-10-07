@@ -687,15 +687,26 @@ object BookPager {
         // 不吃全局贴合行距/行距偏好——盒的密度由书内 CSS 控制。
         // 行距设置"覆盖书内"开关关着时忽略书内 line-height,一律走全局行距
         fun paraLinePitch(para: Paragraph?): Pair<Int, Int> {
+            // 段内最大 run 字号(>1 才有效;CSS 行盒随元素自身字号缩放,run 放大后行框
+            // 若仍按全局字号算,大字形溢出行框与上一行叠字——报告页 em12/em15 标题)
+            val maxEm = para?.runs?.maxOfOrNull { it.sizeEm ?: 1f }?.takeIf { it > 1f } ?: 1f
+            val scaledNatural = bodyNatural * maxEm
+            val scaledAscent = (bodyAscentAbs * maxEm).roundToInt()
             val lh = if (typo.bookLineHeight) para?.lineSpacingMult else null
-            if (lh == null) {
-                if (para?.boxStyle != null) return bodyNatural.toInt() to bodyAscentAbs
-                return bodyPitch to (bodyAscentAbs + bodyShift)
+            if (lh != null) {
+                val basePx = typo.fontPx * maxEm
+                val frame = basePx * lh
+                val p = PaginationEngine.gridCeil(frame, Typography.GRID_PX).coerceAtLeast(Typography.GRID_PX)
+                return p to (scaledAscent + LineGrid.centerShift(p, scaledNatural))
             }
-            val basePx = para?.runs?.firstOrNull()?.sizeEm?.let { typo.fontPx * it } ?: typo.fontPx
-            val frame = basePx * lh
-            val p = PaginationEngine.gridCeil(frame, Typography.GRID_PX).coerceAtLeast(Typography.GRID_PX)
-            return p to (bodyAscentAbs + LineGrid.centerShift(p, bodyNatural))
+            if (para?.boxStyle != null) {
+                val p = PaginationEngine.gridCeil(scaledNatural, Typography.GRID_PX)
+                return p to (scaledAscent + LineGrid.centerShift(p, scaledNatural))
+            }
+            // 全局行距: 普通 run 段维持原贴合行高;含放大 run 的段行框保底到放大字形高
+            if (maxEm == 1f) return bodyPitch to (bodyAscentAbs + bodyShift)
+            val p = maxOf(bodyPitch, PaginationEngine.gridCeil(scaledNatural, Typography.GRID_PX))
+            return p to (scaledAscent + LineGrid.centerShift(p, scaledNatural))
         }
 
         val lines = ArrayList<TextLine>(measure.lineCount)
