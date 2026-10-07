@@ -57,6 +57,7 @@ class BlockSpec(
     val shell: String,              // 祖先壳(body→块的逐层开标签)
     val cssHrefs: List<String>,     // 原文档 head 外部样式 href 原样
     val cssInline: List<String>,    // 原文档 <style> 块原文
+    val fillViewport: Boolean = false  // body 容器聚合块: html 注入 min-height 撑满版心,位图占整页
 ) {
     fun contentHash(): String = BlockCache.contentHashOf(html, shell, docDir, cssHrefs, cssInline)
 }
@@ -142,11 +143,14 @@ object WebViewBlockRenderer {
         val metrics = app.resources.displayMetrics
         val screenH = metrics.heightPixels
         val density = metrics.density
-        val pageH = screenH
+        // body 容器聚合块(fillViewport): 视口=版心高,html 注入 min-height 使白底/背景
+        // 铺满整页(整页设计章不再有内容高以下的纸底分界)
+        val fillVp = spec.fillViewport
+        val pageH = if (fillVp) textHeight.coerceAtLeast(1) else screenH
         val html = buildMiniHtml(
             spec, fontPx, density,
             lineMultCss(lineSpacingPercent, lineOverride),
-            collectJs(limitPxOf(screenH))
+            collectJs(limitPxOf(screenH)), fillVp
         )
         val limitPx = limitPxOf(screenH)
         val done = CompletableDeferred<Boolean>()
@@ -171,7 +175,7 @@ object WebViewBlockRenderer {
                 val handled = java.util.concurrent.atomic.AtomicBoolean(false)
                 // 兜底死线: 桥丢失/挂死时按现状截(几何空,选择退化)
                 val fallback = Runnable {
-                    if (handled.compareAndSet(false, true)) settle(webView, w, pageH, limitPx, root, key, null, done)
+                    if (handled.compareAndSet(false, true)) settle(webView, w, pageH, limitPx, fillVp, root, key, null, done)
                 }
                 Handler(Looper.getMainLooper()).postDelayed(fallback, BLK_FALLBACK_MS)
                 webView.addJavascriptInterface(object {
@@ -181,7 +185,7 @@ object WebViewBlockRenderer {
                         Handler(Looper.getMainLooper()).post {
                             if (handled.compareAndSet(false, true)) {
                                 Handler(Looper.getMainLooper()).postDelayed({
-                                    settle(webView, w, pageH, limitPx, root, key, json, done)
+                                    settle(webView, w, pageH, limitPx, fillVp, root, key, json, done)
                                 }, BLK_PAINT_SETTLE_MS)
                             }
                         }
@@ -238,7 +242,8 @@ object WebViewBlockRenderer {
         fontPx: Float,
         density: Float,
         lineMultCss: String?,
-        collectScript: String
+        collectScript: String,
+        fillViewport: Boolean
     ): String {
         // 根字号(CSS px): 钉死缩放比 = density。
         // 普通块 = 阅读字号,块随阅读字号整体缩放;
@@ -252,7 +257,9 @@ object WebViewBlockRenderer {
             sb.append("<style>").append(stripScripts(css)).append("</style>")
         }
         sb.append("<style>html{font-size:").append(rootFontPx).append("px}")
-        sb.append("body{margin:0;padding:0}</style>")
+        sb.append("body{margin:0;padding:0}")
+        if (fillViewport) sb.append("html{height:100%}body{min-height:100%}")
+        sb.append("</style>")
         if (lineMultCss != null) sb.append("<style>").append(lineMultCss).append("</style>")
         sb.append(collectScript)
         sb.append("</head>")
@@ -285,6 +292,7 @@ object WebViewBlockRenderer {
         w: Int,
         pageH: Int,
         limitPx: Int,
+        fillVp: Boolean,
         root: File,
         key: String,
         geomJson: String?,
@@ -312,7 +320,7 @@ object WebViewBlockRenderer {
                 return
             }
             view.layout(0, 0, layoutW, h)
-            attemptDraw(view, layoutW, h, root, key, geomJson, 0, done)
+            attemptDraw(view, layoutW, h, root, key, geomJson, fillVp, 0, done)
         } catch (t: Throwable) {
             runCatching { view.destroy() }
             done.complete(false)
@@ -328,6 +336,7 @@ object WebViewBlockRenderer {
         root: File,
         key: String,
         geomJson: String?,
+        fillVp: Boolean,
         attempt: Int,
         done: CompletableDeferred<Boolean>
     ) {
@@ -345,7 +354,7 @@ object WebViewBlockRenderer {
             bmp.recycle()
             android.util.Log.d("BlkRender", "blank draw retry#${attempt + 1} key=${key.take(8)}")
             Handler(Looper.getMainLooper()).postDelayed({
-                attemptDraw(view, w, h, root, key, geomJson, attempt + 1, done)
+                attemptDraw(view, w, h, root, key, geomJson, fillVp, attempt + 1, done)
             }, BLK_DRAW_RETRY_MS)
             return
         }
@@ -355,7 +364,7 @@ object WebViewBlockRenderer {
             val unquoted = if (fresh.length >= 2 && fresh.startsWith("\""))
                 runCatching { org.json.JSONTokener(fresh).nextValue().toString() }.getOrNull() else null
             val finalJson = unquoted?.takeIf { it.contains("\"ok\"") } ?: geomJson
-            saveBlockBitmap(view, bmp, w, root, key, finalJson, done)
+            saveBlockBitmap(view, bmp, w, root, key, finalJson, fillVp, done)
         }
     }
 
@@ -368,6 +377,7 @@ object WebViewBlockRenderer {
         root: File,
         key: String,
         geomJson: String?,
+        fillVp: Boolean,
         done: CompletableDeferred<Boolean>
     ) {
         var cropped: Bitmap? = null
@@ -378,7 +388,8 @@ object WebViewBlockRenderer {
                 done.complete(false)
                 return
             }
-            cropped = cropBottomBlank(bmp)
+            // fillViewport(整页设计块): 白底/背景铺满整页是版式的一部分,不裁底部
+            cropped = if (fillVp) bmp else cropBottomBlank(bmp)
             // cropBottomBlank 无裁剪时原样返回 bmp: 别名时不可回收,否则后续压缩即崩
             if (cropped !== bmp) bmp.recycle()
             var geom = geomJson?.let { runCatching { BlockCache.parseGeomJson(it) }.getOrNull() }

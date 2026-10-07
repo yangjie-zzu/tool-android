@@ -184,6 +184,8 @@ class EpubBookContent(
     }
 
     // 混合渲染: WEBVIEW 块位图缓存根目录 = 解压根(章文件目录即解压根)
+    override val composesChapterTitle: Boolean get() = false
+
     override fun webBlockRoot(): java.io.File = chapterDir
 
     // 图片像素尺寸: 位图只读文件头(decodeBounds),SVG 解析矢量尺寸;

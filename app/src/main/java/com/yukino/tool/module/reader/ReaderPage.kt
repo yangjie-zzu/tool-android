@@ -273,7 +273,8 @@ fun ReaderScreen(
             it.fontPx, it.lineExtraPx, it.paraExtraPx, it.indentPx, it.marginPx,
             it.textWidth, it.textHeight, it.justify, it.fgColor, it.bookSpacing,
             it.bookLineHeight,
-            Typography.BREAK_STRATEGY_VERSION   // 断行算法升级时使旧缓存失效
+            Typography.BREAK_STRATEGY_VERSION,  // 断行算法升级时使旧缓存失效
+            Typography.CHAPTER_TITLE_COMPOSE_VERSION  // 章名合成策略变化时使旧分页缓存失效
         ).hashCode()
     }
 
@@ -1453,9 +1454,11 @@ private fun collectWebBlockSpecs(
         for (p in doc.paragraphs) {
             val html = p.blockHtml ?: continue
             val shell = p.ancestorShell ?: ""
+            // body 容器聚合块(块 HTML 以 <body 开头): fillViewport 撑满整页(整页设计章)
+            val fillVp = html.startsWith("<body")
             val hash = BlockCache.contentHashOf(html, shell, p.blockDocDir, doc.cssHrefs, doc.cssInline)
             out += BlockCache.keyOf(typo.fontPx, typo.textWidth, typo.lineSpacingPercent, typo.bookLineHeight, hash) to
-                BlockSpec(p.blockDocDir, html, shell, doc.cssHrefs, doc.cssInline)
+                BlockSpec(p.blockDocDir, html, shell, doc.cssHrefs, doc.cssInline, fillViewport = fillVp)
         }
     }
     return out

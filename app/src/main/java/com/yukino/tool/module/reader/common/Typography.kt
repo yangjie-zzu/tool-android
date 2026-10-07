@@ -30,7 +30,12 @@ object Typography {
     // v15: 七期批次四 表格虚拟行/float 环绕避让/固定高盒偏移进入断行与分页
     // v16: 装饰章整章一页(快照位图呈现),旧分页的装饰章多页切分全部失效重排
     // v17: 混合渲染 WEBVIEW 块行(块位图占行高),旧分页的装饰表格占位文本页全部失效重排
-    const val BREAK_STRATEGY_VERSION = 17
+    // v18: EPUB 取消章首合成章名行(章名仅页眉/目录),旧分页的章名行页全部失效重排
+    const val BREAK_STRATEGY_VERSION = 18
+
+    // 章名合成策略: TXT 章名是正文一部分(合成呈现);EPUB 章按书内 HTML 原样排版(不合成)。
+    // 变化时由 typoKey 掺入的分项使旧分页缓存失效
+    const val CHAPTER_TITLE_COMPOSE_VERSION = 3
 
     // 行高/段前距取整粒度(px): 向上取整到它的整数倍,取整只增不减,字形不被裁
     const val GRID_PX = 1

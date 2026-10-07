@@ -190,6 +190,10 @@ interface BookContent {
     val totalChars: Long
     val chapterCount: Int                      // 正文章数(≥1;无章节书 = 整本单章)
 
+    // 章名合成: TXT 章名是正文一部分(识别后合成到章首加粗呈现);EPUB 按书内 HTML
+    // 原样排版不合成(原书页面没有阅读器章名行,合成会双标题/挤压整页设计)
+    val composesChapterTitle: Boolean get() = true
+
     fun chapterTitle(index: Int): String
     fun chapterStart(index: Int): Long         // 章首全书偏移(含尚未剥掉的正文自带标题)
     fun chapterDoc(index: Int): ChapterDocument

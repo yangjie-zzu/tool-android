@@ -485,11 +485,14 @@ object BookPager {
         typo: ResolvedTypography
     ): ChapterLines {
         val doc = content.chapterDoc(chapterIndex)
-        val title = content.chapterTitle(chapterIndex)
-        val (paras, stripped) = ChapterComposer.stripLeadingTitleParas(doc.paragraphs, title)
+        val chapterTitle = content.chapterTitle(chapterIndex)
+        // 章名合成按内容来源分治: TXT 合成(章名是正文一部分);EPUB 不合成(原书页面
+        // 没有阅读器章名行,合成会双标题/挤压整页设计章)——章名定位由页眉/目录承担
+        val composeTitle = if (content.composesChapterTitle) chapterTitle else ""
+        val (paras, stripped) = ChapterComposer.stripLeadingTitleParas(doc.paragraphs, composeTitle)
 
-        val composed = ChapterComposer.compose(title, paras, typo, imageBounds = { ref -> content.imageBounds(ref) })
-        val bodyStart = ChapterComposer.bodyStart(title.length)
+        val composed = ChapterComposer.compose(composeTitle, paras, typo, imageBounds = { ref -> content.imageBounds(ref) })
+        val bodyStart = if (composeTitle.isEmpty()) 0 else ChapterComposer.bodyStart(composeTitle.length)
         val measure = Typography.buildLayout(composed, typo)
         val bodyFm = Paint.FontMetrics()
         val titleFm = Paint.FontMetrics()
@@ -519,11 +522,10 @@ object BookPager {
         // 七期: margin 支持 em/px/%(百分比相对版心宽),此处直接折 px
         val paraRanges = ArrayList<IntRange>(paras.size)
         val extraAbove = FloatArray(paras.size)
-        // 混合渲染: 章首 WEBVIEW 块且投影文本(去序号修饰)与章名一致 → 隐藏合成章名行
-        // (章首装饰表格场景,原书页面没有阅读器章名行;零占位维持投影轴,页眉仍显示章名)
+        // 混合渲染: 章首 WEBVIEW 块(位图段)隐藏合成章名行——原书页面没有阅读器章名行,
+        // 整页设计/装饰结构不该被章名行挤压;零占位维持投影轴,页眉仍显示章名
         val hideTitlePara = paras.firstOrNull()?.let { p ->
-            p.kind == ParaKind.WEBVIEW && p.text.isNotBlank() &&
-                stripOrdinalLoose(p.text) == stripOrdinalLoose(title)
+            p.kind == ParaKind.WEBVIEW && p.text.isNotBlank()
         } == true
         run {
             var p = bodyStart
