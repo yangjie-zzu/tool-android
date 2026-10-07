@@ -233,8 +233,11 @@ object ChapterComposer {
         typo: ResolvedTypography,
         imageBounds: ((String) -> Rect?)? = null
     ): Spanned {
-        val sb = SpannableStringBuilder(title).append("\n\n")
-        var pos = title.length + 2
+        // 章名为空(EPUB 取消章名合成)时无标题块,正文从 0 起——必须与
+        // buildChapterLines 的 bodyStart=0 分支一致,否则段区间整体错位 2 字符
+        val hasTitle = title.isNotEmpty()
+        val sb = if (hasTitle) SpannableStringBuilder(title).append("\n\n") else SpannableStringBuilder()
+        var pos = if (hasTitle) title.length + 2 else 0
         paras.forEachIndexed { i, p ->
             if (i > 0) { sb.append('\n'); pos++ }
             val paraStart = pos
@@ -282,8 +285,10 @@ object ChapterComposer {
         }
         // 标题字号缩放用显式乘 textSize 的自定义 span(等价 RelativeSizeSpan): 规避
         // RelativeSizeSpan 与后续 paint 组合在部分设备上断行度量不生效的疑云(行末出界)
-        sb.setSpan(TitleScaleSpan(TITLE_SCALE), 0, title.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-        sb.setSpan(StyleSpan(Typeface.BOLD), 0, title.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        if (hasTitle) {
+            sb.setSpan(TitleScaleSpan(TITLE_SCALE), 0, title.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            sb.setSpan(StyleSpan(Typeface.BOLD), 0, title.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
         return sb
     }
 
