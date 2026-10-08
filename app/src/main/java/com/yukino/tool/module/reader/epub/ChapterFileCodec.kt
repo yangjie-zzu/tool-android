@@ -246,7 +246,9 @@ object ChapterFileCodec {
     // 裁切),存量书升级重提取
     // v28: 表格归位图级子级参与 body 聚合——气泡头+表格等"全位图章"重新聚合为
     // 单张整页位图(书内背景/负 margin 间距原样生效),存量书升级重提取
-    const val FORMAT_VERSION = 28
+    // v29: 提取版本再递增——v1.5.29 release 包为陈旧编译产物(不含聚合修复),
+    // 已被其重提取的设备需再次重提取,存量书升级重提取
+    const val FORMAT_VERSION = 29
 
     private fun BoxDto.toBoxStyle() = com.yukino.tool.module.reader.common.BoxStyle(
         bg = bg, bgImage = bgImg,
