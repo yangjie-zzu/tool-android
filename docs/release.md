@@ -83,6 +83,12 @@ curl -s -X POST -H "Authorization: token $TOKEN" -H "Content-Type: application/o
 
 ## 6. 历史记录
 
+- 2026-10-08：v1.5.28 release（渲染策略:EPUB 表格一律整表 WEBVIEW 位图,不再结构化
+  自绘——大字号下列宽超版心压缩折行观感差,位图按书内原样等比缩放保真;表格块钳
+  负 margin-top 防首行视口裁切;FORMAT_VERSION 27 存量书自动重提取;TableData
+  引擎保留兼容读）,tag `v1.5.28`,GitHub Release 含 release/debug 两个 APK。模拟器
+  验证:重提取后人物介绍表与 Chrome 渲染一致(一行一名、灰底保留、首行完整),
+  单测 207 通过。注意:表格文字自此不随阅读字号重排(整表等比缩放)。
 - 2026-10-08：v1.5.27 release（叠字修复:paraLinePitch 行框/基线按段内最大 run
   字号缩放——原实现只在"行距跟随书内"开启时生效且误取首 run,报告页 em12/em15
   标题在默认全局行距下与相邻行叠字;普通正文零影响）,tag `v1.5.27`,GitHub
