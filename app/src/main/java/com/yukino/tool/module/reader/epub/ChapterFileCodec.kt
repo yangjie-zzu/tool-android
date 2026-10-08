@@ -395,10 +395,17 @@ object ChapterFileCodec {
         )
     }
 
-    // 升级检测(打开书时触发重新提取): 仅四期对象格式('{'开头且 v=FORMAT_VERSION)豁免——
-    // 二期数组('[')/一期纯文本/三期对象(v=0,缺锚点/脚注/排版属性/heading)都需走升级。
-    // 文件不可读按需升级(调用方 ensureReady 已保证存在性)
-    fun needsUpgrade(file: File): Boolean = runCatching {
+    // 升级检测(打开书时触发全量重提取): 书目录 format.txt 标记 != 当前 FORMAT_VERSION
+    // (缺失/损坏,含历史"只抽样首章"漏网的半新半旧缓存)即整书升级,一次到位;
+    // 提取成功后由调用方写标记,中途崩溃标记不落 → 下次打开再全量升级,幂等
+    const val FORMAT_MARKER = "format.txt"
+    fun needsUpgrade(dir: File): Boolean = runCatching {
+        File(dir, FORMAT_MARKER).readText().trim() != FORMAT_VERSION.toString()
+    }.getOrDefault(true)
+
+    // 旧单文件格式检测(仅测试/诊断用): 仅四期对象格式('{'开头且 v=FORMAT_VERSION)豁免——
+    // 二期数组('[')/一期纯文本/三期对象(v=0,缺锚点/脚注/排版属性/heading)都属旧格式
+    internal fun legacyFileNeedsUpgrade(file: File): Boolean = runCatching {
         val text = file.readText()
         val trimmed = text.trimStart()
         if (!trimmed.startsWith("{")) return@runCatching true

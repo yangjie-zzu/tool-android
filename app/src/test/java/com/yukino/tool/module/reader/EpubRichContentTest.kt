@@ -254,7 +254,7 @@ class EpubRichContentTest {
         assertTrue(rt.cells[0].header)
         assertTrue(!rt.collapse)
         assertEquals(0.2f, rt.spacingEm)
-        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(f))
+        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.legacyFileNeedsUpgrade(f))
         f.delete()
     }
 
@@ -449,7 +449,7 @@ class EpubRichContentTest {
         assertEquals(1, read[0].inlineImages.size)
         assertEquals(2, read[0].inlineImages[0].start)
         assertEquals("images/note.png", read[0].inlineImages[0].ref)
-        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(f))
+        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.legacyFileNeedsUpgrade(f))
         f.delete()
     }
 
@@ -660,7 +660,7 @@ class EpubRichContentTest {
         assertEquals(2, read[2].heading)
         assertEquals(CssLen(1.5f), read[2].spaceAboveEm)
         assertEquals(CssLen(2f), read[2].spaceBelowEm)
-        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(f))
+        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.legacyFileNeedsUpgrade(f))
         f.delete()
     }
 
@@ -722,67 +722,67 @@ class EpubRichContentTest {
     fun `升级检测_旧格式需升级_六期对象豁免`() {
         val legacy = File.createTempFile("legacy", ".txt")
         legacy.writeText("第一章 风起\n正文")
-        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(legacy))
+        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.legacyFileNeedsUpgrade(legacy))
         val v2 = File.createTempFile("v2ch", ".txt")
         v2.writeText("""[{"t":"第一段"},{"t":"第二段"}]""")
-        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v2))   // 二期缺锚点/脚注
+        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.legacyFileNeedsUpgrade(v2))   // 二期缺锚点/脚注
         val v4 = File.createTempFile("v4ch", ".txt")
         v4.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":4}""")
-        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v4))   // 四期缺行内图片
+        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.legacyFileNeedsUpgrade(v4))   // 四期缺行内图片
         val v5 = File.createTempFile("v5ch", ".txt")
         v5.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":5}""")
-        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v5))   // 五期缺外部CSS/float识别
+        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.legacyFileNeedsUpgrade(v5))   // 五期缺外部CSS/float识别
         val v6 = File.createTempFile("v6ch", ".txt")
         v6.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":6}""")
-        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v6))   // 六期缺七期选择器/ruby识别
+        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.legacyFileNeedsUpgrade(v6))   // 六期缺七期选择器/ruby识别
         val v7 = File.createTempFile("v7ch", ".txt")
         v7.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":7}""")
-        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v7))   // 七期批次一缺盒样式
+        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.legacyFileNeedsUpgrade(v7))   // 七期批次一缺盒样式
         val v8 = File.createTempFile("v8ch", ".txt")
         v8.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":8}""")
-        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v8))   // 批次二缺对象化 runs
+        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.legacyFileNeedsUpgrade(v8))   // 批次二缺对象化 runs
         val v9 = File.createTempFile("v9ch", ".txt")
         v9.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":9}""")
-        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v9))   // 批次三缺表格真渲染
+        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.legacyFileNeedsUpgrade(v9))   // 批次三缺表格真渲染
         val v11 = File.createTempFile("v11ch", ".txt")
         v11.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":11}""")
-        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v11))   // 批次四缺装饰盒字段
+        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.legacyFileNeedsUpgrade(v11))   // 批次四缺装饰盒字段
         val v10b = File.createTempFile("v10ch", ".txt")
         v10b.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":10}""")
-        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v10b))   // 批次四a 缺装饰盒
+        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.legacyFileNeedsUpgrade(v10b))   // 批次四a 缺装饰盒
         val v12 = File.createTempFile("v12ch", ".txt")
         v12.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":12}""")
-        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v12))   // 缺盒自身定位/列宽提示
+        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.legacyFileNeedsUpgrade(v12))   // 缺盒自身定位/列宽提示
         val v13 = File.createTempFile("v13ch", ".txt")
         v13.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":13}""")
-        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v13))   // 七期盒嵌套聚合/解析语义修正, v13 旧缓存需重提取
+        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.legacyFileNeedsUpgrade(v13))   // 七期盒嵌套聚合/解析语义修正, v13 旧缓存需重提取
         val v15 = File.createTempFile("v15ch", ".txt")
         v15.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":15}""")
-        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v15))   // 盒padding段距去重/br段距归零/圆角语义, v15 旧缓存需重提取
+        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.legacyFileNeedsUpgrade(v15))   // 盒padding段距去重/br段距归零/圆角语义, v15 旧缓存需重提取
         val v16 = File.createTempFile("v16ch", ".txt")
         v16.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":16}""")
-        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v16))
+        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.legacyFileNeedsUpgrade(v16))
         val v17 = File.createTempFile("v17ch", ".txt")
         v17.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":17}""")
-        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v17))   // v19 混合渲染(装饰表格不再剥除), v17 旧缓存需重提取
+        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.legacyFileNeedsUpgrade(v17))   // v19 混合渲染(装饰表格不再剥除), v17 旧缓存需重提取
         val v19 = File.createTempFile("v19ch", ".txt")
         v19.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":19}""")
-        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v19))   // v20 行内图片角标 sup 标志, v19 需重提取
+        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.legacyFileNeedsUpgrade(v19))   // v20 行内图片角标 sup 标志, v19 需重提取
         val v20 = File.createTempFile("v20ch", ".txt")
         v20.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":20}""")
-        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v20))   // v21 页面级背景章聚合块, v20 需重提取
+        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.legacyFileNeedsUpgrade(v20))   // v21 页面级背景章聚合块, v20 需重提取
         val v21 = File.createTempFile("v21ch", ".txt")
         v21.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":21}""")
-        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v21))   // v23 气泡盒降级细化, v21/v22 需重提取
+        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.legacyFileNeedsUpgrade(v21))   // v23 气泡盒降级细化, v21/v22 需重提取
         val v22 = File.createTempFile("v22ch", ".txt")
         v22.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":22}""")
-        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v22))
+        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.legacyFileNeedsUpgrade(v22))
         val v23 = File.createTempFile("v23ch", ".txt")
         v23.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":23}""")
-        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(v23))   // v24 容器级聚合, v23 需重提取
+        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.legacyFileNeedsUpgrade(v23))   // v24 容器级聚合, v23 需重提取
         val cur = File.createTempFile("curch", ".txt")
         cur.writeText("""{"p":[{"t":"第一段"}],"notes":{},"v":${com.yukino.tool.module.reader.epub.ChapterFileCodec.FORMAT_VERSION}}""")
-        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(cur))   // 当前版本豁免
+        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.legacyFileNeedsUpgrade(cur))   // 当前版本豁免
         legacy.delete(); v2.delete(); v4.delete(); v5.delete(); v6.delete(); v7.delete(); v8.delete(); v9.delete(); v10b.delete(); v11.delete(); v12.delete(); v13.delete(); v15.delete(); v16.delete(); v17.delete(); v19.delete(); v20.delete(); v21.delete(); v22.delete(); v23.delete(); cur.delete()
     }
 
@@ -1081,7 +1081,7 @@ class EpubRichContentTest {
         assertEquals(1.2f, p.lineSpacingMult)
         assertEquals(CssLen(10f, pct = true), p.spaceAboveEm)
         assertEquals(box, p.boxStyle)
-        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(f))
+        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.legacyFileNeedsUpgrade(f))
         f.delete()
     }
 
@@ -1206,7 +1206,7 @@ class EpubRichContentTest {
         assertEquals(1, runs[1].fontId)
         assertEquals("tt1", read.fonts[1])
         assertEquals("Fonts/title.ttf", read.fontPaths["title"])
-        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(f))
+        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.legacyFileNeedsUpgrade(f))
         f.delete()
     }
 
@@ -1216,7 +1216,7 @@ class EpubRichContentTest {
         f.writeText("""{"p":[{"t":"AB","r":[0,1,1,1,2,0]}],"notes":{},"v":8}""")
         val read = ChapterFileCodec.read(f)
         assertEquals(listOf(Run(0, 1, 1), Run(1, 2, 0)), read.paragraphs[0].runs)
-        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(f))
+        assertTrue(com.yukino.tool.module.reader.epub.ChapterFileCodec.legacyFileNeedsUpgrade(f))
         f.delete()
     }
 
@@ -1267,7 +1267,7 @@ class EpubRichContentTest {
         assertEquals(com.yukino.tool.module.reader.common.CssLen(3.5f), read.paragraphs[0].boxStyle!!.heightCss)
         assertEquals(-5f, read.paragraphs[0].boxStyle!!.rotateDeg!!)
         assertTrue(read.paragraphs[1].breakAll)
-        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.needsUpgrade(f))
+        assertTrue(!com.yukino.tool.module.reader.epub.ChapterFileCodec.legacyFileNeedsUpgrade(f))
         f.delete()
     }
 
@@ -1385,14 +1385,14 @@ class EpubRichContentTest {
         val read = ChapterFileCodec.read(f)
         assertEquals(CssLen(2f, false), read.paragraphs[0].indentCss)
         assertEquals("d/i.png", read.paragraphs[1].table!!.cells[0].imgRef)
-        assertTrue(!ChapterFileCodec.needsUpgrade(f))
+        assertTrue(!ChapterFileCodec.legacyFileNeedsUpgrade(f))
         // 降版本号模拟旧缓存: 可读但触发重提取
         f.writeText(
             f.readText()
                 .replace("\"v\": ${com.yukino.tool.module.reader.epub.ChapterFileCodec.FORMAT_VERSION}", "\"v\": 17")
                 .replace("\"v\":${com.yukino.tool.module.reader.epub.ChapterFileCodec.FORMAT_VERSION}", "\"v\":17")
         )
-        assertTrue(ChapterFileCodec.needsUpgrade(f))
+        assertTrue(ChapterFileCodec.legacyFileNeedsUpgrade(f))
         f.delete()
     }
 

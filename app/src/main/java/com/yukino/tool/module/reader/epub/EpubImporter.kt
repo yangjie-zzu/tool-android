@@ -84,7 +84,8 @@ object EpubImporter {
             val coverLingers = runCatching {
                 coverChapterLingers(first, book.coverPath, dir)
             }.getOrDefault(false)
-            if (!ChapterFileCodec.needsUpgrade(first) && !coverLingers) return@withContext book
+            android.util.Log.d("EpubImporter", "ensureReady ready=${book.ready} filesOk=$filesOk needUp=${ChapterFileCodec.needsUpgrade(dir)} coverLingers=$coverLingers")
+            if (!ChapterFileCodec.needsUpgrade(dir) && !coverLingers) return@withContext book
             onStage("升级书籍内容中…")
             return@withContext upgrade(context, book, dir, onStage)
         }
@@ -93,6 +94,8 @@ object EpubImporter {
             dir.deleteRecursively()
             dir.mkdirs()
             doInit(context, book, dir, onStage)
+            writeFormatMarker(dir)   // 全新导入成功落标记
+            book
         } else {
             onStage("解析章节中…")
             book
@@ -153,12 +156,22 @@ object EpubImporter {
             // 混合渲染块位图按内容 hash 键控,升级后块 HTML 变化即换键,旧位图清理防积累
             File(dir, com.yukino.tool.module.reader.common.BlockCache.DIR_NAME).deleteRecursively()
             ReaderStore.upsertBook(context, final)
+            writeFormatMarker(dir)   // 全量升级成功落标记: 下次打开免升级
             tmp.deleteRecursively()
             bak.deleteRecursively()
             final
         }.getOrElse {
+            android.util.Log.w("EpubImporter", "upgrade failed, keep old cache", it)
             tmp.deleteRecursively()
             book   // 保持老格式可读(旧章文件未动),下次打开再试升级
+        }
+    }
+
+    // 全量提取/升级成功后落版本标记(needsUpgrade 依据);失败不落 → 下次打开再升级
+    private fun writeFormatMarker(dir: File) {
+        runCatching {
+            File(dir, ChapterFileCodec.FORMAT_MARKER)
+                .writeText(ChapterFileCodec.FORMAT_VERSION.toString())
         }
     }
 

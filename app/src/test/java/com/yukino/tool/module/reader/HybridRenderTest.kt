@@ -229,7 +229,7 @@ class HybridRenderTest {
         assertEquals("Text", read.paragraphs[0].blockDocDir)
         assertEquals(listOf("../Styles/style.css"), read.cssHrefs)
         assertEquals(listOf("p{}"), read.cssInline)
-        assertTrue(!ChapterFileCodec.needsUpgrade(f))
+        assertTrue(!ChapterFileCodec.legacyFileNeedsUpgrade(f))
         f.delete()
     }
 
