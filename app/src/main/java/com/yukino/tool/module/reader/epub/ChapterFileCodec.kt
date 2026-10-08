@@ -125,7 +125,7 @@ object ChapterFileCodec {
         val fontPaths: Map<String, String> = emptyMap(),  // family → 字体文件相对路径
         val cssHrefs: List<String> = emptyList(),   // 混合渲染: 原文档 head 外部样式 href 原样
         val cssInline: List<String> = emptyList(),  // 混合渲染: 原文档 <style> 块原文
-        val bd: Boolean = false,      // 页面级背景信号: body 带背景图/色(装饰章判定)
+        val bd: Boolean = false,      // body 带可视背景(v32 复用 v21 字段): 聚合块 fillViewport 决策依据
         val bhtml: String = "",       // 页面级背景章聚合: 整章 body innerHTML
         val bshell: String = "",      // 页面级背景章聚合: body 开标签壳
         val doc: String = "",         // 章源文档目录(相对解压根): 聚合块相对引用解析基准
@@ -141,7 +141,8 @@ object ChapterFileCodec {
         fonts: Map<String, String> = emptyMap(),   // 七期: family → 字体文件相对路径
         cssHrefs: List<String> = emptyList(),      // 混合渲染: 原文档 head 外部样式 href 原样
         cssInline: List<String> = emptyList(),     // 混合渲染: 原文档 <style> 块原文
-        docDir: String = ""                        // 章源文档目录: 聚合块 CSS/图片相对引用解析基准
+        docDir: String = "",                       // 章源文档目录: 聚合块 CSS/图片相对引用解析基准
+        bodyBg: Boolean = false                    // body 带可视背景: 聚合块 fillViewport 决策依据
     ) {
         // 盒样式表: 按 BoxStyle 去重(相邻段落共享同一实例,序列化后经 equals 聚合还原同组)
         val boxIndex = LinkedHashMap<com.yukino.tool.module.reader.common.BoxStyle, Int>()
@@ -222,6 +223,7 @@ object ChapterFileCodec {
             cssHrefs = cssHrefs,
             cssInline = cssInline,
             doc = docDir,
+            bd = bodyBg,
             v = FORMAT_VERSION
         )
         file.writeText(json.encodeToString(ChapterDto.serializer(), dto))
@@ -252,7 +254,9 @@ object ChapterFileCodec {
     // (div 包表格章聚合为单块,Section004-0 缝隙根因),负 margin 钳制删除,存量书升级重提取
     // v31: 卡片完整性——容器带底色且块级子级混有位图 → 整容器位图(果青 Section005
     // 一张白卡被拆成标题自绘段+两个带壳位图三条白片),存量书升级重提取
-    const val FORMAT_VERSION = 31
+    // v32: body 高度铺满收敛——聚合块 fillViewport 仅 body 自带可视背景时生效,
+    // 无背景章(果青 Section004-0 等白底聚合章)位图高度=内容高度,存量书升级重提取
+    const val FORMAT_VERSION = 32
 
     private fun BoxDto.toBoxStyle() = com.yukino.tool.module.reader.common.BoxStyle(
         bg = bg, bgImage = bgImg,
@@ -278,7 +282,8 @@ object ChapterFileCodec {
         val fontPaths: Map<String, String> = emptyMap(),
         val cssHrefs: List<String> = emptyList(),
         val cssInline: List<String> = emptyList(),
-        val docDir: String = ""   // 章源文档目录(v22;旧文件为空)
+        val docDir: String = "",   // 章源文档目录(v22;旧文件为空)
+        val bodyBg: Boolean = false // body 带可视背景(v32): 聚合块 fillViewport 决策依据
     )
 
     fun read(file: File): ReadResult {
@@ -291,7 +296,7 @@ object ChapterFileCodec {
                 val boxStyles = dto.boxes.mapValues { it.value.toBoxStyle() }
                 return ReadResult(
                     dto.p.map { it.toParagraph(boxStyles, dto.fonts) }, dto.notes, dto.fonts, dto.fontPaths,
-                    dto.cssHrefs, dto.cssInline, dto.doc
+                    dto.cssHrefs, dto.cssInline, dto.doc, dto.bd
                 )
             }
         }

@@ -193,6 +193,17 @@ object HtmlTextExtractor {
     private fun hasSolidBackground(props: Map<String, String>): Boolean =
         props["background-color"]?.let { (parseColor(it) ?: 0L) != 0L } == true
 
+    // body 可视背景(纯色底/背景图/渐变): 整章聚合块 fillViewport(白底/背景铺满整页)
+    // 的决策依据——body 无背景的章位图高度=内容高度,不注入撑满 CSS
+    internal fun bodyHasVisualBackground(props: Map<String, String>): Boolean {
+        if (hasSolidBackground(props)) return true
+        for (key in listOf("background", "background-image")) {
+            val v = props[key] ?: continue
+            if (parseUrlValue(v) != null || v.contains("gradient(", ignoreCase = true)) return true
+        }
+        return false
+    }
+
     // 祖先壳: body 到块元素的逐层开标签(cloneNode(false) 语义: 标签名+全部属性)。
     // body 自身属性并入壳首;html/#root 不入壳(渲染 mini HTML 自带 html/body 框架)
     internal fun ancestorShellOf(node: Element): String {
@@ -267,7 +278,8 @@ object HtmlTextExtractor {
         val fonts: Map<String, String> = emptyMap(),   // 七期: @font-face family -> 字体文件相对路径
         val cssHrefs: List<String> = emptyList(),      // 混合渲染: head 外部样式 href 原样(块渲染 mini HTML 引用)
         val cssInline: List<String> = emptyList(),     // 混合渲染: <style> 块原文(块渲染 mini HTML 内联)
-        val docDir: String = ""                        // 章源文档目录(相对解压根): 聚合块 CSS/图片相对引用的解析基准
+        val docDir: String = "",                       // 章源文档目录(相对解压根): 聚合块 CSS/图片相对引用的解析基准
+        val bodyBg: Boolean = false                    // body 带可视背景(纯色底/图/渐变): 聚合块 fillViewport 决策依据
     )
 
     fun extract(file: File, docDir: String = "", dataUriSink: DataUriSink? = null): ExtractResult {
@@ -348,7 +360,8 @@ object HtmlTextExtractor {
         walk(body, b, ArrayDeque(), noteRefs, cssRules, clsCache)
         b.flush()
         return ExtractResult(
-            b.result(), b.notes, fontsIn ?: emptyMap(), cssHrefsIn, cssInline, docDir
+            b.result(), b.notes, fontsIn ?: emptyMap(), cssHrefsIn, cssInline, docDir,
+            bodyHasVisualBackground(propsFor(body, cssRules))
         )
     }
 

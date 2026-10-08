@@ -91,4 +91,22 @@ class WhitelistAggregateTest {
         assertTrue(r.paragraphs.all { it.kind == ParaKind.TEXT })
         assertTrue(r.paragraphs.all { it.boxStyle != null })
     }
+
+    // v32 fillViewport 收敛: bodyBg 信号只在 body 自带可视背景时为真
+    @Test fun bodyBgFlagFollowsBodyBackground() {
+        val withBg = org.jsoup.Jsoup.parse(
+            """<html><head></head><body style="background-color:#fafafa"><p>正文</p></body></html>"""
+        ).body()
+        assertTrue(HtmlTextExtractor.extract(withBg, "").bodyBg)
+
+        val withImg = org.jsoup.Jsoup.parse(
+            """<html><head></head><body style="background-image:url(bg.png)"><p>正文</p></body></html>"""
+        ).body()
+        assertTrue(HtmlTextExtractor.extract(withImg, "").bodyBg)
+
+        val plain = org.jsoup.Jsoup.parse(
+            """<html><head></head><body><p>正文</p></body></html>"""
+        ).body()
+        assertTrue(!HtmlTextExtractor.extract(plain, "").bodyBg)
+    }
 }

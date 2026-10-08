@@ -102,7 +102,7 @@ class EpubBookContent(
             } else paras
             ChapterDocument(
                 chapters[index].title, resolved, footnotes, read.fonts, docFontFiles,
-                read.cssHrefs, read.cssInline, read.docDir
+                read.cssHrefs, read.cssInline, read.docDir, read.bodyBg
             )
         }
     }

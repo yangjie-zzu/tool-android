@@ -1469,8 +1469,9 @@ private fun collectWebBlockSpecs(
         for (p in doc.paragraphs) {
             val html = p.blockHtml ?: continue
             val shell = p.ancestorShell ?: ""
-            // body 容器聚合块(块 HTML 以 <body 开头): fillViewport 撑满整页(整页设计章)
-            val fillVp = html.startsWith("<body")
+            // body 容器聚合块: 仅 body 自带可视背景(纯色底/图/渐变)时 fillViewport
+            // 撑满整页(页面级背景设计章);无背景章位图高度=内容高度,白底不铺满
+            val fillVp = html.startsWith("<body") && doc.bodyBg
             val hash = BlockCache.contentHashOf(html, shell, p.blockDocDir, doc.cssHrefs, doc.cssInline)
             out += BlockCache.keyOf(typo.fontPx, typo.textWidth, typo.lineSpacingPercent, typo.bookLineHeight, hash) to
                 BlockSpec(p.blockDocDir, html, shell, doc.cssHrefs, doc.cssInline, fillViewport = fillVp)
