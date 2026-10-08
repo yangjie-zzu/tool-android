@@ -6,13 +6,11 @@ import org.jsoup.nodes.Element
 import org.jsoup.nodes.Node
 import org.jsoup.nodes.TextNode
 import com.yukino.tool.module.reader.common.CssLen
-import com.yukino.tool.module.reader.common.TableCell
-import com.yukino.tool.module.reader.common.TableData
+import com.yukino.tool.module.reader.common.ParaKind
 import com.yukino.tool.module.reader.common.BoxStyle
 import com.yukino.tool.module.reader.common.EdgeStyle
 import com.yukino.tool.module.reader.common.NoteAnchor
 import kotlin.math.roundToInt
-import com.yukino.tool.module.reader.common.ParaKind
 import com.yukino.tool.module.reader.common.Paragraph
 import com.yukino.tool.module.reader.common.Run
 import com.yukino.tool.module.reader.common.RunStyle
@@ -35,11 +33,11 @@ object HtmlTextExtractor {
     // 完全剥离的元素(不可见内容/外部资源;svg 内的 <image> 四期 SVG 栅格化时启用)
     private val SKIP = hashSetOf("script", "style", "head", "title", "svg", "link", "meta", "iframe", "object", "video", "audio", "canvas", "template")
 
-    // 块级元素: 进入/离开都是段落边界(ol/ul/li/table 在遍历中特判,不走此集合)
+    // 块级元素: 进入/离开都是段落边界(ol/ul/li 在遍历中特判)
     private val BLOCK = hashSetOf(
         "p", "div", "section", "article", "blockquote",
         "h1", "h2", "h3", "h4", "h5", "h6", "thead", "tbody", "tfoot",
-        "tr", "td", "th", "dl", "dt", "dd", "pre", "aside", "figure", "figcaption",
+        "tr", "td", "th", "table", "dl", "dt", "dd", "pre", "aside", "figure", "figcaption",
         "header", "footer", "main", "nav", "hr", "center", "form", "address", "caption"
     )
 
@@ -55,41 +53,87 @@ object HtmlTextExtractor {
     // 图片段落的投影占位字符(单字符,保持全书偏移轴连续)
     const val IMAGE_PLACEHOLDER = "\uFFFC"
 
-    private const val TABLE_PLACEHOLDER = "[表格内容，建议使用原版式查看]"
-
     // data URI 图片落盘回调: (mime 小写, base64 载荷原文) → 解压根相对 ref;
     // 返回空串 = 拒收(该图忽略)。null(未注入) = data URI 一律忽略(既有行为)
     fun interface DataUriSink {
         fun accept(mime: String, base64: String): String
     }
 
-    // ---------- 混合渲染: 自绘能力边界外的块级降级(docs/epub-hybrid-render-boundary.md) ----------
+    // ---------- 白名单制分流(v30): 自绘是特许,清单外一律位图 ----------
+    // 判定(逻辑一,能力问题): 元素自绘 ⇔ 标签 ∈ 自绘白名单 ∧ 合并后属性全部落在
+    // 已实现属性子集(含值域保真边界) ∧ 块级子级递归自绘;任一不满足 → BITMAP(吞子树)。
+    // 清单外标签/属性/取值自动降级位图(WebView 兜底),不存在"静默画错"。
     //
-    // 信号白名单制: 只命中"自绘明确画不了"的信号才降级,默认自绘。信号:
-    //   S1 行内元素盒装饰(span 带 border/background,如圆圈章号 sbox1)
-    //   S2 嵌套表格 / 超 500 格表格
-    //   S3 内嵌 <svg> 标签(非 svg 文件)
-    //   S4 position:absolute/fixed、flex/grid 布局块
-    //   S5 渐变背景(linear-gradient 等)
-    //
-    // 管辖归属: 行内/子树信号向上找"最近管辖祖先"——先遇 table 归表格(表格特判分支判定,
-    // 果青1 章首装饰表格场景: sbox1 在 td 内,整个 table 降级一张位图,正文 p 不受牵连),
-    // 先遇 BLOCK 元素即该块。body 直接子信号无管辖分支,忽略(罕见)。
+    // 聚合(逻辑二,分组问题): 只消费判定结果,不重看样式。
+    //   上提: 容器块级子级全为位图/空段(无白名单实质内容) → 容器升位图,逐层升到
+    //   首个含自绘实质内容的祖先为止;
+    //   分块: 发射在最大位图子树的根处整块下发 WebView,不再下钻。
 
-    // S1 子树扫描跳过的元素: 块级元素的盒样式自绘支持(边界内);img/br 为替换/空元素非行内盒装饰
-    private val S1_SCAN_SKIP = BLOCK + hashSetOf(
-        "img", "br", "table", "tr", "td", "th", "tbody", "thead", "tfoot", "caption", "ruby", "rt", "rp"
+    private enum class ElCls { SELFPAINT, BITMAP }
+
+    // 自绘白名单标签集: 自绘引擎实现了其布局/渲染语义的标签。
+    // 表格族(tr/td 等随 table 子树整体位图,不单独判定)、svg、嵌入媒体、未知标签 → 位图
+    private val SELFPAINT_TAGS = hashSetOf(
+        "body", "p", "div", "section", "article", "blockquote",
+        "h1", "h2", "h3", "h4", "h5", "h6",
+        "dl", "dt", "dd", "pre", "aside", "figure", "figcaption",
+        "header", "footer", "main", "nav", "hr", "center", "address",
+        "ul", "ol", "li"
     )
 
-    // 信号元素的管辖块: 信号在表格内(td/tr 均是 BLOCK,但 td 级位图塞不进表格管线)
-    // → 归属 table 整体(表格特判分支判定);否则归属最近的 BLOCK 祖先
-    private fun ownerBlockOf(el: Element): Element? {
-        val tbl = el.parents().firstOrNull { it.tagName().lowercase() == "table" }
-        if (tbl != null) return tbl
-        return el.parents().firstOrNull { it.tagName().lowercase() in BLOCK }
+    // 自绘属性子集(白名单属性轴): 解析/绘制层已实现的属性;清单外属性 → 位图。
+    // background(简写)/background-image/display/position 有值域约束,单独校验
+    private val SELFPAINT_PROPS = hashSetOf(
+        "text-align", "text-indent",
+        "margin", "margin-top", "margin-bottom", "margin-left", "margin-right",
+        "padding", "padding-top", "padding-bottom", "padding-left", "padding-right",
+        "width", "height", "line-height", "float",
+        "word-break", "word-wrap", "overflow-wrap",
+        "background-color",
+        "border", "border-top", "border-right", "border-bottom", "border-left",
+        "border-width", "border-style", "border-color",
+        "border-top-width", "border-right-width", "border-bottom-width", "border-left-width",
+        "border-top-style", "border-right-style", "border-bottom-style", "border-left-style",
+        "border-top-color", "border-right-color", "border-bottom-color", "border-left-color",
+        "border-radius", "box-shadow", "transform",
+        "color", "font-size", "font-weight", "font-style", "text-decoration",
+        "vertical-align", "text-shadow", "font-family"
+    )
+
+    // display 值域: 布局语义自绘可忽略或等价处理;flex/grid 等自绘实现不了 → 位图
+    private val SELFPAINT_DISPLAY = hashSetOf("inline", "block", "inline-block", "none")
+    // position 值域: static/relative 自绘按普通流处理;absolute/fixed/sticky → 位图
+    private val SELFPAINT_POSITION = hashSetOf("static", "relative")
+
+    // 行内豁免: 替换/空元素与注音管线元素,自身样式不触发行内盒装饰检查
+    // (图片描边常见于普通转制书,不走 S1)
+    private val INLINE_EXEMPT = hashSetOf("img", "br", "ruby", "rt", "rp")
+
+    // 属性轴 + 值域边界校验(合并后的 props 表)
+    private fun selfPaintPropsOk(props: Map<String, String>): Boolean {
+        for ((k, v) in props) {
+            when (k) {
+                "background", "background-image" -> {
+                    if (parseUrlValue(v) != null || v.contains("gradient(", ignoreCase = true)) return false
+                }
+                "display" -> if (v.trim().lowercase() !in SELFPAINT_DISPLAY) return false
+                "position" -> if (v.trim().lowercase() !in SELFPAINT_POSITION) return false
+                in SELFPAINT_PROPS -> {}
+                else -> return false   // 清单外属性 → 位图
+            }
+        }
+        // 值域: 非均匀大圆角 × 部分边框——象限弧切分/开口位置画偏 → 位图;
+        // 均匀四边大圆角 = 完整椭圆描边,与标准缩减语义一致,自绘正确
+        val box = parseBoxStyle(props, "") ?: return true
+        val rad = box.radius ?: return true
+        val bigRadius = (rad.pct && rad.v >= 50f) || (!rad.pct && rad.v >= 2f)
+        if (!bigRadius) return true
+        if (box.edges.size != 4) return false
+        val styles = box.edges.map { it.style }
+        return !(styles.any { it > 0 } && styles.any { it == 0 })
     }
 
-    // 行内元素盒装饰判定(S1): 有效边框/背景色(非 transparent)/背景图(含渐变)
+    // 行内元素盒装饰(白名单行内校验项): 有效边框/背景色(非 transparent)/背景图(含渐变)
     private fun inlineBoxDecorated(props: Map<String, String>): Boolean {
         if (props.isEmpty()) return false
         if (parseEdges(props).any { it.widthEm > 0f && it.style > 0 }) return true
@@ -103,110 +147,51 @@ object HtmlTextExtractor {
         return false
     }
 
-    // ---------- 白名单制分流(v25) ----------
-    // 默认块位图,白名单子树才自绘。
-    // 位图级装饰(自绘不实现/画不像的形态): 部分边框、超限大圆角、渐变背景、背景图、
-    // 绝对/固定定位、flex/grid、内嵌 svg——命中即整元素(含子树)位图。
-    // 白名单(自绘): 无位图级装饰,且块级子元素递归白名单;纯行内内容(文本+行内标签+
-    // 图片+ruby)直接白名单。
-    // 聚合上提: 非白名单容器若块级子元素全为位图/空段(无白名单实质内容) → 整容器位图
-    // (尽量往上聚合;body 版心容器同理——整页气泡设计聚合为单张整页位图)。
-
-    private enum class ElCls { SELFPAINT, BITMAP }
-
     private fun classify(node: Element, cssRules: List<CssRule>, cache: MutableMap<Element, ElCls>): ElCls {
         cache[node]?.let { return it }
-        // v28: 表格一律位图级(v26 起整表 WEBVIEW)——归入位图子级参与 body 聚合,
-        // 气泡头+表格等"全位图章"重新聚合为单张整页位图(书内负 margin 间距原样生效)
-        val cls = if (node.tagName().lowercase() == "body") bodyCls(node, cssRules, cache)
-                  else if (node.tagName().lowercase() == "table") ElCls.BITMAP
-                  else classifyRaw(node, cssRules, cache)
+        val cls = classifyRaw(node, cssRules, cache)
         cache[node] = cls
         return cls
     }
 
-    // body 为版心容器: 自身位图级装饰(背景图/渐变等) → 整章单张位图(背景铺满,
-    // 等价旧 fillPage 观感);否则按子级构成——全位图/空段 → 整体位图,存在白名单
-    // 实质内容 → 分裂(位图子级成根,白名单子级自绘)
-    private fun bodyCls(node: Element, cssRules: List<CssRule>, cache: MutableMap<Element, ElCls>): ElCls {
-        if (hasBitmapDecor(propsFor(node, cssRules), node)) return ElCls.BITMAP
-        var hasBitmap = false
-        for (c in node.children()) {
-            val cn = c.tagName().lowercase()
-            if (cn == "style" || cn == "link" || cn == "script") continue
-            when (classify(c, cssRules, cache)) {
-                ElCls.BITMAP -> hasBitmap = true
-                ElCls.SELFPAINT -> if (flattenBlockText(c).isNotBlank()) return ElCls.SELFPAINT
-            }
-        }
-        return if (hasBitmap) ElCls.BITMAP else ElCls.SELFPAINT
-    }
-
+    // 判定(逻辑一): 标签白名单 → 属性子集/值域 → 子级递归。
+    // 上提规则内建: 块级子级全为位图/空段 → 容器升位图(逐层传导,升到首个含
+    // 自绘实质内容的祖先即停);存在实质文本的自绘子级 → 本容器自绘(分裂点)。
+    // 卡片完整性: 分裂点处容器自带底色 → 整容器位图——位图子级发射时祖先壳会把
+    // 容器盒样式带进 WebView,同一张卡片(底色/边框/阴影)被拆成自绘段+多个带壳位图,
+    // 白底断裂成多条(果青 Section005 场景);整卡入图保住视觉连续性
     private fun classifyRaw(node: Element, cssRules: List<CssRule>, cache: MutableMap<Element, ElCls>): ElCls {
+        if (node.tagName().lowercase() !in SELFPAINT_TAGS) return ElCls.BITMAP
         val props = propsFor(node, cssRules)
-        if (hasBitmapDecor(props, node)) return ElCls.BITMAP   // 位图级装饰: 吞子树
-        // 行内直接子级盒装饰(S1): 自绘无行内盒管线——直接行内子级带边框/底色/背景
-        // 即非白名单(img/br/ruby 等豁免);深层行内装饰由所在容器的分类负责,不深扫
+        if (!selfPaintPropsOk(props)) return ElCls.BITMAP
         var hasBitmapChild = false
+        var hasSubstantiveSelfPaint = false
         for (c in node.children()) {
             val cn = c.tagName().lowercase()
-            if (cn in S1_SCAN_SKIP) continue
-            if (cn !in BLOCK) {
-                if (inlineBoxDecorated(propsFor(c, cssRules)) || cn == "svg") return ElCls.BITMAP
-                continue   // 行内子元素随本元素白名单语义
+            if (cn == "svg") return ElCls.BITMAP   // S3 内嵌 svg
+            if (cn in SKIP) continue
+            if (cn in BLOCK) {
+                when (classify(c, cssRules, cache)) {
+                    ElCls.BITMAP -> hasBitmapChild = true
+                    ElCls.SELFPAINT -> if (flattenBlockText(c).isNotBlank()) hasSubstantiveSelfPaint = true
+                }
+            } else {
+                // 行内子级: 盒装饰(边框/底色/背景)自绘无行内盒管线 → 位图;其余随白名单
+                if (cn !in INLINE_EXEMPT && inlineBoxDecorated(propsFor(c, cssRules))) return ElCls.BITMAP
             }
-            when (classify(c, cssRules, cache)) {
-                ElCls.BITMAP -> hasBitmapChild = true
-                ElCls.SELFPAINT -> if (flattenBlockText(c).isNotBlank()) return ElCls.SELFPAINT
-            }
         }
-        return if (hasBitmapChild) ElCls.BITMAP else ElCls.SELFPAINT   // 全位图/空 → 容器上提
+        return when {
+            // 混合容器(位图+实质自绘): 带底色 → 卡片完整性,整容器位图
+            hasBitmapChild && hasSubstantiveSelfPaint ->
+                if (hasSolidBackground(props)) ElCls.BITMAP else ElCls.SELFPAINT
+            hasBitmapChild -> ElCls.BITMAP   // 全位图/空段 → 容器上提
+            else -> ElCls.SELFPAINT
+        }
     }
 
-    // 位图级装饰: 自绘不实现/画不像的形态(与"均匀边框/纯底色/小圆角/阴影"等自绘正确形态相对)
-    private fun hasBitmapDecor(props: Map<String, String>, node: Element): Boolean {
-        when (props["position"]?.trim()?.lowercase()) {
-            "absolute", "fixed" -> return true
-        }
-        when (props["display"]?.trim()?.lowercase()) {
-            "flex", "inline-flex", "grid", "inline-grid" -> return true
-        }
-        for (key in listOf("background", "background-image")) {
-            val v = props[key] ?: continue
-            if (parseUrlValue(v) != null) return true                     // 背景图
-            if (v.contains("gradient(", ignoreCase = true)) return true   // 渐变
-        }
-        // 内嵌 svg 由调用方"直接行内子级"检查覆盖(此处不做深扫,深层 svg 归属所在容器)
-        val box = parseBoxStyle(props, "") ?: return false
-        val rad = box.radius ?: return false
-        val bigRadius = (rad.pct && rad.v >= 50f) || (!rad.pct && rad.v >= 2f)
-        if (!bigRadius) return false
-        // 大圆角(椭圆模式) × 部分边框: 象限弧近似画偏(弧段切分/开口位置);
-        // 均匀四边大圆角 = 完整椭圆描边,与标准缩减语义一致,自绘正确
-        if (box.edges.size != 4) return false
-        val styles = box.edges.map { it.style }
-        return styles.any { it > 0 } && styles.any { it == 0 }
-    }
-
-    // 表格降级判定(emitTable 入口调用): S2 嵌套/超 500 格 + 表内 S3/S1
-    internal fun needsWebViewTable(node: Element, cssRules: List<CssRule>): Boolean {
-        if (node.selectFirst("table table") != null) return true
-        if (node.select("td,th").size > 500) return true
-        return subtreeSignalsOwnedBy(node, cssRules)
-    }
-
-    // 子树信号(归属 node 的): S3 内嵌 svg + S1 行内盒装饰
-    private fun subtreeSignalsOwnedBy(node: Element, cssRules: List<CssRule>): Boolean {
-        for (svg in node.select("svg")) {
-            if (ownerBlockOf(svg) === node) return true
-        }
-        for (el in node.select("*")) {
-            if (el.tagName().lowercase() in S1_SCAN_SKIP) continue
-            if (!inlineBoxDecorated(propsFor(el, cssRules))) continue
-            if (ownerBlockOf(el) === node) return true
-        }
-        return false
-    }
+    // 容器自带纯色底(卡片完整性的触发条件;transparent 不算)
+    private fun hasSolidBackground(props: Map<String, String>): Boolean =
+        props["background-color"]?.let { (parseColor(it) ?: 0L) != 0L } == true
 
     // 祖先壳: body 到块元素的逐层开标签(cloneNode(false) 语义: 标签名+全部属性)。
     // body 自身属性并入壳首;html/#root 不入壳(渲染 mini HTML 自带 html/body 框架)
@@ -1190,22 +1175,6 @@ object HtmlTextExtractor {
             pendingSpace = false
         }
 
-        fun addTable(td: com.yukino.tool.module.reader.common.TableData) {
-            out += Paragraph(
-                IMAGE_PLACEHOLDER, emptyList(), ParaKind.TABLE, imageRef = null,
-                anchor = openAnchors.firstOrNull()?.also { openAnchors.removeFirst() },
-                align = paraAlign,
-                spaceAboveEm = paraAboveEm,
-                spaceBelowEm = paraBelowEm,
-                marginLeftEm = effectiveLeft(),
-                marginRightEm = effectiveRight(),
-                boxStyle = boxStack.lastOrNull(),
-                table = td,
-                floatSide = paraFloatSide,
-                breakAll = paraBreakAll
-            )
-        }
-
         // WEBVIEW 块段: 投影放完整文本(非 U+FFFC,目录/TTS/搜索不跳过内容);
         // 位图自带盒样式/对齐,不设 boxStyle(防绘制层双重画盒)
         fun addWebViewBlock(text: String, html: String, shell: String, docDir: String) {
@@ -1357,10 +1326,9 @@ object HtmlTextExtractor {
         b.applyLayout(parseParaLayout(layoutProps))
 
         try {
-        // 白名单制分流(v25): 非白名单元素(位图级装饰/聚合容器)整块降级 WebView 位图
-        // (子树不走常规提取);白名单子树(纯行内段/简单盒装饰段/递归白名单容器)走自绘。
-        // table 有专属判定(嵌套/超 500 格/表内信号),在 emitTable 的入口处理
-        if (name != "table" && (name in BLOCK || name == "body") &&
+        // 白名单分流(v30): 位图元素(清单外标签/属性/取值,或全位图容器上提)整块
+        // 下发 WebView(子树不走常规提取);白名单子树走自绘。
+        if ((name in BLOCK || name == "body") &&
             classify(node, cssRules, clsCache) == ElCls.BITMAP
         ) {
                 b.flush()
@@ -1376,7 +1344,6 @@ object HtmlTextExtractor {
                     b.brPending = true
                 }
                 name == "img" -> { b.flush(); emitImage(node, b, cssRules) }
-                name == "table" -> { b.flush(); emitTable(node, b, cssRules, noteIds, clsCache) }
                 name == "ruby" -> {
                     // 七期: 基文本进正文(行内不断段), rt 音译提入脚注表并在基文本区间挂可点锚点
                     val rt = node.children()
@@ -1459,87 +1426,6 @@ object HtmlTextExtractor {
         val ref = imageRefOf(node.attr("src").trim(), b) ?: return
         val w = CssLen.parse(propsFor(node, cssRules)["width"] ?: "")
         b.addImage(ref, w)
-    }
-
-    // 表格(七期批次四): 真渲染数据提取。colspan/rowspan 网格展开(含被占位跳过);
-    // 嵌套表与超阈值(>500 格)仍降级占位。单元格内容经子 Builder 提取投影与 runs
-    // (段间单空格拼接,runs 平移),格级样式取 class/style(对齐/垂直对齐/底色/边框/th 加粗)
-    private fun emitTable(node: Element, b: Builder, cssRules: List<CssRule>, noteIds: Set<String>, clsCache: MutableMap<Element, ElCls>) {
-        // 表格一律整表 WEBVIEW 位图(v26): 结构化自绘表格在大字号下列宽超版心需压缩折行,
-        // 观感与浏览器差异大;位图按书内原样渲染等比缩放,保真且无列宽分配问题。
-        // 结构化 TableData 引擎保留(旧缓存兼容读),提取主路径不再产出。
-        // cssRules/noteIds/clsCache 为原结构化提取的遗留参数,保留签名减少调用面扰动。
-        // 书内表格常用负 margin-top 上提贴前序兄弟(如 -1em 贴气泡头);独立成块后
-        // 前序兄弟不在同块,负上提把表格提出视口顶致首行被裁——块内钳 0
-        val el = node.clone() as Element
-        val st = el.attr("style")
-        if (st.contains("margin")) el.attr("style", clampNegTopMargin(st))
-        b.flush()
-        b.addWebViewBlock(
-            flattenBlockText(el).ifBlank { IMAGE_PLACEHOLDER },
-            el.outerHtml(), ancestorShellOf(node), b.docDir
-        )
-    }
-
-    // style 串中 margin 简写 / margin-top 的负 top 分量置 0(其余分量保留)。
-    // 只处理元素自身 inline style;类样式内的负 margin 属设计语义,无已知受害场景
-    internal fun clampNegTopMargin(style: String): String {
-        val decls = style.split(';').filter { it.isNotBlank() }.toMutableList()
-        for (i in decls.indices) {
-            val d = decls[i]
-            val name = d.substringBefore(':').trim().lowercase()
-            if (name != "margin" && name != "margin-top") continue
-            val parts = d.substringAfter(':').trim().split(Regex("\\s+"))
-            val top = parts.getOrNull(0) ?: continue
-            if (!top.startsWith("-")) continue
-            decls[i] = when {
-                name == "margin-top" -> "margin-top:0"
-                parts.size == 1 -> "margin:0"
-                else -> "margin:0 " + parts.drop(1).joinToString(" ")
-            }
-        }
-        return decls.joinToString("; ")
-    }
-
-    // 单元格内容: 子 Builder 独立提取投影文本与 runs(多段以单空格拼接,runs 平移对齐)。
-    // 子上下文不带段落级排版(对齐由 TableCell.align 承载)。
-    // 格内图片段(第一张)记 ref 随格返回(布局期按格宽等比撑行高,绘制期画位图);
-    // 其图片不进格文本——U+FFFC 在格内无占位管线
-    private fun extractCellContent(
-        el: Element, b: Builder, cssRules: List<CssRule>, noteIds: Set<String>,
-        clsCache: MutableMap<Element, ElCls>
-    ): Triple<String, List<Run>, String?> {
-        val sub = Builder(b.docDir, null, b.dataUriSink)
-        // td/th 自身的 run 级样式(颜色/字号/粗斜)随格内文字落地——格内容提取 walk 的是
-        // td 的孩子,td 分支不经 walkElement,装饰上下文需在此预置
-        sub.cur = mergeRunCtx(sub.cur, runDecoFromProps(propsFor(el, cssRules)))
-        for (c in el.childNodes()) walk(c, sub, ArrayDeque(), noteIds, cssRules, clsCache)
-        sub.flush()
-        var text = ""
-        var off = 0
-        var imgRef: String? = null
-        val runs = ArrayList<Run>()
-        for (p in sub.result()) {
-            if (p.isImage) {
-                if (imgRef == null) imgRef = p.imageRef
-                continue
-            }
-            if (text.isNotEmpty()) { text += " "; off += 1 }
-            for (r in p.runs) runs += r.copy(start = r.start + off, end = r.end + off)
-            text += p.text
-            off += p.text.length
-        }
-        // run.fontId 已按子 Builder 自身表(可能为空)分配——单元格内不引用字体,清零防越界
-        return Triple(text, runs.map { if (it.fontId != null) it.copy(fontId = null) else it }, imgRef)
-    }
-
-    // 单元格文本规整(整段产出无 Run,不走 Builder)
-    private fun collapse(s: String): String {
-        val ws = Regex("[\\t\\n\\x0B\\f\\r ]+")
-        val cjkGlue = Regex(
-            "(?<=[\\u2E80-\\u9FFF\\u3000-\\u303F\\uFF00-\\uFFEF]) +(?=[\\u2E80-\\u9FFF\\u3000-\\u303F\\uFF00-\\uFFEF])"
-        )
-        return cjkGlue.replace(ws.replace(s, " ").trim(), "")
     }
 
     // 内联 style 属性 → 样式位(宽容匹配;保留供测试与外部调用)

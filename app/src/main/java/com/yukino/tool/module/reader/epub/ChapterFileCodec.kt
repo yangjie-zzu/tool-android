@@ -248,7 +248,11 @@ object ChapterFileCodec {
     // 单张整页位图(书内背景/负 margin 间距原样生效),存量书升级重提取
     // v29: 提取版本再递增——v1.5.29 release 包为陈旧编译产物(不含聚合修复),
     // 已被其重提取的设备需再次重提取,存量书升级重提取
-    const val FORMAT_VERSION = 29
+    // v30: 白名单制判定重构(标签/属性/值域清单外一律位图)+ 聚合上提通用化到所有容器
+    // (div 包表格章聚合为单块,Section004-0 缝隙根因),负 margin 钳制删除,存量书升级重提取
+    // v31: 卡片完整性——容器带底色且块级子级混有位图 → 整容器位图(果青 Section005
+    // 一张白卡被拆成标题自绘段+两个带壳位图三条白片),存量书升级重提取
+    const val FORMAT_VERSION = 31
 
     private fun BoxDto.toBoxStyle() = com.yukino.tool.module.reader.common.BoxStyle(
         bg = bg, bgImage = bgImg,
