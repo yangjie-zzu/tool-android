@@ -83,6 +83,13 @@ curl -s -X POST -H "Authorization: token $TOKEN" -H "Content-Type: application/o
 
 ## 6. 历史记录
 
+- 2026-10-09：v1.5.33 release（body 高度铺满收敛:整章聚合块 fillViewport 仅 body
+  自带可视背景(纯色底/图/渐变)时生效——页面级背景设计章保持背景铺满整页,body 无
+  背景章(果青 Section004-0 等白底聚合章)位图高度=内容高度,不再注入撑满 CSS、落盘
+  裁底部空白;信号经 ExtractResult.bodyBg → ChapterDto.bd(v21 遗留字段复用) →
+  ChapterDocument.bodyBg → ReaderPage 决策;FORMAT_VERSION 32 存量书升级重提取并清
+  BlockCache）。单测 215 通过;模拟器 debug 包实测 Section004-0 白区收敛到内容、
+  Section005/正文无回归,release 混淆包实测通过。
 - 2026-10-08：v1.5.32 release（白名单制判定重构+聚合上提通用化:①判定改为真白名单
   ——标签/属性/值域清单外一律位图,自绘是特许,清单外不再静默画错;②聚合上提从 body
   一层通用化到所有容器,div 包表格章聚合为单块(果青 Section004-0 缝隙根因:
