@@ -244,7 +244,9 @@ object ChapterFileCodec {
     // 位图按书内原样渲染等比缩放保真;结构化 TableData 引擎保留(旧缓存兼容读)
     // v27: 表格块钳负 margin-top(书内负上提贴前序兄弟的表格独立成块后首行被视口
     // 裁切),存量书升级重提取
-    const val FORMAT_VERSION = 27
+    // v28: 表格归位图级子级参与 body 聚合——气泡头+表格等"全位图章"重新聚合为
+    // 单张整页位图(书内背景/负 margin 间距原样生效),存量书升级重提取
+    const val FORMAT_VERSION = 28
 
     private fun BoxDto.toBoxStyle() = com.yukino.tool.module.reader.common.BoxStyle(
         bg = bg, bgImage = bgImg,

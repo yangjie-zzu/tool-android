@@ -116,7 +116,10 @@ object HtmlTextExtractor {
 
     private fun classify(node: Element, cssRules: List<CssRule>, cache: MutableMap<Element, ElCls>): ElCls {
         cache[node]?.let { return it }
+        // v28: 表格一律位图级(v26 起整表 WEBVIEW)——归入位图子级参与 body 聚合,
+        // 气泡头+表格等"全位图章"重新聚合为单张整页位图(书内负 margin 间距原样生效)
         val cls = if (node.tagName().lowercase() == "body") bodyCls(node, cssRules, cache)
+                  else if (node.tagName().lowercase() == "table") ElCls.BITMAP
                   else classifyRaw(node, cssRules, cache)
         cache[node] = cls
         return cls
