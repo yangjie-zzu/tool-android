@@ -83,6 +83,13 @@ curl -s -X POST -H "Authorization: token $TOKEN" -H "Content-Type: application/o
 
 ## 6. 历史记录
 
+- 2026-10-08：v1.5.30 release（替换 v1.5.29 陈旧包:clean 全量重构建,FORMAT_VERSION
+  29 强制被 v1.5.29 重提取过的设备再次重提取）。模拟器 release 混淆包验证:
+  Section004-0 两图无缝拼合单张位图、人物表页整页位图与 Chrome 一致,单测 207 通过。
+  **流程教训(两连发)**:①v1.5.29 release 包是失败构建遗留的陈旧编译产物——失败构建
+  后必须 clean 再出正式包;②GitHub API 经代理偶发把 POST 响应错放成 GET 缓存(收到
+  list 而非 dict),发布脚本须校验响应类型与最终资产清单,勿盲目沿用上次响应。
+  v1.5.28/v1.5.29 的坏资产均已删除,说明页指向 v1.5.30。
 - 2026-10-08：v1.5.29 release（表格归位图级子级参与 body 聚合——修复 v1.5.28 表格
   拆独立块后气泡头+表格分离/表格首行负 margin 裁切/灰底丢失,全位图章重新聚合为
   单张整页位图,书内背景与间距原样生效;FORMAT_VERSION 28）,tag `v1.5.29`,GitHub
