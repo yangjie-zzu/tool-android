@@ -240,7 +240,11 @@ object ChapterFileCodec {
     // 兄弟气泡盒不再拆成独立块(盒间空行/定位随位图保留),存量书升级重提取
     // v25: 白名单制分流+删除 bodyDecor 整章聚合——默认块位图,白名单子树(纯行内段/
     // 简单盒装饰段/递归白名单容器)才自绘;聚合统一走块级路径且尽量上提,存量书升级重提取
-    const val FORMAT_VERSION = 25
+    // v26: 表格一律整表 WEBVIEW 位图——结构化自绘表格在大字号下列宽超版心需压缩折行,
+    // 位图按书内原样渲染等比缩放保真;结构化 TableData 引擎保留(旧缓存兼容读)
+    // v27: 表格块钳负 margin-top(书内负上提贴前序兄弟的表格独立成块后首行被视口
+    // 裁切),存量书升级重提取
+    const val FORMAT_VERSION = 27
 
     private fun BoxDto.toBoxStyle() = com.yukino.tool.module.reader.common.BoxStyle(
         bg = bg, bgImage = bgImg,

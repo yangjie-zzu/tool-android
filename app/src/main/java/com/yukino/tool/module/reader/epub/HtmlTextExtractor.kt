@@ -1462,74 +1462,40 @@ object HtmlTextExtractor {
     // 嵌套表与超阈值(>500 格)仍降级占位。单元格内容经子 Builder 提取投影与 runs
     // (段间单空格拼接,runs 平移),格级样式取 class/style(对齐/垂直对齐/底色/边框/th 加粗)
     private fun emitTable(node: Element, b: Builder, cssRules: List<CssRule>, noteIds: Set<String>, clsCache: MutableMap<Element, ElCls>) {
-        // 混合渲染: 嵌套表/超 500 格/表内行内装饰(圆圈章号)等边界外信号 → 整表降级 WebView 位图
-        if (needsWebViewTable(node, cssRules)) {
-            b.flush()
-            b.addWebViewBlock(
-                flattenBlockText(node).ifBlank { IMAGE_PLACEHOLDER },
-                node.outerHtml(), ancestorShellOf(node), b.docDir
-            )
-            return
-        }
-        val occupied = HashMap<Int, MutableSet<Int>>()   // row -> 被上方 rowspan 占用的列
-        val cells = ArrayList<TableCell>()
-        val colHints = HashMap<Int, com.yukino.tool.module.reader.common.CssLen>()  // 批次四修复: td width 提示
-        var rowCount = 0
-        var colCount = 0
-        val trs = node.select("tr")
-        for ((ri, tr) in trs.withIndex()) {
-            var c = 0
-            for (cellEl in tr.children()) {
-                val tag = cellEl.tagName().lowercase()
-                if (tag != "td" && tag != "th") continue
-                while (occupied[ri]?.contains(c) == true) c++
-                val rs = cellEl.attr("rowspan").toIntOrNull()?.coerceIn(1, 64) ?: 1
-                val cs = cellEl.attr("colspan").toIntOrNull()?.coerceIn(1, 64) ?: 1
-                for (dr in 0 until rs) occupied.getOrPut(ri + dr) { HashSet() }.also { it.addAll(c until c + cs) }
-                val (text, runs, cellImg) = extractCellContent(cellEl, b, cssRules, noteIds, clsCache)
-                val props = propsFor(cellEl, cssRules)
-                // td style/class 的 width 列宽提示(单列格,同列取首次)
-                if ((cellEl.attr("colspan").toIntOrNull() ?: 1) <= 1) {
-                    com.yukino.tool.module.reader.common.CssLen.parse(props["width"] ?: "")?.let {
-                        colHints.putIfAbsent(c, it)
-                    }
-                }
-                if (text.isNotBlank() || tag == "th" || cellImg != null) {
-                    val pl = parseParaLayout(props)
-                    val vAlign = when (props["vertical-align"]) {
-                        "top" -> 0; "bottom" -> 2; else -> 1
-                    }
-                    val box = parseBoxStyle(props, b.docDir)
-                    cells += TableCell(
-                        row = ri, col = c, rowSpan = rs, colSpan = cs,
-                        text = text, runs = runs,
-                        align = pl?.align ?: 0,
-                        vAlign = vAlign,
-                        bg = box?.bg,
-                        edges = parseEdges(props),
-                        header = tag == "th",
-                        imgRef = cellImg
-                    )
-                }
-                c += cs
-                colCount = maxOf(colCount, c)
-                rowCount = maxOf(rowCount, ri + rs)
-            }
-            rowCount = maxOf(rowCount, ri + 1)
-        }
-        if (cells.isEmpty() || cells.size > 500) {
-            b.addPlainPara(TABLE_PLACEHOLDER)
-            return
-        }
-        val props = propsFor(node, cssRules)
-        b.addTable(
-            TableData(
-                rows = rowCount, cols = colCount, cells = cells,
-                collapse = props["border-collapse"]?.trim() != "separate",
-                spacingEm = CssLen.parse(props["border-spacing"] ?: "")?.let { if (it.pct) 0f else it.v } ?: 0f,
-                colWidths = (0 until colCount).map { colHints[it] }
-            )
+        // 表格一律整表 WEBVIEW 位图(v26): 结构化自绘表格在大字号下列宽超版心需压缩折行,
+        // 观感与浏览器差异大;位图按书内原样渲染等比缩放,保真且无列宽分配问题。
+        // 结构化 TableData 引擎保留(旧缓存兼容读),提取主路径不再产出。
+        // cssRules/noteIds/clsCache 为原结构化提取的遗留参数,保留签名减少调用面扰动。
+        // 书内表格常用负 margin-top 上提贴前序兄弟(如 -1em 贴气泡头);独立成块后
+        // 前序兄弟不在同块,负上提把表格提出视口顶致首行被裁——块内钳 0
+        val el = node.clone() as Element
+        val st = el.attr("style")
+        if (st.contains("margin")) el.attr("style", clampNegTopMargin(st))
+        b.flush()
+        b.addWebViewBlock(
+            flattenBlockText(el).ifBlank { IMAGE_PLACEHOLDER },
+            el.outerHtml(), ancestorShellOf(node), b.docDir
         )
+    }
+
+    // style 串中 margin 简写 / margin-top 的负 top 分量置 0(其余分量保留)。
+    // 只处理元素自身 inline style;类样式内的负 margin 属设计语义,无已知受害场景
+    internal fun clampNegTopMargin(style: String): String {
+        val decls = style.split(';').filter { it.isNotBlank() }.toMutableList()
+        for (i in decls.indices) {
+            val d = decls[i]
+            val name = d.substringBefore(':').trim().lowercase()
+            if (name != "margin" && name != "margin-top") continue
+            val parts = d.substringAfter(':').trim().split(Regex("\\s+"))
+            val top = parts.getOrNull(0) ?: continue
+            if (!top.startsWith("-")) continue
+            decls[i] = when {
+                name == "margin-top" -> "margin-top:0"
+                parts.size == 1 -> "margin:0"
+                else -> "margin:0 " + parts.drop(1).joinToString(" ")
+            }
+        }
+        return decls.joinToString("; ")
     }
 
     // 单元格内容: 子 Builder 独立提取投影文本与 runs(多段以单空格拼接,runs 平移对齐)。

@@ -42,13 +42,14 @@ class HybridRenderTest {
     }
 
     @Test
-    fun `简单表格与td边框不降级`() {
+    fun `表格整表位图含td边框样式`() {
+        // v26: 表格一律整表 WEBVIEW 位图,td 边框/底色由 WebView 原样渲染
         val paras = extractHtml(
             "<style>td{border:1px solid #999;background-color:#f8f8f8}</style>" +
                 "<table><tr><td>甲</td><td>乙</td></tr></table>"
         )
         assertEquals(1, paras.size)
-        assertEquals(ParaKind.TABLE, paras[0].kind)
+        assertEquals(ParaKind.WEBVIEW, paras[0].kind)
     }
 
     @Test

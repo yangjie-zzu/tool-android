@@ -156,16 +156,14 @@ class EpubRichContentTest {
 
     @Test
     fun `简单表格真渲染数据`() {
+        // v26: 表格一律整表 WEBVIEW 位图(原结构化 TableData 提取废弃)
         val paras = extractHtml("<table><tr><td>a</td><td>b</td></tr><tr><td>1</td><td>2</td></tr></table>")
         assertEquals(1, paras.size)
         val p = paras[0]
-        assertTrue(p.isTable)
-        val td = p.table!!
-        assertEquals(2, td.rows)
-        assertEquals(2, td.cols)
-        assertEquals(listOf("a", "b", "1", "2"), td.cells.map { it.text })
-        assertEquals(listOf(0, 1, 0, 1), td.cells.map { it.col })
-        assertTrue(td.collapse)
+        assertEquals(ParaKind.WEBVIEW, p.kind)
+        assertTrue(p.blockHtml!!.contains("<table"))
+        // 投影文本 = 格文本扁平化
+        assertEquals("a b 1 2", p.text)
     }
 
     @Test
@@ -173,17 +171,10 @@ class EpubRichContentTest {
         val paras = extractHtml(
             "<table><tr><td rowspan=\"2\">a</td><td>b</td></tr><tr><td>c</td></tr></table>"
         )
-        val td = paras[0].table!!
-        assertEquals(2, td.rows)
-        assertEquals(2, td.cols)
-        val a = td.cells.first { it.text == "a" }
-        assertEquals(0, a.row)
-        assertEquals(0, a.col)
-        assertEquals(2, a.rowSpan)
-        // 第二行的 c 落在列 1(列 0 被跨行格占用)
-        val c = td.cells.first { it.text == "c" }
-        assertEquals(1, c.row)
-        assertEquals(1, c.col)
+        // 位图路线: rowspan 等结构原样保留在块 HTML,由 WebView 解析
+        val p = paras[0]
+        assertEquals(ParaKind.WEBVIEW, p.kind)
+        assertTrue(p.blockHtml!!.contains("rowspan=\"2\""))
     }
 
     @Test
@@ -192,15 +183,11 @@ class EpubRichContentTest {
             "<style>td.vm { vertical-align: top; background-color: #eee } .hl { color: #f00 }</style>" +
                 "<table><tr><th>表头</th></tr><tr><td class=\"vm\"><span class=\"hl\">高亮</span></td></tr></table>"
         )
-        val td = paras[0].table!!
-        val th = td.cells[0]
-        assertTrue(th.header)
-        assertEquals(1, th.vAlign)   // th 默认居中
-        val c = td.cells[1]
-        assertEquals(0, c.vAlign)    // vm → top
-        assertEquals(0xFFEEEEEEL, c.bg)
-        // 格内富文本: color run 保留
-        assertTrue(c.runs.any { it.color == 0xFFFF0000L })
+        // 位图路线: 样式随表 HTML/壳进块,由 WebView 按 CSS 原样渲染
+        val p = paras[0]
+        assertEquals(ParaKind.WEBVIEW, p.kind)
+        assertTrue(p.blockHtml!!.contains("<th"))
+        assertTrue(p.blockHtml!!.contains("class=\"vm\""))
     }
 
     @Test
@@ -1316,8 +1303,8 @@ class EpubRichContentTest {
         assertEquals(0xFF070707L, paras[0].runs[0].color)
         // a: |= 与 ^= $= 命中 → 源序末条 #060606
         assertEquals(0xFF060606L, paras[1].runs[0].color)
-        // td = 命中
-        assertEquals(0xFF020202L, paras[2].table!!.cells[0].runs[0].color)
+        // td = 命中:v26 起表格整表进 WEBVIEW 块,选择器由 WebView 原生解析
+        assertEquals(ParaKind.WEBVIEW, paras[2].kind)
     }
 
     @Test
@@ -1475,13 +1462,12 @@ class EpubRichContentTest {
 
     @Test
     fun `表格格内图片提取与纯图格产出`() {
+        // v26: 位图路线,格内图片以原样 <img> 保留在块 HTML
         val paras = extractHtml("<table><tr><td><img src=\"pic/a.png\"></td><td>文字</td></tr></table>")
-        val td = paras[0].table!!
-        assertEquals(2, td.cells.size)
-        assertEquals("pic/a.png", td.cells[0].imgRef)
-        assertEquals("", td.cells[0].text)
-        assertNull(td.cells[1].imgRef)
-        assertEquals("文字", td.cells[1].text)
+        val p = paras[0]
+        assertEquals(ParaKind.WEBVIEW, p.kind)
+        assertTrue(p.blockHtml!!.contains("src=\"pic/a.png\""))
+        assertTrue(p.text.contains("文字"))
     }
 
     @Test
