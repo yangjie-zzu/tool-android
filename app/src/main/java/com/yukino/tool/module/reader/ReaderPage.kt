@@ -46,6 +46,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.List
 import androidx.compose.material.icons.rounded.Input
+import androidx.compose.material.icons.rounded.GridOn
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material3.AlertDialog
@@ -130,6 +131,7 @@ import com.yukino.tool.module.reader.common.ResolvedTypography
 import com.yukino.tool.module.reader.common.ReaderPageView
 import com.yukino.tool.module.reader.common.Typography
 import com.yukino.tool.module.reader.common.BlockCache
+import com.yukino.tool.module.reader.epub.BlockBitmapDebugSheet
 import com.yukino.tool.module.reader.epub.BlockSpec
 import com.yukino.tool.module.reader.epub.EpubBookContent
 import com.yukino.tool.module.reader.epub.EpubImporter
@@ -225,6 +227,7 @@ fun ReaderScreen(
     var showToc by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
     var showJumpPage by remember { mutableStateOf(false) }
+    var showBlockDebug by remember { mutableStateOf(false) }
     // 跟手拖拽需要手势层直接驱动 View,持有实例引用
     val pageViewRef = remember { mutableStateOf<ReaderPageView?>(null) }
 
@@ -1206,6 +1209,9 @@ fun ReaderScreen(
                         color = secondary
                     )
                     Spacer(Modifier.weight(1f))
+                    IconButton(onClick = { showBlockDebug = true }, enabled = content is EpubBookContent) {
+                        Icon(Icons.Rounded.GridOn, "位图调试", tint = fgColor)
+                    }
                     IconButton(onClick = { showSettings = true }) {
                         Icon(Icons.Rounded.Settings, "设置", tint = fgColor)
                     }
@@ -1324,6 +1330,15 @@ fun ReaderScreen(
                 InfoRow("添加时间", dateFmt.format(java.util.Date(book.addedAt)))
                 InfoRow("最近阅读", dateFmt.format(java.util.Date(book.lastReadAt)))
             }
+        }
+    }
+
+    // 位图调试面板: 只读列出当前渲染键命中的 WEBVIEW 块位图(仅 EPUB)
+    if (showBlockDebug) {
+        val c = content
+        val t = typo
+        if (c is EpubBookContent && t != null) {
+            BlockBitmapDebugSheet(content = c, typo = t, onDismiss = { showBlockDebug = false })
         }
     }
 
