@@ -83,6 +83,13 @@ curl -s -X POST -H "Authorization: token $TOKEN" -H "Content-Type: application/o
 
 ## 6. 历史记录
 
+- 2026-10-08：v1.5.29 release（表格归位图级子级参与 body 聚合——修复 v1.5.28 表格
+  拆独立块后气泡头+表格分离/表格首行负 margin 裁切/灰底丢失,全位图章重新聚合为
+  单张整页位图,书内背景与间距原样生效;FORMAT_VERSION 28）,tag `v1.5.29`,GitHub
+  Release 含 release/debug 两个 APK。模拟器验证:人物表页整页单张位图与 Chrome
+  渲染一致,单测 207 通过。**流程教训**:v1.5.28 发布的 release 包是修钳负 margin
+  之前构建的旧二进制(打包→发现问题→只重打 debug→误发旧 release 包),v1.5.28 资产
+  已删除并在其说明页指向 v1.5.29;发版前必须核对包内版本构建时间与最新源码一致。
 - 2026-10-08：v1.5.28 release（渲染策略:EPUB 表格一律整表 WEBVIEW 位图,不再结构化
   自绘——大字号下列宽超版心压缩折行观感差,位图按书内原样等比缩放保真;表格块钳
   负 margin-top 防首行视口裁切;FORMAT_VERSION 27 存量书自动重提取;TableData
