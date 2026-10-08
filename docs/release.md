@@ -83,6 +83,14 @@ curl -s -X POST -H "Authorization: token $TOKEN" -H "Content-Type: application/o
 
 ## 6. 历史记录
 
+- 2026-10-08：v1.5.31 release（新增位图调试面板:阅读菜单底栏入口,只读列出当前
+  渲染键命中的全部 WEBVIEW 块位图——缩略图/章号/键前缀/尺寸/大小/内存或磁盘/
+  几何状态,支持章号与键前缀过滤,点开看大图;旧键过期位图不显示不清理;渲染逻辑
+  与 FORMAT_VERSION 零改动）。debug 包模拟器验证:果青1 面板 34/34 块与磁盘
+  wblocks 一致,过滤/大图/翻页正常;**release 混淆包未装机验证(用户明确跳过)**,
+  首次真机打开建议关注块渲染(混淆重点 @JavascriptInterface 桥)。发布注意:
+  工作区可能与并行会话共用,发版前必须以 `git log`/`git ls-remote --tags` 核对
+  最新版本号,勿信会话开始快照(本版差点撞已发布的 v1.5.30)。
 - 2026-10-08：v1.5.30 release（替换 v1.5.29 陈旧包:clean 全量重构建,FORMAT_VERSION
   29 强制被 v1.5.29 重提取过的设备再次重提取）。模拟器 release 混淆包验证:
   Section004-0 两图无缝拼合单张位图、人物表页整页位图与 Chrome 一致,单测 207 通过。
