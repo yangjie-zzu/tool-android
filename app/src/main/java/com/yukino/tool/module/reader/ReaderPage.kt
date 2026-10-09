@@ -1338,7 +1338,17 @@ fun ReaderScreen(
         val c = content
         val t = typo
         if (c is EpubBookContent && t != null) {
-            BlockBitmapDebugSheet(content = c, typo = t, onDismiss = { showBlockDebug = false })
+            BlockBitmapDebugSheet(
+                content = c,
+                typo = t,
+                onDismiss = { showBlockDebug = false },
+                onJumpToChapter = { idx ->
+                    showBlockDebug = false
+                    val sp = specs ?: return@BlockBitmapDebugSheet
+                    val target = sp.indexOfFirst { it.chapterIndex == idx }
+                    if (target >= 0) pageIndex = target
+                }
+            )
         }
     }
 

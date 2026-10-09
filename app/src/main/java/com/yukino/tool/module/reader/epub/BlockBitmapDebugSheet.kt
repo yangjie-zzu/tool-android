@@ -1,13 +1,13 @@
 package com.yukino.tool.module.reader.epub
 
 import android.graphics.BitmapFactory
+import android.util.LruCache
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -25,13 +25,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import com.yukino.tool.module.reader.common.BlockCache
 import com.yukino.tool.module.reader.common.ResolvedTypography
@@ -43,6 +45,8 @@ import java.io.File
 // 数据口径 = collectWebBlockSpecs 同一条遍历(章文件逐段 blockHtml 重算当前键),
 // 磁盘 wblocks/ 里有对应 PNG 才列出——旧键/已失效位图一律不显示,也不做任何清理。
 // 键未命中磁盘的块只计入"未渲染"汇总(渲染失败/黑名单,正文走兜底自绘)。
+// 列表条目直接整幅大图展示, 点击条目跳转到该块所在章首页; 大图按屏宽降采样,
+// 异步解码(IO 线程)+ LruCache 缓存, 滑动过程中主线程零解码阻塞。
 
 // 单个块位图条目: 章序号 + 键 + 落盘信息 + 几何/内存状态
 class BlockBitmapEntry(
@@ -108,12 +112,17 @@ fun collectBlockBitmapSnapshot(
     return BlockBitmapSnapshot(total, entries, missing)
 }
 
-// 缩略图解码: 最长边压到 targetPx(inSampleSize 采样,整块位图可达数万像素,必须降采样)
-private fun decodeThumbnail(path: String, targetPx: Int): android.graphics.Bitmap? = runCatching {
+// 大图解码缓存: key = path+lastModified, 容量按字节计; 驱逐交给 LruCache, 不手动 recycle
+private val bitmapCache = object : LruCache<String, android.graphics.Bitmap>(48 * 1024 * 1024) {
+    override fun sizeOf(key: String, value: android.graphics.Bitmap): Int = value.byteCount
+}
+
+// 按目标显示宽度降采样解码(inSampleSize 2 的幂采样; 整块位图可达数万像素,必须降采样)
+private fun decodeForWidth(path: String, targetW: Int): android.graphics.Bitmap? = runCatching {
     val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
     BitmapFactory.decodeFile(path, opts)
     var sample = 1
-    while (maxOf(opts.outWidth, opts.outHeight) / (sample * 2) >= targetPx) sample *= 2
+    while (opts.outWidth / (sample * 2) >= targetW) sample *= 2
     BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = sample })
 }.getOrNull()
 
@@ -122,14 +131,16 @@ private fun decodeThumbnail(path: String, targetPx: Int): android.graphics.Bitma
 fun BlockBitmapDebugSheet(
     content: EpubBookContent,
     typo: ResolvedTypography,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    onJumpToChapter: (Int) -> Unit
 ) {
     var snapshot by remember { mutableStateOf<BlockBitmapSnapshot?>(null) }
     var filter by remember { mutableStateOf("") }
-    var preview by remember { mutableStateOf<BlockBitmapEntry?>(null) }
     LaunchedEffect(content, typo) {
         snapshot = withContext(Dispatchers.IO) { collectBlockBitmapSnapshot(content, typo) }
     }
+    val density = LocalDensity.current
+    val screenWpx = with(density) { LocalConfiguration.current.screenWidthDp.dp.toPx() }.toInt()
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
@@ -166,75 +177,58 @@ fun BlockBitmapDebugSheet(
                     it.chapterIndex.toString() == f
             } ?: emptyList()
             LazyColumn(
-                modifier = Modifier.heightIn(max = 420.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                modifier = Modifier.heightIn(max = 560.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 items(shown, key = { it.key }) { e ->
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { preview = e }
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { onJumpToChapter(e.chapterIndex) }
                     ) {
-                        val bmp = remember(e.file.absolutePath, e.file.lastModified()) {
-                            decodeThumbnail(e.file.absolutePath, 144)
+                        val cacheKey = "${e.file.absolutePath}#${e.file.lastModified()}"
+                        val bmp by produceState<android.graphics.Bitmap?>(
+                            initialValue = bitmapCache.get(cacheKey)?.takeIf { !it.isRecycled },
+                            cacheKey
+                        ) {
+                            if (value == null) {
+                                value = withContext(Dispatchers.IO) {
+                                    decodeForWidth(e.file.absolutePath, screenWpx)?.also {
+                                        bitmapCache.put(cacheKey, it)
+                                    }
+                                }
+                            }
                         }
-                        if (bmp != null) {
+                        val b = bmp
+                        if (b != null) {
                             Image(
-                                bitmap = bmp.asImageBitmap(),
+                                bitmap = b.asImageBitmap(),
                                 contentDescription = null,
-                                contentScale = ContentScale.Fit,
-                                modifier = Modifier
-                                    .height(72.dp)
-                                    .fillMaxWidth(0.32f)
-                                    .clip(RoundedCornerShape(6.dp))
+                                contentScale = ContentScale.FillWidth,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        } else {
+                            // 解码完成前用快照里的原始宽高占位, 条目高度稳定不跳动
+                            Spacer(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .aspectRatio(e.bitmapW.toFloat() / e.bitmapH.toFloat())
                             )
                         }
-                        Spacer(Modifier.padding(4.dp))
-                        Column {
-                            Text(
-                                "章 ${e.chapterIndex} · ${e.key.take(8)}",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Text(
-                                "${e.bitmapW}×${e.bitmapH} · ${formatSize(e.fileSize)} · " +
-                                    if (e.inMemory) "内存" else "磁盘",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Text(
-                                if (e.hasGeom) "几何可用" else "无几何(选择退化)",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "章 ${e.chapterIndex} · ${e.key.take(8)} · ${e.bitmapW}×${e.bitmapH} · " +
+                                formatSize(e.fileSize) + " · " +
+                                (if (e.inMemory) "内存" else "磁盘") + " · " +
+                                (if (e.hasGeom) "几何可用" else "无几何"),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
             }
         }
-    }
-    preview?.let { e ->
-        androidx.compose.material3.AlertDialog(
-            onDismissRequest = { preview = null },
-            title = { Text("章 ${e.chapterIndex} · ${e.key.take(8)}") },
-            text = {
-                val bmp = remember(e.file.absolutePath) { decodeThumbnail(e.file.absolutePath, 1024) }
-                if (bmp != null) {
-                    Image(
-                        bitmap = bmp.asImageBitmap(),
-                        contentDescription = null,
-                        contentScale = ContentScale.FillWidth,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                } else {
-                    Text("解码失败")
-                }
-            },
-            confirmButton = {
-                androidx.compose.material3.TextButton(onClick = { preview = null }) { Text("关闭") }
-            }
-        )
     }
 }
 
