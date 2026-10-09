@@ -101,6 +101,17 @@
 - WEBVIEW 块渲染只吃 字号/版心宽(边距)/行距/行距跟随书内 四个设置(缓存键),段距/
   首行缩进/两端对齐不影响块位图,对齐块渲染实验时无需调它们。
 
+## ModalBottomSheet 面板操作注意点(2026-10-09)
+
+- `adb exec-out screencap` 截图分辨率(974 宽)与真实屏(1080x2220)不一致,**截图上量出的
+  坐标必须乘 1080/974≈1.109(纵向 ≈1.111)换算后再 input tap**,否则点击静默落空(表现为
+  界面毫无反应,极易误判为功能失效);换算基准以 `dumpsys window windows` 里应用窗口
+  bounds 为准。
+- 位图调试面板的列表条目(整幅大图 + clickable)用 `input tap` 可正常触发;但实测出现过
+  一次面板实例整体失去点击(条目/TextField/遮罩点按全部无效,仅滑动滚动有效)的僵死现象,
+  此时 logcat 可见该面板窗口 "Setting back callback null / Input channel disposed"——
+  重开面板即恢复。遇到"面板看得见点不动"先怀疑实例僵死,关开面板重试,勿急于改代码。
+
 ## 数据层调试(debug 包)
 
 - run-as 可直接读章缓存 JSON(`cache/reader/epub/<bookId>/chapters/ch_NNNN.txt`,v22
