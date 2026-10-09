@@ -666,6 +666,9 @@ fun ReaderScreen(
         if (bp.spec.kind != PageKind.CONTENT || bp.lines.isEmpty()) return
         val hit = SelectionGeometry.hit(bp, offset.x - t.marginPx, offset.y - contentTopPx, m) ?: return
         val (s, e) = SelectionGeometry.wordRange(bp, hit.first, hit.second)
+        // 空选区(命中空白行)不入会话: 无高亮无手柄的不可见选区会吞掉后续 tap/长按,
+        // 整页选择看似"死锁"(tap 一次清除后才能恢复)
+        if (s >= e) return
         selection = ReaderSelection(s, e, anchorIsStart = true)
         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
         toolbarPending = true
