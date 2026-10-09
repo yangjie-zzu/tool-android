@@ -62,6 +62,7 @@ class BlockBitmapEntry(
     val bitmapW: Int,
     val bitmapH: Int,
     val hasGeom: Boolean,   // 几何 JSON 存在且 ok:1(选择可用)
+    val noText: Boolean,    // 几何 JSON ok:2(块内无文本,纯图/装饰块,非失败)
     val inMemory: Boolean   // BlockCache.mem 命中(本会话渲染或已查过)
 )
 
@@ -99,9 +100,9 @@ fun collectBlockBitmapSnapshot(
             }.getOrNull()
             if (bounds == null) { missing++; continue }
             val jf = BlockCache.geomFileOf(root, key)
-            val geomOk = if (jf.isFile) runCatching {
-                BlockCache.parseGeomJson(jf.readText()) != null
-            }.getOrDefault(false) else false
+            val raw = if (jf.isFile) runCatching { jf.readText() }.getOrNull() else null
+            val geomOk = raw?.let { r -> runCatching { BlockCache.parseGeomJson(r) }.getOrNull() != null } == true
+            val noText = !geomOk && raw != null && raw.contains("\"ok\":2")
             entries += BlockBitmapEntry(
                 chapterIndex = i,
                 key = key,
@@ -110,6 +111,7 @@ fun collectBlockBitmapSnapshot(
                 bitmapW = bounds.first,
                 bitmapH = bounds.second,
                 hasGeom = geomOk,
+                noText = noText,
                 inMemory = BlockCache.inMemory(key)
             )
         }
@@ -233,7 +235,7 @@ fun BlockBitmapDebugSheet(
                             "章 ${e.chapterIndex} · ${e.key.take(8)} · ${e.bitmapW}×${e.bitmapH} · " +
                                 formatSize(e.fileSize) + " · " +
                                 (if (e.inMemory) "内存" else "磁盘") + " · " +
-                                (if (e.hasGeom) "几何可用" else "无几何"),
+                                (if (e.hasGeom) "几何可用" else if (e.noText) "无文字" else "无几何"),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )

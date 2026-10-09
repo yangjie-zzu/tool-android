@@ -250,6 +250,29 @@ class HybridRenderTest {
         assertNull(BlockCache.parseGeomJson("{\"ok\":0,\"cs\":\"\",\"rs\":[]}"))
     }
 
+    @Test
+    fun `几何表JSON扁平新格式解析与防御`() {
+        // v14 渲染器新格式: rs 为扁平整数数组 [x,y,w,h,...]
+        val json = "{\"ok\":1,\"w\":800,\"h\":300,\"cs\":\"甲乙\",\"rs\":[10,20,30,40,50,60,70,80]}"
+        val g = BlockCache.parseGeomJson(json)
+        assertNotNull(g)
+        assertEquals("甲乙", g!!.chars)
+        assertEquals(2, g.charCount)
+        assertEquals(10f, g.rects[0])
+        assertEquals(80f, g.rects[7])
+        assertEquals(800, g.contentW)
+        // 扁平长度非 4 的倍数 / 与字符数不匹配 → 拒用
+        assertNull(BlockCache.parseGeomJson("{\"ok\":1,\"cs\":\"甲乙\",\"rs\":[1,2,3,4,5]}"))
+        assertNull(BlockCache.parseGeomJson("{\"ok\":1,\"cs\":\"甲乙\",\"rs\":[1,2,3,4]}"))
+        // ok:2 无文字(纯图块) 与 ok:0 失败同样解析为 null
+        assertNull(BlockCache.parseGeomJson("{\"ok\":2,\"why\":\"notext\"}"))
+        assertNull(BlockCache.parseGeomJson("{\"ok\":0,\"why\":\"timeout\"}"))
+        // 空几何合法(无文本块的空表): cs 与 rs 同时为空
+        val empty = BlockCache.parseGeomJson("{\"ok\":1,\"w\":10,\"h\":10,\"cs\":\"\",\"rs\":[]}")
+        assertNotNull(empty)
+        assertEquals(0, empty!!.charCount)
+    }
+
     // ---- SelectionGeometry 块行委托 ----
 
     private val metrics = SelectionGeometry.Metrics(20f, 5f, 28f, 7f) { t, _ -> t.length * 10f }

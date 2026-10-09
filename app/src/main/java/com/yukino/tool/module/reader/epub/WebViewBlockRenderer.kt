@@ -40,7 +40,7 @@ import kotlin.math.ceil
 private const val BLK_HOST = "book.local"
 private const val BLK_FALLBACK_MS = 12000L
 private const val BLK_PAINT_SETTLE_MS = 100L
-private const val GEOM_MAX_CHARS = 5000
+private const val GEOM_MAX_CHARS = 20000
 
 // 剥书内脚本(JS 引擎只为注入的采集脚本服务, 书内代码无源可跑)
 internal fun stripScripts(html: String): String = html
@@ -407,8 +407,8 @@ object WebViewBlockRenderer {
                     File(root, BlockCache.DIR_NAME).mkdirs()
                     val out = BlockCache.fileOf(root, key)
                     out.outputStream().use { cropped.compress(Bitmap.CompressFormat.PNG, 0, it) }
-                    if (finalGeom != null) BlockCache.geomFileOf(root, key).writeText(geomJson!!)
-                    else BlockCache.geomFileOf(root, key).writeText("{\"ok\":0}")
+                    // 落盘收割原文(含 ok:2 无文字标记),失败兜底写 ok:0——比缓存里少一层转译
+                    BlockCache.geomFileOf(root, key).writeText(geomJson ?: "{\"ok\":0,\"why\":\"noharvest\"}")
                     BlockCache.remember(key, CachedBlock(out, cropped.width, cropped.height, finalGeom))
                     true
                 }.getOrDefault(false)
@@ -522,20 +522,20 @@ object WebViewBlockRenderer {
         else -> null
     }
 
-    // ---------- 字符几何采集脚本 ----------
+    // ---------- 字符几何采集脚本(静止屏障版) ----------
     // 与 HtmlTextExtractor.flattenBlockText 同一条扁平化规则(Kotlin/JS 两侧各实现一遍,
     // 对拍单测钉死): 文本节点原样;块级子元素边界与 <br> 折空格;连续空白压一;首尾不挂空格。
-    // 就绪(onload + 强制加载全部声明字体 FontFace.load() + fonts.ready + idle)后进入
-    // 稳定性环: 每 2×rAF 量一次内容宽高,连续两轮不变(或 40 轮上限)才继续——fonts.ready
-    // resolve 时惰性启动的 @font-face 未必已应用、大图经拦截器加载慢,都会迟到重排使坐标
-    // 整体过期(实测 22/22 块错位)。尺寸稳定后再做两遍完整采集(隔 2×rAF),字符矩形序列
-    // 完全一致(布局确已定格,坐标与位图同源)才上报,10 轮仍抖动则上报 ok:0 自弃用;
-    // 超高/超宽适配: 超宽由视口直接撑到内容宽(零布局干预);超高以 transform:scale
-    // 等比缩到位图上限(绘制级,布局/断行零变化);逐字符
-    // Range.getClientRects 采集(dpr 换算到位图
-    // 像素域,相对 body 左上);字符数超上限只量高(几何空,选择退化);页内 6s 硬超时
-    // 直接 ok:0(位图仍由 native 按现状截取,兜底不挂死)。
-    // 采集脚本: limitPx=位图高度上限(物理 px)。
+    // 就绪判定为确定性静止屏障,替代旧版"尺寸稳定投票+双遍全等投票+6s 超时"的概率式方案:
+    //   资源静止 = load + 强制加载声明字体(fonts.load)+ fonts.status=loaded + 全部 <img>
+    //             complete/decode + 枚举 CSS 背景图 decode(以 error 事件为终态,无逐资源超时);
+    //   布局静止 = MutationObserver(subtree/attributes/childList) + 连续 3 个双帧窗口零
+    //             mutation 且页面宽高不变。
+    // 两者同时成立即布局定格(数学上不会再变),采集一次直接上报——不再猜。
+    // 上报分档: ok:1 字符级几何 / ok:2 块内无文本(纯图/装饰块,非失败) /
+    //           ok:0 采集失败(why=timeout|cap,日志定位用)。保险丝 15s 只防极端挂死。
+    // 超高/超宽适配不变: 超宽由视口撑开(零布局干预);超高在采集前以 transform:scale
+    // 等比缩到位图上限——getClientRects 返回缩放后视觉坐标,与位图天然同源。
+    // rs 为扁平整数数组 [x,y,w,h,...](像素域,相对 body 左上),体积较旧嵌套格式省 40%+。
     private fun collectJs(limitPx: Int): String =
         "<script>window.__blkDone=false;" +
         "(function(){" +
@@ -546,19 +546,21 @@ object WebViewBlockRenderer {
         "function isWs(ch){return ch===' '||ch==='\\t'||ch==='\\n'||ch==='\\r'||ch==='\\f'||ch==='\\u000B';}" +
         "var chars=[],rects=[],pendingSpace=false,started=false,lastRect=null;" +
         "var bodyL=0,bodyT=0,dpr=1;" +
-        "function pushRect(r){return r?[(r.left-bodyL)*dpr,(r.top-bodyT)*dpr,r.width*dpr,r.height*dpr]:[0,0,0,0];}" +
+        "function pushRect(r){if(!r)return;" +
+        "rects.push(Math.round((r.left-bodyL)*dpr),Math.round((r.top-bodyT)*dpr)," +
+        "Math.round(r.width*dpr),Math.round(r.height*dpr));}" +
         "function emitText(node){" +
         "var text=node.nodeValue;var range=document.createRange();" +
         "for(var i=0;i<text.length;i++){" +
         "var ch=text.charAt(i);" +
         "if(isWs(ch)){pendingSpace=true;continue;}" +
         "if(pendingSpace){pendingSpace=false;" +
-        "if(started){chars.push(' ');rects.push(lastRect?pushRect(lastRect):[0,0,0,0]);}}" +
+        "if(started){chars.push(' ');if(lastRect)pushRect(lastRect);else rects.push(0,0,0,0);}}" +
         "started=true;chars.push(ch);" +
         "range.setStart(node,i);range.setEnd(node,i+1);" +
         "var rl=range.getClientRects();" +
-        "var r=rl.length>0?rl[0]:lastRect;" +
-        "var arr=pushRect(r);rects.push(arr);lastRect=r;}}" +
+        "if(rl.length>0)lastRect=rl[0];" +
+        "if(lastRect)pushRect(lastRect);else rects.push(0,0,0,0);}}" +
         "function walk(node){" +
         "if(node.nodeType===3){emitText(node);return;}" +
         "if(node.nodeType!==1)return;" +
@@ -578,20 +580,43 @@ object WebViewBlockRenderer {
         "return{w:Math.max(document.body.scrollWidth,document.documentElement.scrollWidth)," +
         "h:Math.max(document.body.scrollHeight,document.documentElement.scrollHeight)};}"+
         "function ts(){return Math.round(performance.now());}" +
-        "console.log('BLK parse t='+ts());" +
-        "var loaded=new Promise(function(res){if(document.readyState==='complete')res();" +
-        "else window.addEventListener('load',function(){res();});});" +
-        "loaded.then(function(){console.log('BLK load t='+ts());});" +
-        "var fonts=document.fonts?document.fonts.ready:Promise.resolve();" +
-        "fonts.then(function(){console.log('BLK fonts.ready t='+ts());});" +
-        "var fontLoads=Promise.resolve();" +
+        "function bridge(s){try{window.__blkBridge.onDone(s);}catch(e){}}" +
+        "function raf(f){requestAnimationFrame(function(){requestAnimationFrame(f);});}" +
+        // 超高防御: 内容物理高超位图上限时以 transform:scale 等比缩(绘制级,布局/断行零变化);
+        // html 底色补 body 背景,防缩放后右侧余量露白
+        "function applyScale(){" +
+        "var ph=measure().h*(window.devicePixelRatio||1);" +
+        "if(ph>" + limitPx + "){var z=" + limitPx + "/ph;" +
+        "document.body.style.transformOrigin='0 0';" +
+        "document.body.style.transform='scale('+z+')';" +
+        "var bg='';try{bg=getComputedStyle(document.body).backgroundColor;}catch(e){}" +
+        "if(bg&&bg!=='transparent'&&bg!=='rgba(0, 0, 0, 0)')" +
+        "document.documentElement.style.backgroundColor=bg;}}" +
+        "function report(code,why){" +
+        "if(window.__blkDone)return;window.__blkDone=true;" +
+        "if(code!==1){bridge('{\\\"ok\\\":'+code+',\\\"why\\\":\\\"'+why+'\\\"}');return;}" +
+        "dpr=window.devicePixelRatio||1;applyScale();collect();" +
+        "if(chars.length===0){bridge('{\\\"ok\\\":2,\\\"why\\\":\\\"notext\\\"}');return;}" +
+        "if(chars.length>" + GEOM_MAX_CHARS + "){bridge('{\\\"ok\\\":0,\\\"why\\\":\\\"cap\\\"}');return;}" +
+        "var m=measure();console.log('BLK finish chars='+chars.length+' t='+ts());" +
+        "bridge('{\\\"ok\\\":1,\\\"w\\\":'+Math.round(m.w*dpr)+',\\\"h\\\":'+Math.round(m.h*dpr)+" +
+        "',\\\"cs\\\":'+JSON.stringify(chars.join(''))+',\\\"rs\\\":'+JSON.stringify(rects)+'}');}" +
+        // 资源静止: load + 强制加载全部声明字体 + fonts ready + <img>/CSS 背景图终态
+        // (onload/onerror 必然二选一,不设逐资源超时;每资源仅留防僵死大闸)
+        "function imgDone(im,res){" +
+        "im.onload=function(){if(im.decode)im.decode().then(res,res);else res();};" +
+        "im.onerror=res;setTimeout(res,10000);}" +
+        "function resReady(){" +
+        "var ps=[];" +
+        "var imgs=document.images;" +
+        "for(var i=0;i<imgs.length;i++){(function(im){" +
+        "if(!im.complete){ps.push(new Promise(function(res){imgDone(im,res);}));}" +
+        "else if(im.decode){try{ps.push(im.decode().catch(function(){}));}catch(e){}}" +
+        "})(imgs[i]);}" +
         "try{var fs=[];document.fonts.forEach(function(f){fs.push(f);});" +
         "console.log('BLK faces='+fs.length);" +
-        "fontLoads=Promise.all(fs.map(function(f){return f.load().catch(function(){});}));}catch(e){}" +
-        "fontLoads.then(function(){console.log('BLK fontLoads done t='+ts());});" +
-        // load 事件不等 CSS background-image(装饰页插图/底纹常为背景图, 迟到会整体重排):
-        // 扫全部元素与伪类的 computed backgroundImage, 逐 url new Image() 等加载+解码
-        "var bgLoads=Promise.resolve();" +
+        "for(var k=0;k<fs.length;k++){try{fs[k].load().catch(function(){});}catch(e){}}" +
+        "if(document.fonts.status!=='loaded')ps.push(document.fonts.ready.catch(function(){}));}catch(e){}" +
         "try{" +
         "var us=(function(){" +
         "var found=[];" +
@@ -606,73 +631,33 @@ object WebViewBlockRenderer {
         "for(var i=0;i<els.length;i++){scan(els[i],'');scan(els[i],':before');scan(els[i],':after');}" +
         "return found;})();" +
         "console.log('BLK bgurls='+us.length);" +
-        "if(us.length)bgLoads=Promise.all(us.map(function(u){" +
+        "for(var j=0;j<us.length;j++){(function(u){ps.push(new Promise(function(res){" +
+        "var im=new Image();imgDone(im,res);im.src=u;}));})(us[j]);}" +
+        "}catch(e){}" +
+        "return Promise.all(ps);}" +
+        // 布局静止: MutationObserver 零 mutation + 页面宽高不变,连续 3 个双帧窗口
+        "function layoutQuiet(){" +
         "return new Promise(function(res){" +
-        "var fin=(function(){var d=0;return function(){if(!d){d=1;res();}};})();" +
-        "var im=new Image();" +
-        "im.onload=fin;im.onerror=fin;" +
-        "if(im.decode)im.decode().then(fin,fin);" +
-        "im.src=u;" +
-        "setTimeout(fin,4000);});}));}catch(e){}" +
-        "bgLoads.then(function(){console.log('BLK bgLoads done t='+ts());});" +
-        "var sw=0,sh=0,stable=0,rounds=0;" +
-        "function settleLoop(){" +
-        "if(window.__blkDone)return;" +
-        "rounds++;" +
+        "var quiet=0,lw=-1,lh=-1,mo=null;" +
+        "try{mo=new MutationObserver(function(){quiet=0;});" +
+        "mo.observe(document.documentElement,{subtree:true,childList:true,attributes:true,characterData:true});}catch(e){}" +
+        "function tick(){if(window.__blkDone)return;" +
         "var m=measure();" +
-        "if(m.w===sw&&m.h===sh){stable++;}else{stable=0;sw=m.w;sh=m.h;}" +
-        "console.log('BLK round='+rounds+' w='+m.w+' h='+m.h+' stable='+stable+' t='+ts());" +
-        "if(stable>=2||rounds>=40){doubleCollect();}" +
-        "else requestAnimationFrame(function(){requestAnimationFrame(settleLoop);});}" +
-        "var dcRounds=0;" +
-        "function doubleCollect(){" +
-        "if(window.__blkDone)return;" +
-        "collect();" +
-        "var a=JSON.stringify(rects);" +
-        "requestAnimationFrame(function(){requestAnimationFrame(function(){" +
-        "if(window.__blkDone)return;" +
-        "collect();" +
-        "var same=JSON.stringify(rects)===a;" +
-        "console.log('BLK dc='+dcRounds+' same='+same+' t='+ts());" +
-        "if(same){finish();}" +
-        "else if(++dcRounds>=10){window.__blkBridge.onDone('{\"ok\":0}');}" +
-        "else doubleCollect();" +
-        "});});}" +
-        "function finish(){" +
-        "if(window.__blkDone)return;window.__blkDone=true;" +
-        "dpr=window.devicePixelRatio||1;" +
-        "var m=measure();" +
-        // 超高防御: 位图高上限(物理 px),超出以 transform:scale 等比缩(绘制级,布局/
-        // 断行零变化);html 底色补 body 背景,防缩放后右侧余量露白
-        "var ph=m.h*dpr;" +
-        "if(ph>" + limitPx + "){" +
-        "var z=" + limitPx + "/ph;" +
-        "document.body.style.transformOrigin='0 0';" +
-        "document.body.style.transform='scale('+z+')';" +
-        "var bg='';try{bg=getComputedStyle(document.body).backgroundColor;}catch(e){}" +
-        "if(bg&&bg!=='transparent'&&bg!=='rgba(0, 0, 0, 0)')" +
-        "document.documentElement.style.backgroundColor=bg;}" +
-        "collect();" +
-        "m=measure();" +
-        "console.log('BLK finish h='+m.h+' chars='+chars.length+' t='+ts());" +
-        "if(chars.length>" + GEOM_MAX_CHARS + "){window.__blkBridge.onDone('{\"ok\":0}');return;}" +
-        "var json='{\"ok\":1,\"w\":'+Math.round(m.w*dpr)+',\"h\":'+Math.round(m.h*dpr)+',\"cs\":'+JSON.stringify(chars.join(''))+',\"rs\":'+JSON.stringify(rects)+'}';" +
-        "window.__blkBridge.onDone(json);}" +
+        "if(m.w===lw&&m.h===lh){quiet++;}else{quiet=0;lw=m.w;lh=m.h;}" +
+        "if(quiet>=3){try{mo.disconnect();}catch(e){}res();}else raf(tick);}" +
+        "tick();});}" +
         "function start(){" +
-        "if(window.requestIdleCallback)requestIdleCallback(settleLoop,{timeout:500});else settleLoop();}" +
+        "resReady().then(function(){if(window.__blkDone)return;return layoutQuiet();})" +
+        ".then(function(){if(!window.__blkDone){console.log('BLK quiescent t='+ts());report(1,'');}});" +
+        "setTimeout(function(){if(!window.__blkDone){console.log('BLK barrier timeout');report(0,'timeout');}},15000);}" +
+        // native 截图后的页内收割(与位图同源;幂等重放 scale)
         "window.__blkRecollect=function(){" +
-        "dpr=window.devicePixelRatio||1;" +
+        "dpr=window.devicePixelRatio||1;applyScale();collect();" +
         "var m=measure();" +
-        // 超高缩放兜底(finish 未跑时在此执行;与 finish 同值幂等)
-        "var ph=m.h*dpr;" +
-        "if(ph>" + limitPx + "){" +
-        "var z=" + limitPx + "/ph;" +
-        "document.body.style.transformOrigin='0 0';" +
-        "document.body.style.transform='scale('+z+')';}" +
-        "collect();" +
-        "m=measure();" +
-        "if(chars.length>" + GEOM_MAX_CHARS + "){return '{\\\"ok\\\":0}';}" +
-        "return '{\"ok\":1,\"w\":'+Math.round(m.w*dpr)+',\"h\":'+Math.round(m.h*dpr)+',\"cs\":'+JSON.stringify(chars.join(''))+',\"rs\":'+JSON.stringify(rects)+'}';};" +
-        "Promise.all([loaded,fontLoads,bgLoads,fonts]).then(start);" +
-        "setTimeout(function(){if(!window.__blkDone){console.log('BLK timeout ok=0');window.__blkBridge.onDone('{\"ok\":0}');}},6000);})();</script>"
+        "if(chars.length===0)return '{\\\"ok\\\":2,\\\"why\\\":\\\"notext\\\"}';" +
+        "if(chars.length>" + GEOM_MAX_CHARS + ")return '{\\\"ok\\\":0,\\\"why\\\":\\\"cap\\\"}';" +
+        "return '{\\\"ok\\\":1,\\\"w\\\":'+Math.round(m.w*dpr)+',\\\"h\\\":'+Math.round(m.h*dpr)+" +
+        "',\\\"cs\\\":'+JSON.stringify(chars.join(''))+',\\\"rs\\\":'+JSON.stringify(rects)+'}';};" +
+        "if(document.readyState==='complete')start();" +
+        "else window.addEventListener('load',function(){start();});})();</script>"
 }

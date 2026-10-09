@@ -48,7 +48,10 @@ object BlockCache {
     // v12: 拦截器请求路径 percent-decode 后再映射文件(中文/空格文件名图片 404 → OBJ 破图)
     // v13: 量宽并取 documentElement.scrollWidth(body.scrollWidth 不计视口包含块的
     // 绝对定位/out-of-flow 溢出,正文聚合位图右缘被视口裁切);补齐 v12/v13 漏递增
-    const val RENDERER_VERSION = 13
+    // v14: 采集就绪改确定性静止屏障(资源终态+MutationObserver 布局静止,单次采集),
+    // 替代尺寸稳定投票+双遍全等投票+6s 超时的概率式方案;几何 rs 改扁平整数数组,
+    // 上限 5000→20000;纯图块上报 ok:2(无文字,非失败)
+    const val RENDERER_VERSION = 14
     const val DIR_NAME = "wblocks"
 
     fun md5(s: String): String =
@@ -103,31 +106,47 @@ object BlockCache {
         return cb
     }
 
-    // 几何 JSON: {"ok":1,"w":内容宽,"h":内容高,"cs":"字符序列","rs":[[x,y,w,h],...]}(像素坐标)
-    @kotlinx.serialization.Serializable
-    private data class GeomDto(
-        val ok: Int = 0,
-        val w: Int = 0,
-        val h: Int = 0,
-        val cs: String = "",
-        val rs: List<List<Float>> = emptyList()
-    )
-
-    private val geomJson = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
-
+    // 几何 JSON: {"ok":1,"w":内容宽,"h":内容高,"cs":"字符序列","rs":...}(像素坐标)。
+    // rs 两代格式兼容: 旧=嵌套数组 [[x,y,w,h],...],新(v14 渲染器起)=扁平整数数组
+    // [x,y,w,h,...](体积省 40%+)。ok:2 = 块内无文本(纯图/装饰块,非失败),
+    // 与 ok:0 采集失败同样解析为 null(选择退化,行为不变)
     fun parseGeomJson(json: String): BlockGeom? {
-        val dto = runCatching { geomJson.decodeFromString(GeomDto.serializer(), json) }.getOrNull() ?: return null
-        if (dto.ok != 1) return null
-        val n = dto.rs.size
-        if (dto.cs.length != n) return null   // 序列与矩形数必须一致(错位即弃用,选择走兜底)
-        val rects = FloatArray(n * 4)
-        dto.rs.forEachIndexed { i, r ->
-            if (r.size < 4) return null
-            rects[i * 4] = r[0]
-            rects[i * 4 + 1] = r[1]
-            rects[i * 4 + 2] = r[2]
-            rects[i * 4 + 3] = r[3]
+        val root = runCatching {
+            kotlinx.serialization.json.Json.parseToJsonElement(json)
+                .let { it as? kotlinx.serialization.json.JsonObject }
+        }.getOrNull() ?: return null
+        fun prim(key: String) =
+            (root[key] as? kotlinx.serialization.json.JsonPrimitive)
+        val ok = prim("ok")?.content?.toIntOrNull() ?: return null
+        if (ok != 1) return null
+        val w = prim("w")?.content?.toIntOrNull() ?: return null
+        val h = prim("h")?.content?.toIntOrNull() ?: return null
+        val cs = prim("cs")?.content ?: return null
+        val rs = root["rs"] as? kotlinx.serialization.json.JsonArray ?: return null
+        val rects: FloatArray
+        if (rs.isEmpty()) {
+            if (cs.isNotEmpty()) return null   // 序列与矩形数必须一致(错位即弃用,选择走兜底)
+            rects = FloatArray(0)
+        } else if (rs[0] is kotlinx.serialization.json.JsonPrimitive) {
+            // 新格式: 扁平 [x,y,w,h,...]
+            if (rs.size % 4 != 0 || rs.size / 4 != cs.length) return null
+            rects = FloatArray(rs.size) { i ->
+                (rs[i] as? kotlinx.serialization.json.JsonPrimitive)?.content?.toFloatOrNull()
+                    ?: return null
+            }
+        } else {
+            // 旧格式: 嵌套 [[x,y,w,h],...]
+            if (rs.size != cs.length) return null
+            rects = FloatArray(rs.size * 4)
+            rs.forEachIndexed { i, e ->
+                val r = e as? kotlinx.serialization.json.JsonArray ?: return null
+                if (r.size < 4) return null
+                for (k in 0 until 4) {
+                    rects[i * 4 + k] = (r[k] as? kotlinx.serialization.json.JsonPrimitive)
+                        ?.content?.toFloatOrNull() ?: return null
+                }
+            }
         }
-        return BlockGeom(dto.cs, rects, dto.w, dto.h)
+        return BlockGeom(cs, rects, w, h)
     }
 }
