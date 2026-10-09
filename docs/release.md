@@ -83,6 +83,13 @@ curl -s -X POST -H "Authorization: token $TOKEN" -H "Content-Type: application/o
 
 ## 6. 历史记录
 
+- 2026-10-09：v1.5.35 release（位图调试列表解码期占位:未解码条目按快照宽高显示
+  surfaceVariant 底+居中转圈,解码完成后原位替换,消除滚动空白与高度跳动;渲染逻辑
+  与 FORMAT_VERSION 零改动）。单测 215 通过;模拟器 debug+release 双包实测:大图
+  列表/滑动/点击跳章正常,占位高度稳定无跳动（转圈画面因单张解码约百毫秒短于
+  screencap 粒度未能截到,占位布局本身已 UI 确认）。发版注意:模拟器多包共存
+  （pub/pub.debug/pri.debug),冒烟前必须核对 topResumedActivity 包名,曾误在
+  debug 遗留界面上验证 release 导致误判"面板僵死"。
 - 2026-10-09：v1.5.34 release（位图调试面板大图化:列表条目由 72dp 小缩略图+AlertDialog
   预览改为整幅大图直显(按屏宽 inSampleSize 降采样,条目下方一行章号/键/尺寸/大小/
   内存磁盘/几何信息),点击条目直接跳转所在章首页(onJumpToChapter→specs 章首定位,
