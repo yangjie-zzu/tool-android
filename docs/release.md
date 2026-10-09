@@ -83,6 +83,14 @@ curl -s -X POST -H "Authorization: token $TOKEN" -H "Content-Type: application/o
 
 ## 6. 历史记录
 
+- 2026-10-09：v1.5.34 release（位图调试面板大图化:列表条目由 72dp 小缩略图+AlertDialog
+  预览改为整幅大图直显(按屏宽 inSampleSize 降采样,条目下方一行章号/键/尺寸/大小/
+  内存磁盘/几何信息),点击条目直接跳转所在章首页(onJumpToChapter→specs 章首定位,
+  与 TOC 同参,原弹窗预览删除);滑动流畅化:缩略图组合期主线程同步解码改 produceState
+  +IO 线程异步解码,加 48MB LruCache(path+mtime 为 key),解码前用快照宽高占位防跳动;
+  渲染逻辑与 FORMAT_VERSION 零改动）。单测 215 通过(run_tests.sh 直跑;gradle test
+  executor 本机报 GradleWorkerMain ClassNotFound 属环境问题);模拟器 debug+release
+  混淆双包实测:大图列表/快速滑动(gfxinfo janky 7.4%)/点击跳章均正常。
 - 2026-10-09：v1.5.33 release（body 高度铺满收敛:整章聚合块 fillViewport 仅 body
   自带可视背景(纯色底/图/渐变)时生效——页面级背景设计章保持背景铺满整页,body 无
   背景章(果青 Section004-0 等白底聚合章)位图高度=内容高度,不再注入撑满 CSS、落盘
