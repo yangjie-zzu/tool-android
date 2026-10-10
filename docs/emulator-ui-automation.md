@@ -112,6 +112,16 @@
   此时 logcat 可见该面板窗口 "Setting back callback null / Input channel disposed"——
   重开面板即恢复。遇到"面板看得见点不动"先怀疑实例僵死,关开面板重试,勿急于改代码。
 
+## 文字选择验证注意点(2026-10-10)
+
+- 长按用 `adb shell input motionevent DOWN x y` → sleep ≥1s → `input motionevent UP x y`
+  注入;`input swipe x y x y 时长`(零位移)或 `input tap` 不能触发 Compose 长按。
+  手柄拖动用 DOWN→多条 MOVE(步距 ≤30px、间隔 ≥100ms)→UP,单次大步距 MOVE 抓不到柄。
+- 截图坐标→设备坐标换算: 截图 974 宽/设备 1080 宽(≈1.109),纵向 ≈1.111;换算错会
+  误判"选择失效"。验证基线: 先在纯自绘文本页长按成功,再测位图块页。
+- 已知修复前缺陷(≤v1.5.35): 长按落在空白行会产生空选区(无高亮无手柄)并吞掉整页
+  后续 tap/长按,表象是"选择死锁";tap 一次可解。修复在 v1.5.35 之后的版本。
+
 ## 数据层调试(debug 包)
 
 - run-as 可直接读章缓存 JSON(`cache/reader/epub/<bookId>/chapters/ch_NNNN.txt`,v22
