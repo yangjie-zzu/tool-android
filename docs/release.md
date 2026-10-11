@@ -83,6 +83,9 @@ curl -s -X POST -H "Authorization: token $TOKEN" -H "Content-Type: application/o
 
 ## 6. 历史记录
 
+- 2026-10-11：v1.5.40 release（最近阅读过滤:只收录打开过的书——登记态 lastReadAt
+  预填导入时间,纯导入未读的书(ready=false)不再混入最近阅读）。模拟器 debug+release
+  双包实测:未打开的 testimg 从列表消失,打开过的书与排序不变。
 - 2026-10-11：v1.5.39 release（书架顶栏修正:顶层去掉"书架"大标题,双页签即导航,
   消除与"书架"页签的重名;组内顶栏照旧显示组名）。模拟器 debug+release 双包实测:
   顶层直达页签列表,组内标题正常。
