@@ -318,7 +318,8 @@ fun ReaderApp(
         ReaderBookshelfPage(
             groups = groups.filter { it.parentId == currentGroupId },
             books = books.filter { it.groupId == currentGroupId },
-            recentBooks = books.sortedByDescending { it.lastReadAt },
+            // 最近阅读只收录真正打开过的书(ready=懒初始化完成;纯登记态=只导入未读,不显示)
+            recentBooks = books.filter { it.ready }.sortedByDescending { it.lastReadAt },
             currentGroup = currentGroup,
             importing = importing,
             onOpen = { book ->
