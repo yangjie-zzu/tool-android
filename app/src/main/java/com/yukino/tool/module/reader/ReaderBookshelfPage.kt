@@ -1,6 +1,7 @@
 package com.yukino.tool.module.reader
 
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -8,12 +9,16 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
@@ -37,16 +42,19 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.yukino.tool.module.reader.common.BookFormat
 import com.yukino.tool.module.reader.common.ReaderBook
 import com.yukino.tool.module.reader.common.ReaderGroup
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -58,6 +66,7 @@ import java.util.Locale
 fun ReaderBookshelfPage(
     groups: List<ReaderGroup>,
     books: List<ReaderBook>,
+    recentBooks: List<ReaderBook>,
     currentGroup: ReaderGroup?,
     importing: Boolean,
     onOpen: (ReaderBook) -> Unit,
@@ -102,27 +111,96 @@ fun ReaderBookshelfPage(
 
             val sortedGroups = groups.sortedByDescending { it.addedAt }
             val sortedBooks = books.sortedByDescending { it.addedAt }
-            if (sortedGroups.isEmpty() && sortedBooks.isEmpty()) {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text(
-                        if (importing) "正在导入..." else "书架空空，点击右下角导入书籍或文件夹",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+            if (currentGroup == null) {
+                // 顶层双页: 最近阅读(默认页) ↔ 书架, 页签点击/左右横滑切换;组内为普通列表
+                val pagerState = rememberPagerState(initialPage = 0) { 2 }
+                val scope = rememberCoroutineScope()
+                Row(modifier = Modifier.fillMaxWidth()) {
+                    listOf("最近阅读", "书架").forEachIndexed { i, label ->
+                        val selected = pagerState.currentPage == i
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable { scope.launch { pagerState.animateScrollToPage(i) } }
+                                .padding(vertical = 10.dp)
+                        ) {
+                            Text(
+                                label,
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                                color = if (selected) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .padding(top = 4.dp)
+                                    .width(32.dp)
+                                    .height(3.dp)
+                                    .clip(RoundedCornerShape(2.dp))
+                                    .background(
+                                        if (selected) MaterialTheme.colorScheme.primary
+                                        else androidx.compose.ui.graphics.Color.Transparent
+                                    )
+                            )
+                        }
+                    }
+                }
+                HorizontalDivider()
+                HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
+                    when (page) {
+                        0 -> RecentList(recentBooks, onOpen)
+                        else -> {
+                            if (sortedGroups.isEmpty() && sortedBooks.isEmpty()) {
+                                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                    Text(
+                                        if (importing) "正在导入..." else "书架空空，点击右下角导入书籍或文件夹",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            } else {
+                                LazyColumn(modifier = Modifier.fillMaxSize()) {
+                                    items(sortedGroups, key = { "g:${it.id}" }) { group ->
+                                        GroupItem(
+                                            group = group,
+                                            onDelete = { deletingGroup = group },
+                                            onOpen = { onOpenGroup(group.id) }
+                                        )
+                                        HorizontalDivider()
+                                    }
+                                    items(sortedBooks, key = { it.id }) { book ->
+                                        BookItem(book = book, onOpen = onOpen, onDelete = onDelete)
+                                        HorizontalDivider()
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             } else {
-                LazyColumn(modifier = Modifier.fillMaxSize()) {
-                    items(sortedGroups, key = { "g:${it.id}" }) { group ->
-                        GroupItem(
-                            group = group,
-                            onDelete = { deletingGroup = group },
-                            onOpen = { onOpenGroup(group.id) }
+                if (sortedGroups.isEmpty() && sortedBooks.isEmpty()) {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text(
+                            if (importing) "正在导入..." else "分组是空的",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        HorizontalDivider()
                     }
-                    items(sortedBooks, key = { it.id }) { book ->
-                        BookItem(book = book, onOpen = onOpen, onDelete = onDelete)
-                        HorizontalDivider()
+                } else {
+                    LazyColumn(modifier = Modifier.fillMaxSize()) {
+                        items(sortedGroups, key = { "g:${it.id}" }) { group ->
+                            GroupItem(
+                                group = group,
+                                onDelete = { deletingGroup = group },
+                                onOpen = { onOpenGroup(group.id) }
+                            )
+                            HorizontalDivider()
+                        }
+                        items(sortedBooks, key = { it.id }) { book ->
+                            BookItem(book = book, onOpen = onOpen, onDelete = onDelete)
+                            HorizontalDivider()
+                        }
                     }
                 }
             }
@@ -227,25 +305,7 @@ private fun BookItem(
     onDelete: (ReaderBook) -> Unit
 ) {
     val dateFmt = remember(book.addedAt) { SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()) }
-    // 封面缩略图: 后台解码 ~96px 小图(48dp 行首);SVG 封面栅格化;无封面/解码失败回退图标
-    val cover by produceState<android.graphics.Bitmap?>(initialValue = null, book.coverPath) {
-        val path = book.coverPath ?: return@produceState
-        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            runCatching {
-                if (com.yukino.tool.module.reader.common.SvgDecoder.isSvg(path)) {
-                    com.yukino.tool.module.reader.common.SvgDecoder.decode(path, 96, 144)
-                } else {
-                    val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                    android.graphics.BitmapFactory.decodeFile(path, opts)
-                    var sample = 1
-                    while (opts.outWidth / (sample * 2) >= 96) sample *= 2
-                    opts.inSampleSize = sample
-                    opts.inJustDecodeBounds = false
-                    android.graphics.BitmapFactory.decodeFile(path, opts)
-                }
-            }.getOrNull()
-        }
-    }
+    val cover = rememberBookCover(book.coverPath)
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
@@ -309,5 +369,119 @@ private fun BookItem(
                 tint = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
+    }
+}
+
+// 封面缩略图解码(~96px 小图): SVG 栅格化;无封面/解码失败回退 null(调用方画占位图标)
+@Composable
+private fun rememberBookCover(path: String?): android.graphics.Bitmap? =
+    produceState<android.graphics.Bitmap?>(initialValue = null, path) {
+        val p = path ?: return@produceState
+        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching {
+                if (com.yukino.tool.module.reader.common.SvgDecoder.isSvg(p)) {
+                    com.yukino.tool.module.reader.common.SvgDecoder.decode(p, 96, 144)
+                } else {
+                    val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    android.graphics.BitmapFactory.decodeFile(p, opts)
+                    var sample = 1
+                    while (opts.outWidth / (sample * 2) >= 96) sample *= 2
+                    opts.inSampleSize = sample
+                    opts.inJustDecodeBounds = false
+                    android.graphics.BitmapFactory.decodeFile(p, opts)
+                }
+            }.getOrNull()
+        }
+    }.value
+
+// 最近阅读列表: 全部书籍按最后阅读时间倒序
+@Composable
+private fun RecentList(recentBooks: List<ReaderBook>, onOpen: (ReaderBook) -> Unit) {
+    if (recentBooks.isEmpty()) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text(
+                "暂无阅读记录",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        return
+    }
+    val now = System.currentTimeMillis()
+    LazyColumn(modifier = Modifier.fillMaxSize()) {
+        items(recentBooks, key = { it.id }) { book ->
+            RecentBookItem(book = book, now = now, onOpen = onOpen)
+            HorizontalDivider()
+        }
+    }
+}
+
+// 最近阅读条目: 封面 + 书名 + 格式·进度 + 最后阅读时间(刚刚/HH:mm/昨天/M-d/yyyy-M-d)
+@Composable
+private fun RecentBookItem(book: ReaderBook, now: Long, onOpen: (ReaderBook) -> Unit) {
+    val cover = rememberBookCover(book.coverPath)
+    val percent = (book.progress.percent * 100).toInt()
+    val cal = java.util.Calendar.getInstance().apply { timeInMillis = now }
+    val todayStart = cal.apply { set(java.util.Calendar.HOUR_OF_DAY, 0); set(java.util.Calendar.MINUTE, 0); set(java.util.Calendar.SECOND, 0); set(java.util.Calendar.MILLISECOND, 0) }.timeInMillis
+    val timeText = when {
+        book.lastReadAt >= now - 60 * 60 * 1000L -> "刚刚"
+        book.lastReadAt >= todayStart -> SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(book.lastReadAt))
+        book.lastReadAt >= todayStart - 24 * 60 * 60 * 1000L -> "昨天"
+        SimpleDateFormat("yyyy", Locale.getDefault()).format(Date(book.lastReadAt)) ==
+            SimpleDateFormat("yyyy", Locale.getDefault()).format(Date(now)) ->
+            SimpleDateFormat("M月d日", Locale.getDefault()).format(Date(book.lastReadAt))
+        else -> SimpleDateFormat("yyyy-M-d", Locale.getDefault()).format(Date(book.lastReadAt))
+    }
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onOpen(book) }
+            .padding(horizontal = 16.dp, vertical = 12.dp)
+    ) {
+        if (cover != null) {
+            Image(
+                bitmap = cover.asImageBitmap(),
+                contentDescription = null,
+                modifier = Modifier.size(48.dp, 72.dp).clip(RoundedCornerShape(4.dp))
+            )
+        } else {
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .size(48.dp, 72.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                Icon(
+                    Icons.AutoMirrored.Rounded.MenuBook,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        Column(
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+            modifier = Modifier
+                .weight(1f)
+                .padding(horizontal = 12.dp)
+        ) {
+            Text(
+                book.title,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                "${if (book.format == BookFormat.EPUB) "EPUB" else if (book.format == BookFormat.PDF) "PDF" else "TXT"} · 已读 ${percent}%",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Text(
+            timeText,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }

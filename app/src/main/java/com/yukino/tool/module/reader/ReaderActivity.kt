@@ -318,6 +318,7 @@ fun ReaderApp(
         ReaderBookshelfPage(
             groups = groups.filter { it.parentId == currentGroupId },
             books = books.filter { it.groupId == currentGroupId },
+            recentBooks = books.sortedByDescending { it.lastReadAt },
             currentGroup = currentGroup,
             importing = importing,
             onOpen = { book ->

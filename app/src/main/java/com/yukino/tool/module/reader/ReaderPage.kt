@@ -8,6 +8,7 @@ import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -517,8 +518,8 @@ fun ReaderScreen(
     }
 
     // 图片命中(混合渲染 §8): 版心坐标 → 图片文件绝对路径+显示矩形(窗口坐标,共位过渡起点)。
-    // 优先级: 块级图片行矩形 → 行内图片矩形(物化预计算) → 表格格内图片矩形(drawTable 布局坐标)。
-    // 命中则不呼菜单直接预览;WEBVIEW 块位图不响应点击(位图语义,原图入口已失)
+    // 优先级: WEBVIEW 块位图行矩形 → 块级图片行矩形 → 行内图片矩形(物化预计算) → 表格格内图片矩形(drawTable 布局坐标)。
+    // 命中则不呼菜单直接预览
     fun imageHitAt(offset: Offset): PreviewSource? {
         val bp = livePage ?: return null
         val t = liveTypo ?: return null
@@ -532,6 +533,13 @@ fun ReaderScreen(
                 l + t.marginPx, tp + contentTopPx, l + t.marginPx + w, tp + contentTopPx + h
             )
         )
+        // WEBVIEW 块位图行: x=段左缩进, baseline=行顶 y(与绘制同源公式);点击整块看大图
+        for (ln in bp.lines) {
+            if (ln.blockRef != null && ln.blockWidth > 0f && ln.blockHeight > 0f &&
+                cx >= ln.x && cx <= ln.x + ln.blockWidth &&
+                cy >= ln.baseline && cy <= ln.baseline + ln.blockHeight
+            ) return src(ln.blockRef!!, ln.x, ln.baseline, ln.blockWidth, ln.blockHeight)
+        }
         for (ln in bp.lines) {
             if (ln.imageRef != null && ln.imageWidth > 0f &&
                 cx >= ln.x && cx <= ln.x + ln.imageWidth &&
@@ -1586,10 +1594,48 @@ private fun ImagePreviewOverlay(
             off = Offset.Zero
         }
     }
+
+    // 图片可视矩形(当前 scale/off 下的实际显示范围): ContentScale.Fit 居中的 fit 矩形,
+    // 经 graphicsLayer 以屏幕中心为原点缩放 + off 平移。null = 位图未就绪
+    fun visualImageRect(): androidx.compose.ui.geometry.Rect? {
+        val bm = bitmap ?: return null
+        if (bm.width <= 0 || bm.height <= 0) return null
+        val s = minOf(screenW.toFloat() / bm.width, screenH.toFloat() / bm.height)
+        val w = bm.width * s
+        val h = bm.height * s
+        val cx = screenW / 2f
+        val cy = screenH / 2f
+        val fitL = (screenW - w) / 2f
+        val fitT = (screenH - h) / 2f
+        val l = cx + (fitL - cx) * scale + off.x
+        val t = cy + (fitT - cy) * scale + off.y
+        return androidx.compose.ui.geometry.Rect(l, t, l + w * scale, t + h * scale)
+    }
+
+    // 图片区双击判定: 自己记上次点击(不注册 onDoubleTap, 单击立即回调, 蒙层关闭零延迟)
+    val lastTap = remember { object { var t = 0L; var x = 0f; var y = 0f } }
     // 长按动作面板; 动作在预览位图就绪后可用
     var menuOpen by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val ctx = LocalContext.current
+
+    // 双击缩放切换: 1x ↔ 2.5x, 以点击点为焦点(动画期间保持该点内容不漂移)
+    fun tapZoomAt(f: Offset) {
+        val target = if (scale > 1.5f) 1f else 2.5f
+        val c = Offset(screenW / 2f, screenH / 2f)
+        val targetOff = if (target > 1f) {
+            Offset((c.x - f.x) * (target - 1f), (c.y - f.y) * (target - 1f))
+        } else Offset.Zero
+        scope.launch {
+            val s0 = scale
+            val o0 = off
+            animate(0f, 1f, animationSpec = tween(200)) { v, _ ->
+                scale = lerpF(s0, target, v)
+                off = Offset(lerpF(o0.x, targetOff.x, v), lerpF(o0.y, targetOff.y, v))
+            }
+        }
+    }
+
     fun runAction(block: (android.graphics.Bitmap) -> String?) {
         val bmp = bitmap ?: return
         menuOpen = false
@@ -1658,10 +1704,34 @@ private fun ImagePreviewOverlay(
                     }
                 }
                 .pointerInput(Unit) {
-                    // 只挂 onTap: 与 onDoubleTap 同注册时单击须等 300ms 双击超时才回调,
-                    // 关闭会明显延迟; 缩放交给捏合。面板打开时单击只收面板
+                    // 只挂 onTap: 不注册 onDoubleTap, 单击立即回调(无 300ms 双击等待)。
+                    // 点图片: 300ms 内二次点击=双击缩放切换, 单击无操作; 点蒙层: 立即关闭;
+                    // 长按动作面板; 缩放交给捏合
                     detectTapGestures(
-                        onTap = { if (menuOpen) menuOpen = false else close() },
+                        onTap = { o ->
+                            if (menuOpen) {
+                                menuOpen = false
+                                return@detectTapGestures
+                            }
+                            if (grow.value < 1f || closing) return@detectTapGestures
+                            val inImage = visualImageRect()?.contains(o) == true
+                            if (!inImage) {
+                                close()
+                                return@detectTapGestures
+                            }
+                            val now = SystemClock.uptimeMillis()
+                            val dbl = now - lastTap.t < 300 &&
+                                abs(o.x - lastTap.x) < screenW / 3f &&
+                                abs(o.y - lastTap.y) < screenH / 3f
+                            if (dbl) {
+                                lastTap.t = 0
+                                tapZoomAt(o)
+                            } else {
+                                lastTap.t = now
+                                lastTap.x = o.x
+                                lastTap.y = o.y
+                            }
+                        },
                         onLongPress = { if (bitmap != null && grow.value >= 1f) menuOpen = true }
                     )
                 },
