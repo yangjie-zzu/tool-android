@@ -123,6 +123,7 @@
                 <data android:mimeType="text/plain"/>
                 <data android:mimeType="application/octet-stream"/>
                 <data android:mimeType="application/epub+zip"/>
+                <data android:mimeType="application/pdf"/>
             </intent-filter>
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
@@ -130,6 +131,7 @@
                 <data android:mimeType="text/plain"/>
                 <data android:mimeType="application/octet-stream"/>
                 <data android:mimeType="application/epub+zip"/>
+                <data android:mimeType="application/pdf"/>
             </intent-filter>
         </activity>
         <provider

@@ -46,7 +46,7 @@ object BookRegistrar {
             val rootName = queryName(context, documentUri(treeUri, rootDocId)) ?: "导入文件夹"
             val files = ArrayList<Pair<String, String>>()   // (docId, 相对路径名)
             walk(context, treeUri, rootDocId, "") { docId, relName -> files += docId to relName }
-            if (files.isEmpty()) return@runCatching ImportResult.Failed("文件夹里没有 TXT/EPUB 书籍")
+            if (files.isEmpty()) return@runCatching ImportResult.Failed("文件夹里没有 TXT/EPUB/PDF 书籍")
 
             // 目录路径逐级建组: 所选文件夹本身成为一个组(组名=文件夹名),
             // 子目录为嵌套子组;每级按"同名同级复用"匹配已有组(重复导入不产生重复组)
@@ -76,6 +76,7 @@ object BookRegistrar {
                 val name = relName.substringAfterLast('/')
                 val format = when {
                     name.endsWith(".epub", true) -> BookFormat.EPUB
+                    name.endsWith(".pdf", true) -> BookFormat.PDF
                     name.endsWith(".txt", true) -> BookFormat.TXT
                     else -> continue
                 }
@@ -120,7 +121,11 @@ object BookRegistrar {
         if (existing != null) return ImportResult.Success(existing)   // 重复登记: 原样返回(自动打开)
 
         val name = queryName(context, uri) ?: uri.lastPathSegment ?: "未命名"
-        val format = if (name.endsWith(".epub", true)) BookFormat.EPUB else BookFormat.TXT
+        val format = when {
+            name.endsWith(".epub", true) -> BookFormat.EPUB
+            name.endsWith(".pdf", true) -> BookFormat.PDF
+            else -> BookFormat.TXT
+        }
         val now = System.currentTimeMillis()
         val id = UUID.randomUUID().toString()
         val book = ReaderBook(
@@ -144,8 +149,11 @@ object BookRegistrar {
 
     // 登记态也预生成缓存路径: 懒初始化写入位置在登记时即定
     private fun cachePathFor(context: Context, id: String, format: String): String =
-        if (format == BookFormat.EPUB) EpubImporter.chapterDir(context, id).absolutePath
-        else TxtImporter.cacheFile(context, id).absolutePath
+        when (format) {
+            BookFormat.EPUB -> EpubImporter.chapterDir(context, id).absolutePath
+            BookFormat.PDF -> com.yukino.tool.module.reader.pdf.PdfImporter.cacheFile(context, id).absolutePath
+            else -> TxtImporter.cacheFile(context, id).absolutePath
+        }
 
     private fun documentUri(treeUri: Uri, docId: String): Uri =
         DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
@@ -178,7 +186,7 @@ object BookRegistrar {
                         dirs += docId to name
                     } else {
                         val lower = name.lowercase()
-                        if (lower.endsWith(".txt") || lower.endsWith(".epub")) {
+                        if (lower.endsWith(".txt") || lower.endsWith(".epub") || lower.endsWith(".pdf")) {
                             onFile(docId, if (relPrefix.isEmpty()) name else "$relPrefix/$name")
                         }
                     }

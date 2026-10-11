@@ -141,7 +141,9 @@ fun ReaderApp(
     // 导入文件: 登记 → 自动打开(懒初始化在阅读页 loading 内完成)
     fun importFile() {
         scope.launch {
-            val uri = filePicker.open(arrayOf("text/*", "application/octet-stream", "application/epub+zip"))
+            val uri = filePicker.open(
+                arrayOf("text/*", "application/octet-stream", "application/epub+zip", "application/pdf")
+            )
                 ?: return@launch
             importing = true
             val result = BookRegistrar.register(context, uri, currentGroupId)
@@ -207,7 +209,11 @@ fun ReaderApp(
     fun deleteBook(book: ReaderBook) {
         books = books.filterNot { it.id == book.id }
         scope.launch(Dispatchers.IO) {
-            File(book.cachePath).deleteRecursively()   // txt 缓存文件 / epub 章节目录
+            File(book.cachePath).deleteRecursively()   // txt 缓存文件 / epub 章节目录 / pdf 文件
+            // pdf 封面等以书 id 为前缀的同目录附属文件一并清理
+            File(book.cachePath).parentFile
+                ?.listFiles { f -> f.name.startsWith(book.id) }
+                ?.forEach { it.delete() }
             ReaderStore.deleteSpecs(context, book.id)
             ReaderStore.deleteBookRow(context, book.id)
         }
@@ -261,7 +267,29 @@ fun ReaderApp(
 
     val current = readingBook
     if (current != null) {
-        ReaderScreen(
+        if (current.format == com.yukino.tool.module.reader.common.BookFormat.PDF) {
+            com.yukino.tool.module.reader.pdf.PdfScreen(
+                book = current,
+                settings = settings,
+                onSettingsChange = { next ->
+                    settings = next
+                    scope.launch(Dispatchers.IO) { ReaderStore.saveSettings(context, next) }
+                },
+                onProgress = { page, percent ->
+                    updateBook(current.id) {
+                        it.copy(
+                            progress = Progress(globalCharOffset = page, percent = percent),
+                            lastReadAt = System.currentTimeMillis()
+                        )
+                    }
+                },
+                onInitComplete = { refreshed ->
+                    books = books.map { if (it.id == refreshed.id) refreshed else it }
+                },
+                onBack = { readingId = null }
+            )
+        } else {
+            ReaderScreen(
             book = current,
             settings = settings,
             onSettingsChange = { next ->
@@ -284,6 +312,7 @@ fun ReaderApp(
                 readingId = null   // 进度已是单行即时落盘, 返回无需整表写回
             }
         )
+        }
     } else {
         val currentGroup = currentGroupId?.let { id -> groups.firstOrNull { it.id == id } }
         ReaderBookshelfPage(

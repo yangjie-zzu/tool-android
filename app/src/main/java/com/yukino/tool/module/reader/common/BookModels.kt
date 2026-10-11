@@ -5,6 +5,7 @@ import kotlinx.serialization.Serializable
 object BookFormat {
     const val TXT = "txt"
     const val EPUB = "epub"
+    const val PDF = "pdf"
 }
 
 // 章节: 标题 + 全书字符起始偏移。anchorId = 目录条目指向的文档内锚点
