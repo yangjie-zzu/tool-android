@@ -83,7 +83,7 @@ fun ReaderBookshelfPage(
 
     Box(modifier = Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // 顶栏: 组内显示返回 + 组名, 顶层显示"书架"
+            // 顶栏: 组内显示返回 + 组名; 顶层无标题(双页签即导航,"书架"会与页签重名)
             if (currentGroup != null) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -100,12 +100,6 @@ fun ReaderBookshelfPage(
                         modifier = Modifier.weight(1f)
                     )
                 }
-            } else {
-                Text(
-                    "书架",
-                    style = MaterialTheme.typography.titleLarge,
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp)
-                )
             }
             HorizontalDivider()
 
