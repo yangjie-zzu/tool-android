@@ -93,9 +93,11 @@ object EpubImporter {
             onStage("准备内容中…")
             dir.deleteRecursively()
             dir.mkdirs()
-            doInit(context, book, dir, onStage)
+            // 必须返回 doInit 的回填结果: 丢弃会以登记态(chapters=[]/ready=false)进入阅读页,
+            // 空书只剩封面封底两虚拟页, 且进度落盘会用登记态覆盖 doInit 的落库, 永久空书
+            val updated = doInit(context, book, dir, onStage)
             writeFormatMarker(dir)   // 全新导入成功落标记
-            book
+            return@withContext updated
         } else {
             onStage("解析章节中…")
             book
