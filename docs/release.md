@@ -83,6 +83,17 @@ curl -s -X POST -H "Authorization: token $TOKEN" -H "Content-Type: application/o
 
 ## 6. 历史记录
 
+- 2026-10-11：v1.5.37 release（阅读器支持 PDF + 两项修复）：①新增 PDF 固定版式阅读
+  ——系统 PdfRenderer 直渲（平行渲染路径 PdfScreen/PdfPageView，±2 邻页预渲染+96MB
+  位图 LRU，拖拽滑动翻页/进度条/跳页/设置复用现有交互），纯 Kotlin 书签树解析
+  （xref 表/交叉引用流/对象流//Prev 链/损坏兜底扫描，加密与解析失败降级空目录），
+  页码进度持久化，封面自动生成，无 DB 迁移零新依赖；②修复新导入 EPUB 首开空书
+  ——ensureReady 丢弃 doInit 回填结果，阅读页拿到 0 章内容源只剩"最后一页了"，
+  且进度落盘覆盖 doInit 落库致永久空书（存量坏书重开自动重新提取自愈）；③修复
+  "打开方式/分享"导入 uri 授权不持久——授权不可持久化时登记即转存源文件到应用
+  缓存，进程被杀后不再 Permission Denial。模拟器 debug+release 双包实测:PDF 导入
+  /阅读/翻页/目录跳页/跳页/进度恢复全链路通过;果青3 空书修复后正常(540 页,混合
+  渲染块/插图彩页正常);release 混淆版 EPUB 打开/翻页/WEBVIEW 块位图正常。
 - 2026-10-10：v1.5.36 release（块几何采集根本性重做+位图选择修复:①采集就绪改确定性
   静止屏障——资源终态(load/字体/图片 decode,以 error 事件为终态)+MutationObserver
   布局静止(3 双帧窗口零变更),单次采集上报,替代尺寸稳定投票+双遍全等投票+6s 超时的

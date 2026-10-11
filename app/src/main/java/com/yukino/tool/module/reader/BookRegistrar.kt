@@ -10,6 +10,7 @@ import com.yukino.tool.module.reader.common.Progress
 import com.yukino.tool.module.reader.common.ReaderBook
 import com.yukino.tool.module.reader.common.ReaderGroup
 import com.yukino.tool.module.reader.epub.EpubImporter
+import java.io.File
 import java.util.UUID
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -111,11 +112,15 @@ object BookRegistrar {
     }
 
     private fun doRegister(context: Context, uri: Uri, groupId: String?): ImportResult {
-        runCatching {
+        // 持久化授权失败(系统"打开方式/分享"进来的 grant 不带 persistable flag)时,
+        // 授权随进程死亡失效, 懒初始化将报 Permission Denial——此类 uri 登记时立即
+        // 把源文件转存到应用缓存, sourceUri 指向本地副本(删除书时按 id 前缀一并清理)
+        val persistable = runCatching {
             context.contentResolver.takePersistableUriPermission(
                 uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
             )
-        }
+        }.isSuccess
+
         val books = ReaderStore.loadBooks(context)
         val existing = books.firstOrNull { it.sourceUri == uri.toString() }
         if (existing != null) return ImportResult.Success(existing)   // 重复登记: 原样返回(自动打开)
@@ -128,10 +133,14 @@ object BookRegistrar {
         }
         val now = System.currentTimeMillis()
         val id = UUID.randomUUID().toString()
+        val effectiveUri = if (persistable) uri.toString() else {
+            copyToInbox(context, id, uri, name)
+                ?: return ImportResult.Failed("无法读取文件(授权不可持久且转存失败)")
+        }
         val book = ReaderBook(
             id = id,
             title = name.substringBeforeLast('.').ifBlank { "未命名" },
-            sourceUri = uri.toString(),
+            sourceUri = effectiveUri,
             cachePath = cachePathFor(context, id, format),
             encoding = "",
             totalChars = 0,
@@ -146,6 +155,20 @@ object BookRegistrar {
         ReaderStore.upsertBook(context, book)
         return ImportResult.Success(book)
     }
+
+    // 不可持久化授权的源文件转存: reader/books/<id>.src.<ext>(与各格式缓存同目录,
+    // 删书时按 id 前缀清理)。失败返回 null
+    private fun copyToInbox(context: Context, id: String, uri: Uri, name: String): String? =
+        runCatching {
+            val ext = name.substringAfterLast('.', "bin").take(8)
+            val dst = File(File(context.cacheDir, "reader/books"), "$id.src.$ext")
+            dst.parentFile?.mkdirs()
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                dst.outputStream().use { output -> input.copyTo(output) }
+            } ?: return null
+            if (dst.length() == 0L) return null
+            Uri.fromFile(dst).toString()
+        }.getOrNull()
 
     // 登记态也预生成缓存路径: 懒初始化写入位置在登记时即定
     private fun cachePathFor(context: Context, id: String, format: String): String =
