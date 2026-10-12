@@ -964,7 +964,9 @@ object BookPager {
         val cap = if (p.floatSide != 0 || p.widthAlign == 2 || p.widthAlign == 3) 0.85f else 0.45f
         ml = ml.coerceIn(0f, tw * cap)
         mr = mr.coerceIn(0f, tw * cap)
-        return ParaMetrics(ml, mr, tw - ml - mr, mr > 0.5f)
+        // 左缩进同样需要独立断行: 主 layout 全宽断行 + 绘制右移 ml 会截掉行尾 ml 像素
+        // (纯 margin-left 段,如 BONUS TRACK 的 margin-left:5.5em)
+        return ParaMetrics(ml, mr, tw - ml - mr, mr > 0.5f || ml > 0.5f)
     }
 
     // ---------- 表格布局(七期批次四) ----------
