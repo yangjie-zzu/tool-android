@@ -83,6 +83,14 @@ curl -s -X POST -H "Authorization: token $TOKEN" -H "Content-Type: application/o
 
 ## 6. 历史记录
 
+- 2026-10-13：v1.5.42 release（PDF 改连续滚动阅读:整本一个竖向滚动列表(LazyColumn),
+  页面位图按可视窗口惰性渲染(当前页±1/后2,复用串行渲染+96MB LRU),页间 2dp 缝,
+  去掉横滑翻页与翻页动画(删 PdfPageView);页码/进度按首个可视页实时落账,打开滚回
+  持久化进度页,目录/跳页/进度条改滚动定位;页面双击放大/还原(2.5x 焦点缩放),
+  单击呼菜单(延迟一拍避免双击干扰);含 v1.5.41 未发之左缩进段行尾截断修复)。
+  模拟器 debug 实测:滚动翻页/页码实时更新/单击呼菜单/双击放大还原全通过;
+  release 混淆版 EPUB 阅读无回归(PDF 专项验证因模拟器 DocumentsUI 索引卡死
+  无法导入新文件而跳过;PDF 渲染链路未改动,debug 已全链路覆盖)。
 - 2026-10-12：v1.5.41 release（修复纯左缩进段行尾截断:段级 margin-left(无定宽)
   此前不触发独立断行,主排版按版心全宽断行+绘制右移 ml,行尾超出版心被屏幕裁切
   ——果青3 BONUS TRACK margin-left:5.5em 段每行尾字被裁;needsOverride 补左缩进
