@@ -83,6 +83,12 @@ curl -s -X POST -H "Authorization: token $TOKEN" -H "Content-Type: application/o
 
 ## 6. 历史记录
 
+- 2026-10-12：v1.5.41 release（修复纯左缩进段行尾截断:段级 margin-left(无定宽)
+  此前不触发独立断行,主排版按版心全宽断行+绘制右移 ml,行尾超出版心被屏幕裁切
+  ——果青3 BONUS TRACK margin-left:5.5em 段每行尾字被裁;needsOverride 补左缩进
+  判定,左缩进段走独立断行收进版心）。模拟器 debug 实测:果青3 同页行尾完整、
+  缩进保留,前后页无回归;release 混淆版 EPUB 打开/翻页/块位图正常。
+  发版过程注:Gradle daemon OOM 崩,`--no-daemon -Dorg.gradle.jvmargs=-Xmx1536m` 通过。
 - 2026-10-11：v1.5.40 release（最近阅读过滤:只收录打开过的书——登记态 lastReadAt
   预填导入时间,纯导入未读的书(ready=false)不再混入最近阅读）。模拟器 debug+release
   双包实测:未打开的 testimg 从列表消失,打开过的书与排序不变。
