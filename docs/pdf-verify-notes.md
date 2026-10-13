@@ -21,3 +21,11 @@
 - 调试内部状态（缓存目录 `cache/reader/books/<bookId>.pdf`、`<bookId>.cover.png`）可用 `run-as com.yukino.tool.pub.debug` 查看/删除；**删 pdf 缓存文件可强制下次打开重新初始化**（重新解析目录/重建封面，进度保留）。
 - 文件选择器列表长、test_outline.pdf 排在尾部，需下滑 3 屏左右；tile 坐标每次滚动后必须重新 dump。
 - 系统 resolver 的"Just once"按钮在不同弹窗布局下 y 坐标不同（全列表 ~2054 / 默认高亮布局 ~1260），必须每次 dump 取 bounds。
+
+## 双击放大态验证（e8e0392 独占视口方案）
+
+- **双击注入**：`adb shell "input tap X Y && input tap X Y"`（设备端连发）可稳定触发；两条独立 adb 命令间隔常超 500ms 会被判为两次单击（呼菜单）。双击判定：500ms 内且两点距 < 宽/3。
+- **放大态结构确认**：uiautomator dump 找 `content-desc="第 N 页"` 的 Image 节点 bounds 即页面图 layout 位置（graphicsLayer 缩放不改 layout bounds）；用它判断"条目是否撑满视口/页面是否居中"最可靠。实测（1080x2220）非放大条目高 = 页面图高 1398（pageAspect≈1.294）。
+- **拖动位移观察**：大幅拖动后单张截图只能看到钳制终态；要判断"拖了 600px 动了多少"需拖动中连拍（后台 `input swipe ... &` + 循环 screencap，每张 ~0.3s）。
+- **放大态架构（2026-10-14 起为列表外全屏 overlay）**：双击放大不再在列表条目内缩放，而是 `PdfZoomOverlay` 全屏层（列表上方、菜单层下方）承接缩放/平移/还原；页面图在避让系统栏的区域内居中，dump 应看到页面图 bounds 垂直居中（1080x2220 上为 [0,411][1080,1809]）。条目只保留"双击上报焦点（onZoomRequest）+单击呼菜单"。曾用"条目内独占视口"方案（e8e0392）有两个问题已随 overlay 方案消失：条目 fillMaxSize 在 LazyColumn 无限高约束下撑不满视口（页面无法居中）、放大态垂直拖动钳制塌缩（几乎锁死）。
+- 首页图标坐标：截图（缩放到 975 宽）与实际（1080 宽，比例 0.903）不一致，"阅读"实际 bounds [854,1805][946,1871]，必须 dump 取实际坐标再点。
