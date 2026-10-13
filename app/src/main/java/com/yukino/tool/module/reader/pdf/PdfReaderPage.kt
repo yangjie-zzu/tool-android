@@ -13,6 +13,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -549,7 +550,25 @@ private fun PdfPageItem(
     }
     var scale by remember(index) { mutableStateOf(1f) }
     var origin by remember(index) { mutableStateOf(androidx.compose.ui.geometry.Offset(0.5f, 0.5f)) }
+    var pan by remember(index) { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
+    var itemSize by remember(index) { mutableStateOf(androidx.compose.ui.unit.IntSize.Zero) }
+    val zoomed = scale > 1.05f
     val scope = rememberCoroutineScope()
+
+    // 平移钳制: 放大后页面可视矩形不许拖出条目框(transformOrigin 中心缩放公式)
+    fun clampPan(): androidx.compose.ui.geometry.Offset {
+        val s = scale
+        if (s <= 1f) return androidx.compose.ui.geometry.Offset.Zero
+        val w = itemSize.width.coerceAtLeast(1).toFloat()
+        val h = itemSize.height.coerceAtLeast(1).toFloat()
+        val ox = origin.x * w
+        val oy = origin.y * h
+        val minX = -(w - ox) * (s - 1)
+        val maxX = ox * (s - 1)
+        val minY = -(h - oy) * (s - 1)
+        val maxY = oy * (s - 1)
+        return androidx.compose.ui.geometry.Offset(pan.x.coerceIn(minX, maxX), pan.y.coerceIn(minY, maxY))
+    }
 
     Box(
         modifier = Modifier
@@ -557,6 +576,21 @@ private fun PdfPageItem(
             .aspectRatio(if (aspect > 0f) 1f / aspect else 1.4f)
             .background(Color(bg))
             .clipToBounds()
+            .onSizeChanged { itemSize = it }
+            .then(
+                if (zoomed) Modifier.pointerInput(Unit) {
+                    // 放大态: 拖动平移看细节(消费拖动,列表不滚动);范围钳在条目框内
+                    detectDragGestures(
+                        onDrag = { change, amount ->
+                            change.consume()
+                            pan = androidx.compose.ui.geometry.Offset(
+                                pan.x + amount.x, pan.y + amount.y
+                            )
+                            pan = clampPan()
+                        }
+                    )
+                } else Modifier
+            )
             .pointerInput(index) {
                 // 自实现双击: 第一击不立即呼菜单(延迟 300ms, 期间来第二击=双击缩放),
                 // 避免"第一击开菜单干扰第二击"——zoom 稳定性优先
@@ -567,7 +601,7 @@ private fun PdfPageItem(
                 detectTapGestures(
                     onTap = { o ->
                         val now = android.os.SystemClock.uptimeMillis()
-                        val dbl = now - lastT < 300 &&
+                        val dbl = now - lastT < 500 &&
                             abs(o.x - lastX) < size.width / 3f &&
                             abs(o.y - lastY) < size.height / 3f
                         tapJob?.cancel()
@@ -609,9 +643,12 @@ private fun PdfPageItem(
                 modifier = Modifier
                     .fillMaxSize()
                     .graphicsLayer {
+                        val p = clampPan()
                         scaleX = scale
                         scaleY = scale
                         transformOrigin = androidx.compose.ui.graphics.TransformOrigin(origin.x, origin.y)
+                        translationX = p.x
+                        translationY = p.y
                     }
             )
         } else {
