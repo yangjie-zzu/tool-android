@@ -200,6 +200,8 @@ fun PdfScreen(
     // 滚动位置: 首个可视页(0 基)即当前页;初始落持久化进度页
     val savedPage = if (book.ready) book.progress.globalCharOffset.toInt().coerceAtLeast(0) else 0
     val listState = rememberLazyListState(initialFirstVisibleItemIndex = savedPage)
+    // 双击放大的页(独占视口): 非空时其他页隐藏、列表禁止滚动,还原后滚回该页
+    var zoomedIndex by remember(book.id) { mutableStateOf<Int?>(null) }
     val currentPage by remember {
         derivedStateOf { listState.firstVisibleItemIndex }
     }
@@ -288,21 +290,25 @@ fun PdfScreen(
                 // 呼菜单的单击由页面条目自己处理(onSingleTap): 外层 detectTapGestures
                 // 会消费 down, 把 LazyColumn 的滚动手势掐死
                 modifier = Modifier.fillMaxSize(),
+                userScrollEnabled = zoomedIndex == null,   // 放大态独占视口,禁列表滚动
                 contentPadding = PaddingValues(
                     top = with(density) { topInsetPx.toDp() },
                     bottom = with(density) { bottomInsetPx.toDp() }
                 )
             ) {
                 items(count = pageCount, key = { it }) { i ->
+                    if (zoomedIndex != null && zoomedIndex != i) return@items   // 放大时只显示该页
                     PdfPageItem(
                         index = i,
                         width = bmpWidth,
                         aspect = pageAspect,
                         bg = bgColor.toArgb(),
                         fg = fgColor.toArgb(),
+                        fullViewport = zoomedIndex == i,
+                        viewportHeightPx = viewport?.height ?: 0,
                         getOrRender = { getOrRender(i) },
                         cache = bmpCache,
-                        onDoubleTapZoom = { /* 预留 */ },
+                        onZoomChanged = { z -> zoomedIndex = if (z) i else null },
                         onSingleTap = { menuVisible = !menuVisible }
                     )
                 }
@@ -539,9 +545,11 @@ private fun PdfPageItem(
     aspect: Float,
     bg: Int,
     fg: Int,
+    fullViewport: Boolean,          // 双击放大的页: 独占视口(相邻页隐藏,列表禁滚)
+    viewportHeightPx: Int,
     getOrRender: suspend (Int) -> android.graphics.Bitmap?,
     cache: java.util.concurrent.ConcurrentHashMap<Int, android.graphics.Bitmap>,
-    onDoubleTapZoom: () -> Unit,
+    onZoomChanged: (Boolean) -> Unit,
     onSingleTap: () -> Unit
 ) {
     var bmp by remember(index, width) { mutableStateOf(cache[index]) }
@@ -551,16 +559,34 @@ private fun PdfPageItem(
     var scale by remember(index) { mutableStateOf(1f) }
     var origin by remember(index) { mutableStateOf(androidx.compose.ui.geometry.Offset(0.5f, 0.5f)) }
     var pan by remember(index) { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
-    var itemSize by remember(index) { mutableStateOf(androidx.compose.ui.unit.IntSize.Zero) }
-    val zoomed = scale > 1.05f
     val scope = rememberCoroutineScope()
 
-    // 平移钳制: 放大后页面可视矩形不许拖出条目框(transformOrigin 中心缩放公式)
+    // 双击缩放切换: 2.5x 以点击点为焦点(origin 移到点击处), 还原归位并上报退出放大
+    fun toggleZoom(focal: androidx.compose.ui.geometry.Offset, w: Float, h: Float) {
+        val target = if (scale > 1.5f) 1f else 2.5f
+        val newOrigin = androidx.compose.ui.geometry.Offset(focal.x / w, focal.y / h)
+        val o0 = origin
+        val s0 = scale
+        scope.launch {
+            animate(0f, 1f, animationSpec = tween(200)) { v, _ ->
+                scale = s0 + (target - s0) * v
+                origin = androidx.compose.ui.geometry.Offset(
+                    o0.x + (newOrigin.x - o0.x) * v,
+                    o0.y + (newOrigin.y - o0.y) * v
+                )
+            }
+            pan = androidx.compose.ui.geometry.Offset.Zero
+            onZoomChanged(target > 1.5f)
+        }
+    }
+
+    // 独占视口时: 外层条目 = 视口全高,内层页面图保持页宽高比居中
+    // 平移钳制: 放大后页面可视矩形不许拖出页面图矩形(transformOrigin 中心缩放公式)
     fun clampPan(): androidx.compose.ui.geometry.Offset {
         val s = scale
         if (s <= 1f) return androidx.compose.ui.geometry.Offset.Zero
-        val w = itemSize.width.coerceAtLeast(1).toFloat()
-        val h = itemSize.height.coerceAtLeast(1).toFloat()
+        val w = width.coerceAtLeast(1).toFloat()
+        val h = w * aspect
         val ox = origin.x * w
         val oy = origin.y * h
         val minX = -(w - ox) * (s - 1)
@@ -570,16 +596,23 @@ private fun PdfPageItem(
         return androidx.compose.ui.geometry.Offset(pan.x.coerceIn(minX, maxX), pan.y.coerceIn(minY, maxY))
     }
 
-    Box(
-        modifier = Modifier
+    val itemModifier = if (fullViewport) {
+        Modifier
+            .fillMaxSize()
+            .background(Color(bg))
+    } else {
+        Modifier
             .fillMaxWidth()
             .aspectRatio(if (aspect > 0f) 1f / aspect else 1.4f)
             .background(Color(bg))
+    }
+
+    Box(
+        modifier = itemModifier
             .clipToBounds()
-            .onSizeChanged { itemSize = it }
             .then(
-                if (zoomed) Modifier.pointerInput(Unit) {
-                    // 放大态: 拖动平移看细节(消费拖动,列表不滚动);范围钳在条目框内
+                if (fullViewport) Modifier.pointerInput(Unit) {
+                    // 放大态: 拖动平移看细节(消费拖动,列表不滚动);范围钳在页面图内
                     detectDragGestures(
                         onDrag = { change, amount ->
                             change.consume()
@@ -607,21 +640,14 @@ private fun PdfPageItem(
                         tapJob?.cancel()
                         if (dbl) {
                             lastT = 0
-                            val w = size.width.toFloat()
-                            val h = size.height.toFloat()
-                            val target = if (scale > 1.5f) 1f else 2.5f
-                            val newOrigin = androidx.compose.ui.geometry.Offset(o.x / w, o.y / h)
-                            val o0 = origin
-                            val s0 = scale
-                            scope.launch {
-                                animate(0f, 1f, animationSpec = tween(200)) { v, _ ->
-                                    scale = s0 + (target - s0) * v
-                                    origin = androidx.compose.ui.geometry.Offset(
-                                        o0.x + (newOrigin.x - o0.x) * v,
-                                        o0.y + (newOrigin.y - o0.y) * v
-                                    )
-                                }
-                            }
+                            // 焦点换算到页面图坐标(独占视口时页面图垂直居中)
+                            val w = width.coerceAtLeast(1).toFloat()
+                            val pageH = w * aspect
+                            val pageTop = ((size.height - pageH) / 2f).coerceAtLeast(0f)
+                            toggleZoom(
+                                androidx.compose.ui.geometry.Offset(o.x, o.y - pageTop),
+                                w, pageH
+                            )
                         } else {
                             lastT = now
                             lastX = o.x
@@ -637,20 +663,32 @@ private fun PdfPageItem(
     ) {
         val b = bmp
         if (b != null) {
-            androidx.compose.foundation.Image(
-                bitmap = b.asImageBitmap(),
-                contentDescription = "第 ${index + 1} 页",
+            // 页面图矩形: 独占视口时垂直居中(条目本身是视口全高), 裁剪放大内容不越界
+            Box(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .graphicsLayer {
-                        val p = clampPan()
-                        scaleX = scale
-                        scaleY = scale
-                        transformOrigin = androidx.compose.ui.graphics.TransformOrigin(origin.x, origin.y)
-                        translationX = p.x
-                        translationY = p.y
-                    }
-            )
+                    .then(
+                        if (fullViewport) Modifier
+                            .align(Alignment.Center)
+                            .aspectRatio(if (aspect > 0f) 1f / aspect else 1.4f)
+                            .clipToBounds()
+                        else Modifier
+                    )
+            ) {
+                androidx.compose.foundation.Image(
+                    bitmap = b.asImageBitmap(),
+                    contentDescription = "第 ${index + 1} 页",
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            val p = clampPan()
+                            scaleX = scale
+                            scaleY = scale
+                            transformOrigin = androidx.compose.ui.graphics.TransformOrigin(origin.x, origin.y)
+                            translationX = p.x
+                            translationY = p.y
+                        }
+                )
+            }
         } else {
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
