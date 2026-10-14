@@ -83,6 +83,14 @@ curl -s -X POST -H "Authorization: token $TOKEN" -H "Content-Type: application/o
 
 ## 6. 历史记录
 
+- 2026-10-14：v1.5.45 release（PDF 放大态四项修复:①放大内容裁剪层改整个屏幕,
+  铺满全屏无上下边带,钳制语义改"页面矩形覆盖整屏"并修正 y 轴完整公式,动画
+  每帧钳制保证初始铺满;②双击还原跳回首页修复——保存 (index,offset) 并在
+  LaunchedEffect(zoomedIndex) 条目恢复后 scrollToItem+dispatchRawDelta 精确
+  回位(scrollToItem 正 offset 首条目被钳/onDismiss 立即滚被吞两个坑);③放大
+  态返回键先还原放大再退书;④备忘录 pdf 解析失败系文件实为 Markdown 伪装
+  .pdf,属正常不改码）。模拟器 debug 实测:放大铺满+四向钳制+还原逐像素回位
+  (日志 save 0/200 → scrolled 0/200)+返回键两级行为+菜单/翻页/进度回归全通过。
 - 2026-10-14：v1.5.44 release（PDF 双击放大改列表外全屏 overlay:双击放大的页由
   列表上方 PdfZoomOverlay 全屏层承接缩放/平移/还原,页面图在避让系统栏的区域内
   居中占满视口;条目瘦身为纯展示+双击上报归一化焦点+单击呼菜单;列表保留禁滚与
