@@ -27,5 +27,7 @@
 - **双击注入**：`adb shell "input tap X Y && input tap X Y"`（设备端连发）可稳定触发；两条独立 adb 命令间隔常超 500ms 会被判为两次单击（呼菜单）。双击判定：500ms 内且两点距 < 宽/3。
 - **放大态结构确认**：uiautomator dump 找 `content-desc="第 N 页"` 的 Image 节点 bounds 即页面图 layout 位置（graphicsLayer 缩放不改 layout bounds）；用它判断"条目是否撑满视口/页面是否居中"最可靠。实测（1080x2220）非放大条目高 = 页面图高 1398（pageAspect≈1.294）。
 - **拖动位移观察**：大幅拖动后单张截图只能看到钳制终态；要判断"拖了 600px 动了多少"需拖动中连拍（后台 `input swipe ... &` + 循环 screencap，每张 ~0.3s）。
-- **放大态架构（2026-10-14 起为列表外全屏 overlay）**：双击放大不再在列表条目内缩放，而是 `PdfZoomOverlay` 全屏层（列表上方、菜单层下方）承接缩放/平移/还原；页面图在避让系统栏的区域内居中，dump 应看到页面图 bounds 垂直居中（1080x2220 上为 [0,411][1080,1809]）。条目只保留"双击上报焦点（onZoomRequest）+单击呼菜单"。曾用"条目内独占视口"方案（e8e0392）有两个问题已随 overlay 方案消失：条目 fillMaxSize 在 LazyColumn 无限高约束下撑不满视口（页面无法居中）、放大态垂直拖动钳制塌缩（几乎锁死）。
+- **放大态架构（2026-10-14 起为列表外全屏 overlay）**：双击放大不再在列表条目内缩放，而是 `PdfZoomOverlay` 全屏层（列表上方、菜单层下方）承接缩放/平移/还原。放大内容裁剪并**铺满整个屏幕**（含系统栏区，无上下边带），平移钳制要求"放大后页面矩形覆盖整屏"——**y 轴钳制必须用完整公式（含页面图 1x 上下边缘 t/b）**，照搬 x 轴公式（页面顶=0 的假设）会让页面能拖出屏幕。放大/还原动画每帧 `pan = clampPan()`，保证初始位置自动铺满。条目只保留"双击上报焦点（onZoomRequest）+单击呼菜单"。
+- **还原位置恢复的两个坑**：① 放大态列表只保留被放大条目，LazyList 的 scrollOffset 被重置——须在 onZoomRequest 时保存 (firstVisibleItemIndex, firstVisibleItemScrollOffset)；② `scrollToItem(idx, off)` 的正 offset 在首条目（idx=0）上会被钳回 0，且在 onDismiss 里立即滚会因"zoomedIndex=null 的重组未应用、列表仍只有放大条目、无可滚空间"而被整体吞掉——正确做法：`LaunchedEffect(zoomedIndex)` 等条目恢复后 `scrollToItem(idx)` + `dispatchRawDelta(off.toFloat())`。
+- **放大态返回键**：zoomedIndex != null 时 BackHandler 拦截返回=还原放大（直接摘层），再按一次才退书。
 - 首页图标坐标：截图（缩放到 975 宽）与实际（1080 宽，比例 0.903）不一致，"阅读"实际 bounds [854,1805][946,1871]，必须 dump 取实际坐标再点。
