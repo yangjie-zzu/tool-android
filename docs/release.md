@@ -80,6 +80,14 @@ curl -s -X POST -H "Authorization: token $TOKEN" -H "Content-Type: application/o
 - 下载地址格式：`https://github.com/yangjie-zzu/tool-android/releases/download/v<版本>/<apk 文件名>`
 - Release 管理页：`https://github.com/yangjie-zzu/tool-android/releases`
 - gh CLI 未安装时用上述 API 方式；token 来自 git credential helper（https push 同源），scope 够用。
+- **只上传 release 包，debug 包不再传 GitHub Release**（2026-10-14 结论）：debug 包
+  51.8MB 超过本机代理对上传请求体的限制（~50MB，35MB 的 release 包可过）；症状为
+  数据全部到达（资产 size 完整）但 finalize 响应被掐（curl http:000 / SSL EOF），
+  资产滞留 starter 状态且 API 删除 404（GitHub 会自动 GC，不占名，可直接重传同名）。
+  curl/python、走代理/直连均复现。debug 包需要分发时走局域网 HTTP（见第 4 节）。
+- **上传期网络抖动的处理**：上传返回非 201 时空转重传即可（starter 不占名），间隔
+  25~90s 多试几次；若整段时间持续失败（网络时段问题），等网络恢复后重传。验证资产
+  是否可用：`GET /releases/{id}/assets` 看 state=uploaded，下载地址 HEAD 应 200/206。
 
 ## 6. 历史记录
 
