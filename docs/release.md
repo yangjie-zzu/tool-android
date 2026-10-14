@@ -88,6 +88,12 @@ curl -s -X POST -H "Authorization: token $TOKEN" -H "Content-Type: application/o
 - **上传期网络抖动的处理**：上传返回非 201 时空转重传即可（starter 不占名），间隔
   25~90s 多试几次；若整段时间持续失败（网络时段问题），等网络恢复后重传。验证资产
   是否可用：`GET /releases/{id}/assets` 看 state=uploaded，下载地址 HEAD 应 200/206。
+- **本机双代理软件端口冲突（2026-10-14 发现）**：Clash for Windows 与 Bettbox 同时
+  运行时，`127.0.0.1:7890` 被 clash-win64 的具体绑定占用，BettboxCore 只剩
+  `0.0.0.0:7890`——显式代理 `-x 127.0.0.1:7890` 的流量实际进 Clash 而非 Bettbox；
+  用本机局域网 IP（如 `192.168.88.100:7890`）访问可命中 Bettbox。若两路上传都在
+  finalize 阶段被掐（数据完整到达、资产滞留 starter），为链路对 uploads.github.com
+  大上传的时段性限制，换代理软件无效，等网络恢复重传即可。
 
 ## 6. 历史记录
 
