@@ -57,6 +57,16 @@ py -m http.server 8766 --bind 0.0.0.0   # 后台运行
 
 ## 5. 发布到 GitHub Release
 
+> **2026-10-15 起首选 GitHub Actions 全自动发布**（本机直传 uploads.github.com 存在
+> 大上传被链路掐断的时段性问题，见下方补充说明）：commit + 递增版本号后，
+> `git tag vX.Y.Z && git -c http.proxy=http://127.0.0.1:7890 push origin vX.Y.Z`，
+> Actions（.github/workflows/release.yml）自动构建 release+debug 两个 APK 并上传到
+> 该 tag 的 Release。手动补发历史版本：仓库 Actions 页选 Release → Run workflow →
+> 填 tag 名；或 API POST /actions/workflows/release.yml/dispatches。
+> 签名依赖 4 个 repo secrets：ANDROID_KEYSTORE_BASE64（key.jks 的 base64）、
+> ANDROID_SIGNE_STORE_PASSWORD / ANDROID_SIGNE_ALIAS / ANDROID_SIGNE_PASSWORD
+> （2026-10-15 已配置）。以下为手动直传方式（备用）：
+
 ```bash
 git push origin master
 git tag -f v<版本> master && git push origin v<版本>   # tag 已在远程时先 push :refs/tags/<tag> 删除重推
