@@ -107,6 +107,13 @@ curl -s -X POST -H "Authorization: token $TOKEN" -H "Content-Type: application/o
 
 ## 6. 历史记录
 
+- 2026-10-16：v1.5.47 release（PDF 放大态钳制修正+拖动惯性:①钳制与双击焦点
+  换算改按页面图实际布局矩形(pageLayout: 先按层宽适配, 页高超层按层高适配,
+  双向居中)——修复长条页放大后拖到左右极限页面不贴边、露背景;②拖动接入
+  VelocityTracker+Animatable.animateDecay 惯性滑行, 撞边停住, 再拖接管。
+  模拟器实测: 长页测试 PDF(360x1080 页缘红竖线, 资产 long_test.pdf)放大后
+  左右拖到极限红边贴屏幕边; 快速滑动松手连拍 1.25s 内容滑行减速;
+  普通竖版页无回归）。
 - 2026-10-16：v1.5.46 release（PDF 进度恢复精确到页内偏移:reader_book 加
   scroll_offset 列(DB v8 迁移), Progress 加 scrollOffset 字段(仅 PDF 用),
   打开时 initialFirstVisibleItemScrollOffset 精确落位, 页码变化上报+退出
