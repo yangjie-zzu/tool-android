@@ -16,7 +16,7 @@ import android.database.sqlite.SQLiteOpenHelper
 object AppDb {
 
     private const val NAME = "tool.db"
-    private const val VERSION = 7
+    private const val VERSION = 8
 
     @Volatile
     private var helper: SQLiteOpenHelper? = null
@@ -61,6 +61,10 @@ object AppDb {
                     // v7: 行距跟随书内 CSS 开关(关=全局行距覆盖书内 line-height)
                     if (oldVersion < 7) {
                         db.execSQL("ALTER TABLE reader_settings ADD COLUMN book_line_height INTEGER NOT NULL DEFAULT 1")
+                    }
+                    // v8: reader_book 加连续滚动页内偏移(目前仅 PDF 用, 其他格式恒 0)
+                    if (oldVersion < 8) {
+                        db.execSQL("ALTER TABLE reader_book ADD COLUMN scroll_offset INTEGER NOT NULL DEFAULT 0")
                     }
                 }
             }
@@ -116,7 +120,8 @@ object AppDb {
                     "author TEXT, " +                          // epub 元数据
                     "cover_path TEXT, " +                      // 封面图路径(二期启用)
                     "group_id TEXT, " +                        // 所属分组;NULL=未分组
-                    "ready INTEGER NOT NULL DEFAULT 0)"        // 0=登记态(内容未落盘/章节未解析)
+                    "ready INTEGER NOT NULL DEFAULT 0, " +     // 0=登记态(内容未落盘/章节未解析)
+                    "scroll_offset INTEGER NOT NULL DEFAULT 0)" // 连续滚动页内偏移(px, 目前仅 PDF)
             )
             db.execSQL("CREATE INDEX idx_book_last_read ON reader_book(last_read_at DESC)")
             // 书架分组(可嵌套, 带来源文件夹 uri)

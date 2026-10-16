@@ -275,10 +275,10 @@ fun ReaderApp(
                     settings = next
                     scope.launch(Dispatchers.IO) { ReaderStore.saveSettings(context, next) }
                 },
-                onProgress = { page, percent ->
+                onProgress = { page, percent, scrollOffset ->
                     updateBook(current.id) {
                         it.copy(
-                            progress = Progress(globalCharOffset = page, percent = percent),
+                            progress = Progress(globalCharOffset = page, percent = percent, scrollOffset = scrollOffset),
                             lastReadAt = System.currentTimeMillis()
                         )
                     }

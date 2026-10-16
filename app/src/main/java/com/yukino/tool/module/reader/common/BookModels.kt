@@ -24,7 +24,8 @@ data class ChapterIndex(
 @Serializable
 data class Progress(
     val globalCharOffset: Long = 0,
-    val percent: Double = 0.0
+    val percent: Double = 0.0,
+    val scrollOffset: Int = 0   // 连续滚动列表的页内偏移(px);目前仅 PDF 用, 其他格式恒 0
 )
 
 // 分组: 可嵌套(parentId 指向另一组, NULL=顶层组)。存 reader_group 表。

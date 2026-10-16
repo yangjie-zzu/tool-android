@@ -27,7 +27,7 @@ object ReaderStore {
     private const val BOOK_COLUMNS =
         "id, title, source_uri, cache_path, encoding, total_chars, chapters, " +
             "added_at, last_read_at, progress_offset, progress_percent, file_size, " +
-            "format, author, cover_path, group_id, ready"
+            "format, author, cover_path, group_id, ready, scroll_offset"
 
     private fun ReaderBook.bind(st: android.database.sqlite.SQLiteStatement) {
         st.bindString(1, id)
@@ -47,6 +47,7 @@ object ReaderStore {
         if (coverPath != null) st.bindString(15, coverPath) else st.bindNull(15)
         if (groupId != null) st.bindString(16, groupId) else st.bindNull(16)
         st.bindLong(17, if (ready) 1 else 0)
+        st.bindLong(18, progress.scrollOffset.toLong())
     }
 
     @Synchronized
@@ -69,7 +70,8 @@ object ReaderStore {
                         lastReadAt = c.getLong(8),
                         progress = Progress(
                             globalCharOffset = c.getLong(9),
-                            percent = c.getDouble(10)
+                            percent = c.getDouble(10),
+                            scrollOffset = if (c.isNull(17)) 0 else c.getInt(17)
                         ),
                         fileSize = c.getLong(11),
                         format = if (c.isNull(12)) BookFormat.TXT else c.getString(12),
@@ -88,7 +90,7 @@ object ReaderStore {
     @Synchronized
     fun upsertBook(context: Context, book: ReaderBook) {
         val st = AppDb.get(context).compileStatement(
-            "INSERT OR REPLACE INTO reader_book($BOOK_COLUMNS) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+            "INSERT OR REPLACE INTO reader_book($BOOK_COLUMNS) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
         )
         book.bind(st)
         st.executeInsert()
@@ -108,7 +110,7 @@ object ReaderStore {
         db.beginTransaction()
         try {
             val st = db.compileStatement(
-                "INSERT OR REPLACE INTO reader_book($BOOK_COLUMNS) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+                "INSERT OR REPLACE INTO reader_book($BOOK_COLUMNS) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
             )
             books.forEach { it.bind(st); st.executeInsert() }
             db.setTransactionSuccessful()

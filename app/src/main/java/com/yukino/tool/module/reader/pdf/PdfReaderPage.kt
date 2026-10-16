@@ -140,7 +140,7 @@ fun PdfScreen(
     book: ReaderBook,
     settings: ReaderSettings,
     onSettingsChange: (ReaderSettings) -> Unit,
-    onProgress: (page: Long, percent: Double) -> Unit,
+    onProgress: (page: Long, percent: Double, scrollOffset: Int) -> Unit,
     onInitComplete: (ReaderBook) -> Unit,
     onBack: () -> Unit
 ) {
@@ -197,15 +197,32 @@ fun PdfScreen(
 
     val pageCount = doc?.pageCount ?: 0
 
-    // 滚动位置: 首个可视页(0 基)即当前页;初始落持久化进度页
+    // 滚动位置: 首个可视页(0 基)即当前页;初始落持久化进度页+页内偏移
     val savedPage = if (book.ready) book.progress.globalCharOffset.toInt().coerceAtLeast(0) else 0
-    val listState = rememberLazyListState(initialFirstVisibleItemIndex = savedPage)
+    // 偏移存档只在与进度页码同源时可信(跳页/重分页后页码变了, 旧偏移不能跨页用)
+    val savedOffset = if (book.ready) book.progress.scrollOffset.coerceAtLeast(0) else 0
+    val listState = rememberLazyListState(
+        initialFirstVisibleItemIndex = savedPage,
+        initialFirstVisibleItemScrollOffset = savedOffset
+    )
     // 双击放大的页: 缩放/平移由列表上方的全屏 overlay 承接,列表禁滚,还原后原地恢复
     var zoomedIndex by remember(book.id) { mutableStateOf<Int?>(null) }
     // 呼出放大时的双击焦点(页面内归一化坐标),overlay 以它为放大中心
     var zoomFocal by remember(book.id) { mutableStateOf(androidx.compose.ui.geometry.Offset(0.5f, 0.5f)) }
     // 放大前的列表滚动位置: 放大态条目跳变会重置 LazyList 的 scrollOffset,还原后显式滚回
     var savedScroll by remember(book.id) { mutableStateOf<Pair<Int, Int>?>(null) }
+    // 进度退出补报须先于 doc 释放注册: onDispose 按注册顺序执行, renderer 关闭后 pageCount=0 会跳过上报
+    DisposableEffect(Unit) {
+        onDispose {
+            // 实时读 doc: pageCount 是组合期局部 val, 闭包捕获的是首次组合(doc 未载)的 0
+            val pc = doc?.pageCount ?: 0
+            if (pc > 0) {
+                val idx = listState.firstVisibleItemIndex.coerceIn(0, pc - 1)
+                onProgress(idx.toLong(), (idx + 1).toDouble() / pc, listState.firstVisibleItemScrollOffset)
+            }
+        }
+    }
+
     val currentPage by remember {
         derivedStateOf { listState.firstVisibleItemIndex }
     }
@@ -240,11 +257,12 @@ fun PdfScreen(
         }
     }
 
-    // 进度上报(内存态,上层防抖落盘): 首个可视页即当前页
+    // 进度上报(内存态,上层防抖落盘): 首个可视页+页内偏移。页码变化时上报;
+    // 页内滚动不改页码, 退出组合时补报一次, 保证重开恢复到退出时的精确位置
     LaunchedEffect(currentPage, pageCount) {
         if (pageCount <= 0) return@LaunchedEffect
         val idx = currentPage.coerceIn(0, pageCount - 1)
-        onProgress(idx.toLong(), (idx + 1).toDouble() / pageCount)
+        onProgress(idx.toLong(), (idx + 1).toDouble() / pageCount, listState.firstVisibleItemScrollOffset)
     }
 
     fun seekToPage(target: Int) {
