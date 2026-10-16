@@ -107,6 +107,14 @@ curl -s -X POST -H "Authorization: token $TOKEN" -H "Content-Type: application/o
 
 ## 6. 历史记录
 
+- 2026-10-16：v1.5.46 release（PDF 进度恢复精确到页内偏移:reader_book 加
+  scroll_offset 列(DB v8 迁移), Progress 加 scrollOffset 字段(仅 PDF 用),
+  打开时 initialFirstVisibleItemScrollOffset 精确落位, 页码变化上报+退出
+  组合补报——修复"滑动后重开位置不一样"。三个坑已记 docs/pdf-verify-notes:
+  upsert VALUES 占位符随列同步加/进度补报 DisposableEffect 注册在 doc 释放前/
+  onDispose 闭包须实时读 doc?.pageCount）。模拟器实测: v7 库覆装迁移无感,
+  滑动(offset=708)退出重开前后截图逐像素一致, 落库 (0,708), txt 流式书
+  进度不受影响; 本版起 APK 由 GitHub Actions 自动构建上传(push tag 触发)。
 - 2026-10-14：v1.5.45 release（PDF 放大态四项修复:①放大内容裁剪层改整个屏幕,
   铺满全屏无上下边带,钳制语义改"页面矩形覆盖整屏"并修正 y 轴完整公式,动画
   每帧钳制保证初始铺满;②双击还原跳回首页修复——保存 (index,offset) 并在
