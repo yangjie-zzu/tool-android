@@ -1,0 +1,58 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 360 1080] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+endobj
+4 0 obj
+<< /Length 991 >>
+stream
+0.9 0.2 0.2 RG 3 w 8 0 m 8 1080 l S 352 0 m 352 1080 l S
+BT /F1 20 Tf 20 1050 Td (TOP-LONG) Tj ET
+BT /F1 20 Tf 20 20 Td (BOTTOM-LONG) Tj ET
+0 0 0 RG 1.5 w 24 980 m 336 980 l S
+BT /F1 14 Tf 30 988 Td (L00) Tj ET
+0 0 0 RG 1.5 w 24 900 m 336 900 l S
+BT /F1 14 Tf 30 908 Td (L01) Tj ET
+0 0 0 RG 1.5 w 24 820 m 336 820 l S
+BT /F1 14 Tf 30 828 Td (L02) Tj ET
+0 0 0 RG 1.5 w 24 740 m 336 740 l S
+BT /F1 14 Tf 30 748 Td (L03) Tj ET
+0 0 0 RG 1.5 w 24 660 m 336 660 l S
+BT /F1 14 Tf 30 668 Td (L04) Tj ET
+0 0 0 RG 1.5 w 24 580 m 336 580 l S
+BT /F1 14 Tf 30 588 Td (L05) Tj ET
+0 0 0 RG 1.5 w 24 500 m 336 500 l S
+BT /F1 14 Tf 30 508 Td (L06) Tj ET
+0 0 0 RG 1.5 w 24 420 m 336 420 l S
+BT /F1 14 Tf 30 428 Td (L07) Tj ET
+0 0 0 RG 1.5 w 24 340 m 336 340 l S
+BT /F1 14 Tf 30 348 Td (L08) Tj ET
+0 0 0 RG 1.5 w 24 260 m 336 260 l S
+BT /F1 14 Tf 30 268 Td (L09) Tj ET
+0 0 0 RG 1.5 w 24 180 m 336 180 l S
+BT /F1 14 Tf 30 188 Td (L10) Tj ET
+0 0 0 RG 1.5 w 24 100 m 336 100 l S
+BT /F1 14 Tf 30 108 Td (L11) Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000242 00000 n 
+0000001284 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+1354
+%%EOF

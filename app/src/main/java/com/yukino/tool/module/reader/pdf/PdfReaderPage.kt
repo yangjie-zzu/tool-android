@@ -13,6 +13,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.animation.core.VectorConverter
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
@@ -702,27 +703,42 @@ private fun PdfZoomOverlay(
     var origin by remember { mutableStateOf(initialFocal) }
     var pan by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
     var layerSize by remember { mutableStateOf(androidx.compose.ui.unit.IntSize.Zero) }
+    var flingJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
     val scope = rememberCoroutineScope()
 
-    // 平移钳制: 放大后的页面矩形须覆盖整个层(页面图 1x 时在层内垂直居中)。
-    // 注意 y 轴页面图上下边缘不在层边缘,须用完整公式;某维度盖不住层(极扁页)时该轴固定居中
-    fun clampPan(): androidx.compose.ui.geometry.Offset {
+    // 页面图实际布局矩形: 与 aspectRatio 布局一致(先按层宽适配, 页高超层则按层高适配), 双向居中。
+    // 长条页(页高/页宽 > 层高/层宽)按高适配后页宽小于层宽——钳制与焦点换算必须基于此矩形,
+    // 否则拖到极限页面不贴边、左右露背景
+    fun pageLayout(w: Float, h: Float): androidx.compose.ui.geometry.Rect {
+        var pw = w
+        var ph = pw * aspect
+        if (ph > h) {
+            ph = h
+            pw = if (aspect > 0f) h / aspect else w
+        }
+        return androidx.compose.ui.geometry.Rect(
+            androidx.compose.ui.geometry.Offset((w - pw) / 2f, (h - ph) / 2f),
+            androidx.compose.ui.geometry.Size(pw, ph)
+        )
+    }
+
+    // 平移钳制: 放大后的页面矩形须覆盖整个层。页面图上下/左右边缘都可能不在层边缘,
+    // 均须用含页面图矩形偏移的完整公式; 放大后仍盖不住层的维度(极扁/极长页)该轴固定居中
+    fun clampPan(p: androidx.compose.ui.geometry.Offset): androidx.compose.ui.geometry.Offset {
         val s = scale
         if (s <= 1f) return androidx.compose.ui.geometry.Offset.Zero
         val w = layerSize.width.coerceAtLeast(1).toFloat()
         val h = layerSize.height.coerceAtLeast(1).toFloat()
-        val pageH = w * aspect
-        val t = (h - pageH) / 2f      // 页面图 1x 顶
-        val b = t + pageH             // 页面图 1x 底
-        val ox = origin.x * w         // 焦点屏幕坐标
-        val oy = t + origin.y * pageH
-        val minX = w - ox * (1 - s) - w * s
-        val maxX = ox * (s - 1)
-        val minY = h - oy * (1 - s) - b * s
-        val maxY = oy * (s - 1) - t * s
+        val r = pageLayout(w, h)
+        val ox = r.left + origin.x * r.width
+        val oy = r.top + origin.y * r.height
+        val minX = w - ox * (1 - s) - r.right * s
+        val maxX = ox * (s - 1) - r.left * s
+        val minY = h - oy * (1 - s) - r.bottom * s
+        val maxY = oy * (s - 1) - r.top * s
         return androidx.compose.ui.geometry.Offset(
-            if (maxX < minX) 0f else pan.x.coerceIn(minX, maxX),
-            if (maxY < minY) 0f else pan.y.coerceIn(minY, maxY)
+            if (maxX < minX) 0f else p.x.coerceIn(minX, maxX),
+            if (maxY < minY) 0f else p.y.coerceIn(minY, maxY)
         )
     }
 
@@ -730,7 +746,7 @@ private fun PdfZoomOverlay(
     LaunchedEffect(Unit) {
         animate(1f, 2.5f, animationSpec = tween(200)) { v, _ ->
             scale = v
-            pan = clampPan()
+            pan = clampPan(pan)
         }
     }
 
@@ -746,9 +762,9 @@ private fun PdfZoomOverlay(
                     o0.x + (focal.x - o0.x) * v,
                     o0.y + (focal.y - o0.y) * v
                 )
-                pan = clampPan()
+                pan = clampPan(pan)
             }
-            pan = clampPan()
+            pan = clampPan(pan)
             if (target <= 1.5f) onDismiss()
         }
     }
@@ -760,14 +776,32 @@ private fun PdfZoomOverlay(
             .clipToBounds()
             .onSizeChanged { layerSize = it }
             .pointerInput(Unit) {
-                // 放大态: 拖动平移看细节(消费拖动);范围钳在"页面矩形覆盖全屏"内
+                // 放大态: 拖动平移看细节; 松手按手势速度惯性滑行(衰减), 撞到页面边缘停住
+                val tracker = androidx.compose.ui.input.pointer.util.VelocityTracker()
                 detectDragGestures(
+                    onDragStart = { flingJob?.cancel() },
                     onDrag = { change, amount ->
+                        tracker.addPosition(change.uptimeMillis, change.position)
                         change.consume()
-                        pan = androidx.compose.ui.geometry.Offset(
-                            pan.x + amount.x, pan.y + amount.y
+                        pan = clampPan(
+                            androidx.compose.ui.geometry.Offset(
+                                pan.x + amount.x, pan.y + amount.y
+                            )
                         )
-                        pan = clampPan()
+                    },
+                    onDragEnd = {
+                        val v = tracker.calculateVelocity()
+                        tracker.resetTracking()
+                        flingJob = scope.launch {
+                            androidx.compose.animation.core.Animatable(
+                                pan, androidx.compose.ui.geometry.Offset.VectorConverter
+                            ).animateDecay(
+                                androidx.compose.ui.geometry.Offset(v.x, v.y),
+                                androidx.compose.animation.core.exponentialDecay(frictionMultiplier = 1.5f)
+                            ) {
+                                pan = clampPan(value)   // this.value = 每帧惯性位置
+                            }
+                        }
                     }
                 )
             }
@@ -786,12 +820,12 @@ private fun PdfZoomOverlay(
                         tapJob?.cancel()
                         if (dbl) {
                             lastT = 0
-                            // 焦点换算到页面图坐标(页面图 1x 时在层内垂直居中)
-                            val w = size.width.toFloat()
-                            val pageH = w * aspect
-                            val pageTop = (size.height - pageH) / 2f
+                            // 焦点换算到页面图坐标(实际布局矩形, 含长条页水平居中偏移)
+                            val r = pageLayout(size.width.toFloat(), size.height.toFloat())
                             toggleZoom(
-                                androidx.compose.ui.geometry.Offset(o.x / w, (o.y - pageTop) / pageH)
+                                androidx.compose.ui.geometry.Offset(
+                                    (o.x - r.left) / r.width, (o.y - r.top) / r.height
+                                )
                             )
                         } else {
                             lastT = now
@@ -820,7 +854,7 @@ private fun PdfZoomOverlay(
                     modifier = Modifier
                         .fillMaxSize()
                         .graphicsLayer {
-                            val p = clampPan()
+                            val p = clampPan(pan)
                             scaleX = scale
                             scaleY = scale
                             transformOrigin = androidx.compose.ui.graphics.TransformOrigin(origin.x, origin.y)
