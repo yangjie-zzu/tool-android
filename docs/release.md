@@ -107,6 +107,16 @@ curl -s -X POST -H "Authorization: token $TOKEN" -H "Content-Type: application/o
 
 ## 6. 历史记录
 
+- 2026-10-17：v1.5.48 release（PDF 放大层按页面位图真实比例布局:PdfZoomOverlay 的
+  框 aspectRatio 与钳制/焦点换算/绘制 pivot 共用的 pageLayout 改用当前页位图真实
+  比例(bmp.height/width,未就绪退回整书统一 pageAspect)——修复混比例书放大拖到
+  极限左右露背景:pageAspect 以第 1 页为准统一,cpp_book 正文页比例≈1.484≠封面
+  1.423,位图 Fit 在框内左右各留 22px 透明区(2.5x 即 55px)透出背景,钳制保证的
+  "框盖住屏幕"盖不住更窄的位图;单比例书真实比例=pageAspect 行为不变。列表条目
+  侧仍按统一比例定高。模拟器实测: cpp_book 第 2/3 页四向极限贴边(修复前左右
+  恒 55px 缝),封面/normal_redline/long_test 回归通过,惯性撞边停住+双击还原正常;
+  过程坑已记 docs/pdf-verify-notes: 扫描书纸边与背景同色的"假缝"误判、混比例
+  场景判读按位图实际显示区）。
 - 2026-10-16：v1.5.47 release（PDF 放大态钳制修正+拖动惯性:①钳制与双击焦点
   换算改按页面图实际布局矩形(pageLayout: 先按层宽适配, 页高超层按层高适配,
   双向居中)——修复长条页放大后拖到左右极限页面不贴边、露背景;②拖动接入
