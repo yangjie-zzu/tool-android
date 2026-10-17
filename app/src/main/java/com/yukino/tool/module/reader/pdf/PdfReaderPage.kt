@@ -706,15 +706,20 @@ private fun PdfZoomOverlay(
     var flingJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
     val scope = rememberCoroutineScope()
 
+    // 页面位图真实比例(高/宽): 混比例书的正文页与封面(整书统一 pageAspect)比例不同,
+    // 放大层若按统一比例布局,位图 Fit 会在框内左右留白(透出背景),拖到极限必露背景——
+    // 按位图真实比例布局使框与位图重合;位图未就绪时退回统一比例
+    val effAspect = bmp?.let { it.height.toFloat() / it.width.coerceAtLeast(1) } ?: aspect
+
     // 页面图实际布局矩形: 与 aspectRatio 布局一致(先按层宽适配, 页高超层则按层高适配), 双向居中。
     // 长条页(页高/页宽 > 层高/层宽)按高适配后页宽小于层宽——钳制与焦点换算必须基于此矩形,
     // 否则拖到极限页面不贴边、左右露背景
     fun pageLayout(w: Float, h: Float): androidx.compose.ui.geometry.Rect {
         var pw = w
-        var ph = pw * aspect
+        var ph = pw * effAspect
         if (ph > h) {
             ph = h
-            pw = if (aspect > 0f) h / aspect else w
+            pw = if (effAspect > 0f) h / effAspect else w
         }
         return androidx.compose.ui.geometry.Rect(
             androidx.compose.ui.geometry.Offset((w - pw) / 2f, (h - ph) / 2f),
@@ -846,7 +851,7 @@ private fun PdfZoomOverlay(
             Box(
                 modifier = Modifier
                     .align(Alignment.Center)
-                    .aspectRatio(if (aspect > 0f) 1f / aspect else 1.4f)
+                    .aspectRatio(if (effAspect > 0f) 1f / effAspect else 1.4f)
             ) {
                 androidx.compose.foundation.Image(
                     bitmap = b.asImageBitmap(),
