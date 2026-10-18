@@ -179,6 +179,8 @@ fun Web(
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
             if (initUrl != null) {
+                //loadUrl不经shouldOverrideUrlLoading: 提前开会话, 新box进度条即时出现且进度回调不被会话过滤丢弃
+                webView.beginLoadingSession()
                 webView.loadUrl(initUrl)
             }
             innerWebView = webView
