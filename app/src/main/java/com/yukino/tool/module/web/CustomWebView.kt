@@ -97,8 +97,29 @@ open class CustomWebView(context: Context) : WebView(context), WebInterface {
     // 会话开启: 导航确定在本webview发生时调用(shouldOverrideUrlLoading放行/原地跳转),
     // 不等握手完成, 点击链接后进度条立即从0出现
     fun beginLoadingSession() {
+        //取消未决收尾: 收尾延迟期内又主动开导航(如点击链接), 会话直接延续
+        cancelLoadingFinish()
         loadingSession = true
         onProgressChange(0f)
+    }
+
+    //收尾延迟: 重定向链的中间跳(谷歌结果链接等)完成后会立即开下一跳导航,
+    //若立即归100%关会话, 进度条会断成两条且中间闪白;
+    //收尾投递600ms延迟任务, 期间来了新导航(onPageStarted/beginLoadingSession)则取消, 会话延续进度条不断裂
+    private var finishRunnable: Runnable? = null
+
+    private fun cancelLoadingFinish() {
+        finishRunnable?.let { removeCallbacks(it) }
+        finishRunnable = null
+    }
+
+    private fun scheduleLoadingFinish() {
+        cancelLoadingFinish()
+        finishRunnable = Runnable {
+            finishRunnable = null
+            loadingSession = false
+            onProgressChange(1f)
+        }.also { postDelayed(it, 600) }
     }
 
     private var isTop = true
@@ -112,12 +133,16 @@ open class CustomWebView(context: Context) : WebView(context), WebInterface {
     init {
         this.webChromeClient = object : WebChromeClient() {
 
-            //加载进度条处理: 会话外的进度事件(被拦截导航的补发)不上报
+            //加载进度条处理: 会话外的进度事件(被拦截导航的补发)不上报;
+            //到100%不立即上报也不关会话, 收尾交给延迟任务, 给紧接着的重定向导航留续会话窗口
             override fun onProgressChanged(view: WebView?, newProgress: Int) {
                 if (loadingSession) {
                     val progress = (newProgress * 1.0 / 100).toFloat()
-                    onProgressChange(progress)
-                    if (progress >= 1f) loadingSession = false
+                    if (progress >= 1f) {
+                        scheduleLoadingFinish()
+                    } else {
+                        onProgressChange(progress)
+                    }
                 }
                 super.onProgressChanged(view, newProgress)
             }
@@ -262,8 +287,10 @@ open class CustomWebView(context: Context) : WebView(context), WebInterface {
                 favicon: Bitmap?
             ) {
                 onUrlChange(urlParam ?: "")
+                //新导航开始: 取消未决收尾续会话(重定向链的下一跳), 进度条从当前位置继续;
                 //兜底开启会话: 地址栏loadUrl/刷新/后退等不经shouldOverrideUrlLoading的导航;
                 //链接点击已在放行时开会话, 这里不再重置进度, 避免已出现的进度条被拉回0
+                cancelLoadingFinish()
                 if (!loadingSession) {
                     loadingSession = true
                     onProgressChange(0f)
@@ -287,9 +314,13 @@ open class CustomWebView(context: Context) : WebView(context), WebInterface {
             //加载完成处理
             override fun onPageFinished(view: WebView?, url: String?) {
                 firstLoadDone = true
-                //会话收尾: 关闭并强制进度到100%, 防个别页面不发100%导致进度条滞留
-                loadingSession = false
-                onProgressChange(1f)
+                //会话收尾延迟化(见scheduleLoadingFinish), 防重定向链中间跳断条;
+                //会话已关闭时维持强制进度到100%的兜底, 防个别页面不发100%导致进度条滞留
+                if (loadingSession) {
+                    scheduleLoadingFinish()
+                } else {
+                    onProgressChange(1f)
+                }
                 super.onPageFinished(view, url)
                 Log.i(TAG, "onPageFinished: ${view?.url}")
             }
