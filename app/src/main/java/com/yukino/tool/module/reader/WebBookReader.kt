@@ -81,6 +81,8 @@ private fun createWebView(context: android.content.Context): WebView = WebView(c
     )
     settings.javaScriptEnabled = true
     settings.allowFileAccess = true
+    // file:// 无响应头声明编码, 统一按 UTF-8 解码(导入文本落盘即 UTF-8)
+    settings.defaultTextEncodingName = "UTF-8"
     settings.useWideViewPort = true
     settings.loadWithOverviewMode = true
     settings.builtInZoomControls = true

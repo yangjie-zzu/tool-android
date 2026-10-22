@@ -145,7 +145,7 @@ fun ReaderBookshelfPage(
                 HorizontalDivider()
                 HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
                     when (page) {
-                        0 -> RecentList(recentBooks, onOpen)
+                        0 -> RecentList(recentBooks, onOpen, onDelete)
                         else -> {
                             if (sortedGroups.isEmpty() && sortedBooks.isEmpty()) {
                                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -456,9 +456,13 @@ private fun rememberBookCover(path: String?): android.graphics.Bitmap? =
         }
     }.value
 
-// 最近阅读列表: 全部书籍按最后阅读时间倒序
+// 最近阅读列表: 全部书籍按最后阅读时间倒序;删除与书架一致(整本书连缓存进度)
 @Composable
-private fun RecentList(recentBooks: List<ReaderBook>, onOpen: (ReaderBook) -> Unit) {
+private fun RecentList(
+    recentBooks: List<ReaderBook>,
+    onOpen: (ReaderBook) -> Unit,
+    onDelete: (ReaderBook) -> Unit
+) {
     if (recentBooks.isEmpty()) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Text(
@@ -472,15 +476,20 @@ private fun RecentList(recentBooks: List<ReaderBook>, onOpen: (ReaderBook) -> Un
     val now = System.currentTimeMillis()
     LazyColumn(modifier = Modifier.fillMaxSize()) {
         items(recentBooks, key = { it.id }) { book ->
-            RecentBookItem(book = book, now = now, onOpen = onOpen)
+            RecentBookItem(book = book, now = now, onOpen = onOpen, onDelete = onDelete)
             HorizontalDivider()
         }
     }
 }
 
-// 最近阅读条目: 封面 + 书名 + 格式·进度 + 最后阅读时间(刚刚/HH:mm/昨天/M-d/yyyy-M-d)
+// 最近阅读条目: 封面 + 书名 + 格式·进度 + 最后阅读时间 + 删除(整本书,与书架一致)
 @Composable
-private fun RecentBookItem(book: ReaderBook, now: Long, onOpen: (ReaderBook) -> Unit) {
+private fun RecentBookItem(
+    book: ReaderBook,
+    now: Long,
+    onOpen: (ReaderBook) -> Unit,
+    onDelete: (ReaderBook) -> Unit
+) {
     val cover = rememberBookCover(book.coverPath)
     val percent = (book.progress.percent * 100).toInt()
     val cal = java.util.Calendar.getInstance().apply { timeInMillis = now }
@@ -545,5 +554,12 @@ private fun RecentBookItem(book: ReaderBook, now: Long, onOpen: (ReaderBook) -> 
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+        IconButton(onClick = { onDelete(book) }) {
+            Icon(
+                Icons.Rounded.Delete,
+                contentDescription = "删除",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
 }

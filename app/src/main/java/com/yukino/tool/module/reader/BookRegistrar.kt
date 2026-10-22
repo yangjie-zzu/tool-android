@@ -195,20 +195,9 @@ object BookRegistrar {
         val id = UUID.randomUUID().toString()
         val dst = File(File(context.cacheDir, "reader/books"), "$id.src.html")
         dst.parentFile?.mkdirs()
-        val paragraphs = content.trim().split(Regex("\n{2,}"))
-            .map { p -> "<p>" + p.trim().replace("\n", "<br>") + "</p>" }
-            .joinToString("\n")
-        val html = buildString {
-            append("<!DOCTYPE html><html><head><meta charset=\"utf-8\">")
-            append("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">")
-            append("<title>").append(android.text.Html.escapeHtml(name)).append("</title>")
-            append("<style>body{margin:0;padding:20px;background:#F6F1E7;color:#1A1A1A;")
-            append("font-size:19px;line-height:1.8;}h1{font-size:1.4em;}p{text-indent:2em;margin:0 0 1em;}</style>")
-            append("</head><body>")
-            append("<h1>").append(android.text.Html.escapeHtml(name)).append("</h1>")
-            append(paragraphs)
-            append("</body></html>")
-        }
+        // 正文不做任何转换也不包外壳, 原样落盘交给 WebView;
+        // 编码统一由 WebBookReader 的 WebView 设置(defaultTextEncodingName=UTF-8)保证
+        val html = content.trim()
         runCatching { dst.writeText(html) }.getOrElse {
             return ImportResult.Failed("写入文本失败: ${it.message}")
         }
