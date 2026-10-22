@@ -251,7 +251,7 @@ fun ReaderBookshelfPage(
                     TextButton(onClick = {
                         onDelete(book)
                         deletingBook = null
-                    }) { Text("删除") }
+                    }) { Text("删除", color = MaterialTheme.colorScheme.error) }
                 },
                 dismissButton = {
                     TextButton(onClick = { deletingBook = null }) { Text("取消") }
