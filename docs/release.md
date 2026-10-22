@@ -107,6 +107,17 @@ curl -s -X POST -H "Authorization: token $TOKEN" -H "Content-Type: application/o
 
 ## 6. 历史记录
 
+- 2026-10-22：v1.5.55 release（阅读格式分流+导入文本+全局去 Screen 后缀:①BookFormat
+  新增 WEB——html/htm/xhtml/mht/mhtml/svg/图片类扩展名走新组件 WebBookReader(WebView
+  加载登记时转存的本地副本,记最后阅读时间不做阅读进度),txt/md/markdown/log/text/out
+  归 TXT 阅读器,其余扩展名(mobi/docx 等)拒绝导入并 Toast 提示,单文件与文件夹导入
+  统一走 formatOf() 分流;②导入菜单新增"导入文本"——弹窗输入书名+正文,包装成阅读
+  主题配色 HTML 按 WEB 登记并直接打开,正文空时确定置灰;③全局重命名 ReaderScreen→
+  ReaderPage/PdfScreen→PdfPage/MigrationScreen→MigrationPage。模拟器 debug 实测:
+  html 经 SAF 导入 WebView 渲染(CSS 生效)、导入文本弹窗全流程、md 走 TXT、.m/.h
+  拒绝提示、PDF/TXT 回归通过。坑:copyToInbox 返回 file:// uri 字符串不能直接当
+  cachePath 存库(需 Uri.parse().path);adb push 会截断扩展名已记
+  docs/emulator-ui-automation.md）。
 - 2026-10-17：v1.5.48 release（PDF 放大层按页面位图真实比例布局:PdfZoomOverlay 的
   框 aspectRatio 与钳制/焦点换算/绘制 pivot 共用的 pageLayout 改用当前页位图真实
   比例(bmp.height/width,未就绪退回整书统一 pageAspect)——修复混比例书放大拖到
