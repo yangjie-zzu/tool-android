@@ -107,6 +107,12 @@ curl -s -X POST -H "Authorization: token $TOKEN" -H "Content-Type: application/o
 
 ## 6. 历史记录
 
+- 2026-10-22：v1.5.57 release（WebView 阅读页返回键修复+删除二次确认:①WebBookReader
+  补 BackHandler——此前未注册返回处理, 返回键走系统默认行为直接退出整个阅读 Activity
+  (表现为"导入文本打开后按返回回不到最近阅读"), 现与顶栏返回一致退出阅读态回书架;
+  ②最近阅读与书架的删除按钮统一加二次确认弹窗(标题含书名, 提示连缓存进度不可恢复,
+  取消不动确认才删)。模拟器 debug 实测: 返回键回书架页签、取消保留条目、确认删除
+  生效）。
 - 2026-10-22：v1.5.56 release（导入文本零包装+最近阅读可删除:①导入文本正文原样落盘,
   不拆段/不包 p/不转 br/不加样式, 直接交 WebView 渲染——此前包装逻辑在 SVG 内部插
   `<br>` 致 HTML 解析器终止 SVG 解析只剩文字泄漏(实测复现定位);②WebBookReader 加
