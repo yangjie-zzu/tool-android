@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs><linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#67E8F9"/><stop offset="1" stop-color="#3B82F6"/></linearGradient></defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <!-- 弹珠：透明的童年 -->
+  <!-- 大弹珠 -->
+  <circle cx="256" cy="256" r="140" fill="#E0F2FE" opacity="0.9"/>
+  <circle cx="256" cy="256" r="140" fill="none" stroke="#BAE6FD" stroke-width="8"/>
+  <!-- 内部猫眼条纹 -->
+  <path d="M256 256 C 220 190, 232 130, 256 96 C 280 130, 292 190, 256 256 Z" fill="#F97316" opacity="0.85"/>
+  <path d="M256 256 C 292 322, 280 382, 256 416 C 232 382, 220 322, 256 256 Z" fill="#22D3EE" opacity="0.85"/>
+  <path d="M256 256 C 190 220, 130 232, 96 256 C 130 280, 190 292, 256 256 Z" fill="#34D399" opacity="0.85"/>
+  <path d="M256 256 C 322 292, 382 280, 416 256 C 382 232, 322 220, 256 256 Z" fill="#FBBF24" opacity="0.85"/>
+  <circle cx="256" cy="256" r="30" fill="#FFFFFF" opacity="0.5"/>
+  <!-- 高光 -->
+  <ellipse cx="200" cy="176" rx="26" ry="40" fill="#FFFFFF" opacity="0.85" transform="rotate(-30 200 176)"/>
+  <!-- 两颗小弹珠 -->
+  <circle cx="110" cy="390" r="26" fill="#FBCFE8"/>
+  <circle cx="102" cy="382" r="8" fill="#FFFFFF"/>
+  <circle cx="396" cy="110" r="20" fill="#FDE68A"/>
+  <circle cx="390" cy="104" r="6" fill="#FFFFFF"/>
+</svg>
