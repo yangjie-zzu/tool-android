@@ -8,10 +8,6 @@
       <stop offset="0" stop-color="#FFFFFF"/>
       <stop offset="1" stop-color="#CBD5E1"/>
     </linearGradient>
-    <linearGradient id="bolt" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#FDE047"/>
-      <stop offset="1" stop-color="#F59E0B"/>
-    </linearGradient>
     <radialGradient id="hole" cx="0.4" cy="0.35" r="0.9">
       <stop offset="0" stop-color="#22D3EE"/>
       <stop offset="0.55" stop-color="#818CF8"/>
@@ -27,5 +23,4 @@
   </g>
 
   <circle cx="256" cy="251" r="86" fill="url(#hole)"/>
-  <path d="M272 177 L 214 265 L 250 265 L 238 329 L 298 237 L 260 237 Z" fill="url(#bolt)"/>
 </svg>
