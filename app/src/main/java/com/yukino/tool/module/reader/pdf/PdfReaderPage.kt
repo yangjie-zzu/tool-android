@@ -137,7 +137,7 @@ class PdfDoc(path: String) : AutoCloseable {
 // 无翻页手势——上下滚动即翻页,页码/进度按首个可视页实时落账;双击某页放大/还原。
 // 复用: 菜单浮层/目录弹层/跳页弹窗/设置弹层;进度锚点 = 页码(存 progress.globalCharOffset)。
 @Composable
-fun PdfScreen(
+fun PdfPage(
     book: ReaderBook,
     settings: ReaderSettings,
     onSettingsChange: (ReaderSettings) -> Unit,

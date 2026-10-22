@@ -41,7 +41,7 @@ import androidx.compose.runtime.collectAsState
  * 实时显示四模块的迁移进度/条数与滚动日志; note 为旧加密格式时内联收集主密码。
  */
 @Composable
-fun MigrationScreen(
+fun MigrationPage(
     onFinished: () -> Unit,
     onRetry: () -> Unit,
     onSkip: () -> Unit

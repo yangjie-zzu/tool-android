@@ -16,7 +16,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import com.yukino.tool.db.DataMigrator
-import com.yukino.tool.db.MigrationScreen
+import com.yukino.tool.db.MigrationPage
 import com.yukino.tool.ui.theme.ToolTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -63,7 +63,7 @@ private fun AppEntry() {
 
     when (mode) {
         null -> Box(Modifier.fillMaxSize())   // 迁移标记检测是毫秒级, 空屏一闪而过
-        0 -> MigrationScreen(
+        0 -> MigrationPage(
             onFinished = { mode = 1 },
             onRetry = { DataMigrator.retryFailed(context) },
             onSkip = { DataMigrator.skipFailed(context) }

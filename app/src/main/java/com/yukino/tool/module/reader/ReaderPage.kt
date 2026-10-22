@@ -199,7 +199,7 @@ private class DragSession(
 // 书 = 封面+正文+封底的扁平页序列,位置状态只有全局页号 pageIndex;
 // 目录未就绪(打开书/改设置整本重算期间)由 loading 遮盖,不存在"部分就绪"状态
 @Composable
-fun ReaderScreen(
+fun ReaderPage(
     book: ReaderBook,
     settings: ReaderSettings,
     onSettingsChange: (ReaderSettings) -> Unit,

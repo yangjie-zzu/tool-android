@@ -76,10 +76,12 @@ fun ReaderBookshelfPage(
     onDeleteGroup: (ReaderGroup) -> Unit,
     onDeleteGroupAll: (ReaderGroup) -> Unit,
     onImportFile: () -> Unit,
-    onImportFolder: () -> Unit
+    onImportFolder: () -> Unit,
+    onImportText: (title: String, content: String) -> Unit
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     var deletingGroup by remember { mutableStateOf<ReaderGroup?>(null) }
+    var textDialogOpen by remember { mutableStateOf(false) }
 
     Box(modifier = Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -215,6 +217,10 @@ fun ReaderBookshelfPage(
                     menuOpen = false
                     onImportFile()
                 })
+                DropdownMenuItem(text = { Text("导入文本") }, onClick = {
+                    menuOpen = false
+                    textDialogOpen = true
+                })
             }
         }
 
@@ -223,6 +229,16 @@ fun ReaderBookshelfPage(
                 modifier = Modifier.fillMaxSize().padding(bottom = 120.dp),
                 contentAlignment = Alignment.Center
             ) { CircularProgressIndicator() }
+        }
+
+        if (textDialogOpen) {
+            ImportTextDialog(
+                onConfirm = { title, content ->
+                    textDialogOpen = false
+                    onImportText(title, content)
+                },
+                onDismiss = { textDialogOpen = false }
+            )
         }
 
         deletingGroup?.let { group ->
@@ -248,6 +264,58 @@ fun ReaderBookshelfPage(
             )
         }
     }
+}
+
+// 导入文本弹窗: 书名(可空,默认"未命名文本") + 多行正文;正文为空时确定不可用
+@Composable
+private fun ImportTextDialog(
+    onConfirm: (title: String, content: String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var title by remember { mutableStateOf("") }
+    var content by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("导入文本") },
+        text = {
+            Column {
+                androidx.compose.material3.OutlinedTextField(
+                    value = title,
+                    onValueChange = { title = it },
+                    label = { Text("书名（可选）") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                androidx.compose.material3.OutlinedTextField(
+                    value = content,
+                    onValueChange = { content = it },
+                    label = { Text("正文") },
+                    minLines = 6,
+                    maxLines = 12,
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = content.isNotBlank(),
+                onClick = { onConfirm(title.trim(), content) }
+            ) { Text("确定") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        }
+    )
+}
+
+// 格式角标: EPUB/PDF/TXT 固定;WEB 显示扩展名大写(HTML/SVG/JPG…);其余 null
+private fun formatLabel(book: ReaderBook): String? = when (book.format) {
+    BookFormat.EPUB -> "EPUB"
+    BookFormat.PDF -> "PDF"
+    BookFormat.TXT -> "TXT"
+    BookFormat.WEB -> BookRegistrar.extOf(book.sourceUri.substringAfterLast('/'))
+        .uppercase().ifEmpty { "WEB" }.take(8)
+    else -> null
 }
 
 @Composable
@@ -335,7 +403,7 @@ private fun BookItem(
             // 状态显示: "打开"是未读→已读的分界线(未打开=未读), 进度只影响已读的百分比
             val percent = (book.progress.percent * 100).toInt()
             val subtitle = buildString {
-                if (book.format == BookFormat.EPUB) append("EPUB · ")
+                formatLabel(book)?.let { append("$it · ") }
                 if (book.fileSize > 0) {
                     append(
                         when {
@@ -467,7 +535,7 @@ private fun RecentBookItem(book: ReaderBook, now: Long, onOpen: (ReaderBook) -> 
                 overflow = TextOverflow.Ellipsis
             )
             Text(
-                "${if (book.format == BookFormat.EPUB) "EPUB" else if (book.format == BookFormat.PDF) "PDF" else "TXT"} · 已读 ${percent}%",
+                "${formatLabel(book) ?: "TXT"} · 已读 ${percent}%",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

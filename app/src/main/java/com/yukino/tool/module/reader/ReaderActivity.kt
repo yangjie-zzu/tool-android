@@ -142,7 +142,10 @@ fun ReaderApp(
     fun importFile() {
         scope.launch {
             val uri = filePicker.open(
-                arrayOf("text/*", "application/octet-stream", "application/epub+zip", "application/pdf")
+                arrayOf(
+                    "text/*", "application/octet-stream", "application/epub+zip", "application/pdf",
+                    "text/html", "image/*"
+                )
             )
                 ?: return@launch
             importing = true
@@ -177,6 +180,25 @@ fun ReaderApp(
                 }
                 is ImportResult.Success -> {}
                 is ImportResult.Failed -> Toast.makeText(context, result.reason, Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    // 导入文本: 正文包装为 HTML, 按 WEB 格式登记后直接打开
+    fun importText(title: String, content: String) {
+        scope.launch {
+            importing = true
+            val result = withContext(Dispatchers.IO) {
+                BookRegistrar.registerText(context, title, content, currentGroupId)
+            }
+            importing = false
+            when (result) {
+                is ImportResult.Success -> {
+                    refresh()
+                    readingId = result.book.id
+                }
+                is ImportResult.Failed -> Toast.makeText(context, result.reason, Toast.LENGTH_SHORT).show()
+                else -> {}
             }
         }
     }
@@ -268,7 +290,7 @@ fun ReaderApp(
     val current = readingBook
     if (current != null) {
         if (current.format == com.yukino.tool.module.reader.common.BookFormat.PDF) {
-            com.yukino.tool.module.reader.pdf.PdfScreen(
+            com.yukino.tool.module.reader.pdf.PdfPage(
                 book = current,
                 settings = settings,
                 onSettingsChange = { next ->
@@ -288,8 +310,13 @@ fun ReaderApp(
                 },
                 onBack = { readingId = null }
             )
+        } else if (current.format == com.yukino.tool.module.reader.common.BookFormat.WEB) {
+            WebBookReader(
+                book = current,
+                onBack = { readingId = null }
+            )
         } else {
-            ReaderScreen(
+            ReaderPage(
             book = current,
             settings = settings,
             onSettingsChange = { next ->
@@ -332,7 +359,8 @@ fun ReaderApp(
             onDeleteGroup = { deleteGroup(it) },
             onDeleteGroupAll = { deleteGroupAll(it) },
             onImportFile = { importFile() },
-            onImportFolder = { importFolder() }
+            onImportFolder = { importFolder() },
+            onImportText = { title, content -> importText(title, content) }
         )
     }
 }

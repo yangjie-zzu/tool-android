@@ -6,6 +6,7 @@ object BookFormat {
     const val TXT = "txt"
     const val EPUB = "epub"
     const val PDF = "pdf"
+    const val WEB = "web"   // WebView 渲染: html 系/图片/导入文本
 }
 
 // 章节: 标题 + 全书字符起始偏移。anchorId = 目录条目指向的文档内锚点

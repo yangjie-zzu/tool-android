@@ -18,7 +18,30 @@ import kotlinx.coroutines.withContext
 // 登记式导入: 只写一行元数据(文件名/格式/大小/组), 内容转码/解压与章节解析
 // 全部推迟到首次打开(TxtImporter/EpubImporter.ensureReady)。
 // 同 sourceUri 去重: 重复登记返回已有书目, 进度/组不变。
+// 格式分流: txt 系→TXT, html 系/图片→WEB(WebView 渲染), epub/pdf 原生, 其余拒绝。
 object BookRegistrar {
+
+    // TXT 阅读器直读的纯文本扩展名
+    private val TXT_EXTS = setOf("txt", "md", "markdown", "log", "text", "out")
+
+    // WebView 能直接渲染的扩展名(html 系 + 图片)
+    private val WEB_EXTS = setOf(
+        "html", "htm", "xhtml", "mht", "mhtml", "svg",
+        "jpg", "jpeg", "png", "gif", "webp", "bmp"
+    )
+
+    fun extOf(name: String): String = name.substringAfterLast('.', "").lowercase()
+
+    // 按扩展名定格式;不支持返回 null
+    fun formatOf(name: String): String? = when (val ext = extOf(name)) {
+        "epub" -> BookFormat.EPUB
+        "pdf" -> BookFormat.PDF
+        in TXT_EXTS -> BookFormat.TXT
+        in WEB_EXTS -> BookFormat.WEB
+        else -> {
+            if (ext.isEmpty()) BookFormat.TXT else null
+        }
+    }
 
     // 单本登记(uri 可为文件选择器文档或"打开方式/分享"带入的流)
     suspend fun register(context: Context, uri: Uri, groupId: String?): ImportResult =
@@ -47,7 +70,7 @@ object BookRegistrar {
             val rootName = queryName(context, documentUri(treeUri, rootDocId)) ?: "导入文件夹"
             val files = ArrayList<Pair<String, String>>()   // (docId, 相对路径名)
             walk(context, treeUri, rootDocId, "") { docId, relName -> files += docId to relName }
-            if (files.isEmpty()) return@runCatching ImportResult.Failed("文件夹里没有 TXT/EPUB/PDF 书籍")
+            if (files.isEmpty()) return@runCatching ImportResult.Failed("文件夹里没有可导入的书籍")
 
             // 目录路径逐级建组: 所选文件夹本身成为一个组(组名=文件夹名),
             // 子目录为嵌套子组;每级按"同名同级复用"匹配已有组(重复导入不产生重复组)
@@ -75,22 +98,22 @@ object BookRegistrar {
             val booksAll = ReaderStore.loadBooks(context)
             for ((docId, relName) in files) {
                 val name = relName.substringAfterLast('/')
-                val format = when {
-                    name.endsWith(".epub", true) -> BookFormat.EPUB
-                    name.endsWith(".pdf", true) -> BookFormat.PDF
-                    name.endsWith(".txt", true) -> BookFormat.TXT
-                    else -> continue
-                }
+                val format = formatOf(name) ?: continue
                 val docUri = documentUri(treeUri, docId).toString()
                 if (booksAll.any { it.sourceUri == docUri }) continue   // 已登记,进度保留
                 val path = relName.substringBeforeLast('/', "").split('/').filter { it.isNotBlank() }
                 val size = querySize(context, documentUri(treeUri, docId))
                 val id = UUID.randomUUID().toString()
+                // WEB 书 WebView 只能加载本地文件: 登记时即转存, 无懒初始化
+                val webCopy = if (format == BookFormat.WEB) {
+                    copyToInbox(context, id, documentUri(treeUri, docId), name) ?: continue
+                } else null
                 books += ReaderBook(
                     id = id,
                     title = name.substringBeforeLast('.').ifBlank { "未命名" },
-                    sourceUri = docUri,
-                    cachePath = cachePathFor(context, id, format),
+                    sourceUri = webCopy ?: docUri,
+                    cachePath = webCopy?.let { Uri.parse(it).path ?: it }
+                        ?: cachePathFor(context, id, format),
                     encoding = "",
                     totalChars = 0,
                     chapters = emptyList(),
@@ -99,7 +122,7 @@ object BookRegistrar {
                     fileSize = size,
                     format = format,
                     groupId = groupFor(path),
-                    ready = false
+                    ready = webCopy != null
                 )
                 onProgress(books.size, files.size)
             }
@@ -126,22 +149,31 @@ object BookRegistrar {
         if (existing != null) return ImportResult.Success(existing)   // 重复登记: 原样返回(自动打开)
 
         val name = queryName(context, uri) ?: uri.lastPathSegment ?: "未命名"
-        val format = when {
-            name.endsWith(".epub", true) -> BookFormat.EPUB
-            name.endsWith(".pdf", true) -> BookFormat.PDF
-            else -> BookFormat.TXT
-        }
+        val format = formatOf(name)
+            ?: return ImportResult.Failed("不支持的格式: .${extOf(name).ifEmpty { "?" }}")
         val now = System.currentTimeMillis()
         val id = UUID.randomUUID().toString()
-        val effectiveUri = if (persistable) uri.toString() else {
-            copyToInbox(context, id, uri, name)
-                ?: return ImportResult.Failed("无法读取文件(授权不可持久且转存失败)")
+        // WEB 书 WebView 无法加载 content:// uri, 一律转存本地副本
+        val effectiveUri: String
+        val cachePath: String
+        if (format == BookFormat.WEB) {
+            val copied = copyToInbox(context, id, uri, name)
+                ?: return ImportResult.Failed("无法读取文件(转存失败)")
+            effectiveUri = copied
+            // copyToInbox 返回 file:// uri 字符串; cachePath 需要纯文件路径
+            cachePath = Uri.parse(copied).path ?: copied
+        } else {
+            effectiveUri = if (persistable) uri.toString() else {
+                copyToInbox(context, id, uri, name)
+                    ?: return ImportResult.Failed("无法读取文件(授权不可持久且转存失败)")
+            }
+            cachePath = cachePathFor(context, id, format)
         }
         val book = ReaderBook(
             id = id,
             title = name.substringBeforeLast('.').ifBlank { "未命名" },
             sourceUri = effectiveUri,
-            cachePath = cachePathFor(context, id, format),
+            cachePath = cachePath,
             encoding = "",
             totalChars = 0,
             chapters = emptyList(),
@@ -150,7 +182,51 @@ object BookRegistrar {
             fileSize = querySize(context, uri),
             format = format,
             groupId = groupId,
-            ready = false
+            ready = format != BookFormat.WEB   // WEB 内容已转存本地即就绪, 无懒初始化
+        )
+        ReaderStore.upsertBook(context, book)
+        return ImportResult.Success(book)
+    }
+
+    // 导入文本: 正文包装为带阅读主题配色的 HTML, 落盘后按 WEB 格式登记并返回
+    fun registerText(context: Context, title: String, content: String, groupId: String?): ImportResult {
+        val name = title.ifBlank { "未命名文本" }
+        val now = System.currentTimeMillis()
+        val id = UUID.randomUUID().toString()
+        val dst = File(File(context.cacheDir, "reader/books"), "$id.src.html")
+        dst.parentFile?.mkdirs()
+        val paragraphs = content.trim().split(Regex("\n{2,}"))
+            .map { p -> "<p>" + p.trim().replace("\n", "<br>") + "</p>" }
+            .joinToString("\n")
+        val html = buildString {
+            append("<!DOCTYPE html><html><head><meta charset=\"utf-8\">")
+            append("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">")
+            append("<title>").append(android.text.Html.escapeHtml(name)).append("</title>")
+            append("<style>body{margin:0;padding:20px;background:#F6F1E7;color:#1A1A1A;")
+            append("font-size:19px;line-height:1.8;}h1{font-size:1.4em;}p{text-indent:2em;margin:0 0 1em;}</style>")
+            append("</head><body>")
+            append("<h1>").append(android.text.Html.escapeHtml(name)).append("</h1>")
+            append(paragraphs)
+            append("</body></html>")
+        }
+        runCatching { dst.writeText(html) }.getOrElse {
+            return ImportResult.Failed("写入文本失败: ${it.message}")
+        }
+        val uri = Uri.fromFile(dst)
+        val book = ReaderBook(
+            id = id,
+            title = name,
+            sourceUri = uri.toString(),
+            cachePath = dst.absolutePath,
+            encoding = "",
+            totalChars = content.length.toLong(),
+            chapters = emptyList(),
+            addedAt = now,
+            lastReadAt = now,
+            fileSize = dst.length(),
+            format = BookFormat.WEB,
+            groupId = groupId,
+            ready = true
         )
         ReaderStore.upsertBook(context, book)
         return ImportResult.Success(book)
@@ -207,11 +283,8 @@ object BookRegistrar {
                     val mime = c.getString(2) ?: ""
                     if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
                         dirs += docId to name
-                    } else {
-                        val lower = name.lowercase()
-                        if (lower.endsWith(".txt") || lower.endsWith(".epub") || lower.endsWith(".pdf")) {
-                            onFile(docId, if (relPrefix.isEmpty()) name else "$relPrefix/$name")
-                        }
+                    } else if (formatOf(name) != null) {
+                        onFile(docId, if (relPrefix.isEmpty()) name else "$relPrefix/$name")
                     }
                 }
             }
