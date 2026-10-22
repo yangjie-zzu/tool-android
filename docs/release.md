@@ -107,6 +107,8 @@ curl -s -X POST -H "Authorization: token $TOKEN" -H "Content-Type: application/o
 
 ## 6. 历史记录
 
+- 2026-10-22：v1.5.58 release（删除确认弹窗的"删除"按钮改红色(colorScheme.error),
+  与"取消"形成破坏性操作对比。模拟器 debug 实测截图确认）。
 - 2026-10-22：v1.5.57 release（WebView 阅读页返回键修复+删除二次确认:①WebBookReader
   补 BackHandler——此前未注册返回处理, 返回键走系统默认行为直接退出整个阅读 Activity
   (表现为"导入文本打开后按返回回不到最近阅读"), 现与顶栏返回一致退出阅读态回书架;
