@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.view.ViewGroup
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -37,6 +38,8 @@ fun WebBookReader(
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
+    // 返回键退出阅读态回书架(不注册会走默认行为直接退出整个 Activity)
+    BackHandler { onBack() }
     Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
         Row(
             verticalAlignment = Alignment.CenterVertically,

@@ -81,6 +81,7 @@ fun ReaderBookshelfPage(
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     var deletingGroup by remember { mutableStateOf<ReaderGroup?>(null) }
+    var deletingBook by remember { mutableStateOf<ReaderBook?>(null) }
     var textDialogOpen by remember { mutableStateOf(false) }
 
     Box(modifier = Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
@@ -145,7 +146,7 @@ fun ReaderBookshelfPage(
                 HorizontalDivider()
                 HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
                     when (page) {
-                        0 -> RecentList(recentBooks, onOpen, onDelete)
+                        0 -> RecentList(recentBooks, onOpen) { deletingBook = it }
                         else -> {
                             if (sortedGroups.isEmpty() && sortedBooks.isEmpty()) {
                                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -166,7 +167,7 @@ fun ReaderBookshelfPage(
                                         HorizontalDivider()
                                     }
                                     items(sortedBooks, key = { it.id }) { book ->
-                                        BookItem(book = book, onOpen = onOpen, onDelete = onDelete)
+                                        BookItem(book = book, onOpen = onOpen) { deletingBook = it }
                                         HorizontalDivider()
                                     }
                                 }
@@ -194,7 +195,7 @@ fun ReaderBookshelfPage(
                             HorizontalDivider()
                         }
                         items(sortedBooks, key = { it.id }) { book ->
-                            BookItem(book = book, onOpen = onOpen, onDelete = onDelete)
+                            BookItem(book = book, onOpen = onOpen) { deletingBook = it }
                             HorizontalDivider()
                         }
                     }
@@ -238,6 +239,23 @@ fun ReaderBookshelfPage(
                     onImportText(title, content)
                 },
                 onDismiss = { textDialogOpen = false }
+            )
+        }
+
+        deletingBook?.let { book ->
+            AlertDialog(
+                onDismissRequest = { deletingBook = null },
+                title = { Text("删除「${book.title}」？") },
+                text = { Text("书与缓存、阅读进度一并删除，不可恢复。") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        onDelete(book)
+                        deletingBook = null
+                    }) { Text("删除") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { deletingBook = null }) { Text("取消") }
+                }
             )
         }
 
