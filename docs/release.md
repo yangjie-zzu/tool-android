@@ -107,6 +107,13 @@ curl -s -X POST -H "Authorization: token $TOKEN" -H "Content-Type: application/o
 
 ## 6. 历史记录
 
+- 2026-10-22：v1.5.56 release（导入文本零包装+最近阅读可删除:①导入文本正文原样落盘,
+  不拆段/不包 p/不转 br/不加样式, 直接交 WebView 渲染——此前包装逻辑在 SVG 内部插
+  `<br>` 致 HTML 解析器终止 SVG 解析只剩文字泄漏(实测复现定位);②WebBookReader 加
+  defaultTextEncodingName=UTF-8——file:// 无响应头声明编码, 统一按 UTF-8 解码中文
+  不乱码;③最近阅读条目加删除按钮, 语义与书架删除一致(整本书连缓存进度)。模拟器
+  debug 实测: 裸 SVG 片段 html 渲染正常且中文不乱码, 最近阅读删除后条目消失、缓存
+  文件同步清理(run-as 核对)）。
 - 2026-10-22：v1.5.55 release（阅读格式分流+导入文本+全局去 Screen 后缀:①BookFormat
   新增 WEB——html/htm/xhtml/mht/mhtml/svg/图片类扩展名走新组件 WebBookReader(WebView
   加载登记时转存的本地副本,记最后阅读时间不做阅读进度),txt/md/markdown/log/text/out
