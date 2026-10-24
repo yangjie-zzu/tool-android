@@ -22,7 +22,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.yukino.tool.TAG
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlin.coroutines.suspendCoroutine
+import kotlinx.coroutines.suspendCancellableCoroutine
 
 internal fun Context.findActivity(): Activity {
     val context = this;
@@ -95,7 +95,7 @@ class FilePicker(activity: ComponentActivity) {
     }
 
     suspend fun open(mimeTypes: Array<String>): Uri? {
-        return suspendCoroutine {
+        return suspendCancellableCoroutine {
             onFilePicker = { uri ->
                 it.resumeWith(Result.success(uri))
             }
@@ -105,7 +105,7 @@ class FilePicker(activity: ComponentActivity) {
 
     // 文件夹选择(SAF tree): 返回所选目录的 tree uri
     suspend fun openFolder(initialUri: Uri? = null): Uri? {
-        return suspendCoroutine {
+        return suspendCancellableCoroutine {
             onFolderPicker = { uri ->
                 it.resumeWith(Result.success(uri))
             }
@@ -129,7 +129,7 @@ class IntentLauncher(val activity: ComponentActivity) {
     }
 
     suspend fun send(intent: Intent): ActivityResult? {
-        return suspendCoroutine {
+        return suspendCancellableCoroutine {
             callback = { activityResult ->
                 Log.i(TAG, "send: ${activityResult}")
                 it.resumeWith(Result.success(activityResult))
@@ -149,10 +149,10 @@ class PermissionRequester(val activity: ComponentActivity) {
         }
 
     suspend fun request(permission: String): Boolean {
-        return suspendCoroutine {
+        return suspendCancellableCoroutine {
             if (activity.checkSelfPermission(permission) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
                 it.resumeWith(Result.success(true))
-                return@suspendCoroutine
+                return@suspendCancellableCoroutine
             }
             callback = { isGranted ->
                 it.resumeWith(Result.success(isGranted))

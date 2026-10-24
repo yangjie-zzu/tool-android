@@ -10,6 +10,7 @@ import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.ScanCallback
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.app.Activity
 import android.os.Bundle
 import android.provider.Settings
 import android.util.Log
@@ -37,6 +38,9 @@ import com.yukino.tool.util.ValueRef
 import com.yukino.tool.util.rememberCurrentActivity
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+import android.bluetooth.le.ScanResult
+import kotlin.coroutines.resume
 import java.util.UUID
 
 lateinit var enableBluetoothLauncher: IntentLauncher
@@ -82,48 +86,26 @@ fun BluetoothView() {
                 }
             }
 
-            fun closeLed(device: BluetoothDevice) {
+            suspend fun closeLed(device: BluetoothDevice) {
                 Toast.makeText(currentActivity, "关灯中", Toast.LENGTH_SHORT).show()
                 if (currentActivity.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
-                    device.connectGatt(currentActivity, false, object : BluetoothGattCallback() {
-                        override fun onConnectionStateChange(
-                            gatt: BluetoothGatt?,
-                            status: Int,
-                            newState: Int
-                        ) {
-                            super.onConnectionStateChange(
-                                gatt,
-                                status,
-                                newState
-                            )
-                            if (newState == BluetoothProfile.STATE_CONNECTED) {
-                                if (currentActivity.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
-                                    gatt?.discoverServices()
-                                }
-                            }
+                    val gatt = connectLedGatt(device, currentActivity)
+                    if (gatt != null) {
+                        try {
+                            val getCharacteristic = { gatt.getService(UUID.fromString("0000FFF0-0000-1000-8000-00805F9B34FB"))?.getCharacteristic(UUID.fromString("0000FFF2-0000-1000-8000-00805F9B34FB")) }
+                            gatt.writeCharacteristic(getCharacteristic()?.also { it.value = byteArrayOf(67, 2, 1, 1) })
+                            delay(100L)
+                            gatt.writeCharacteristic(getCharacteristic()?.also { it.value = byteArrayOf(67, 2, 1, 2) })
+                            delay(100L)
+                            Toast.makeText(currentActivity, "已关灯", Toast.LENGTH_SHORT).show()
+                            disableBluetooth()
+                        } finally {
+                            gatt.disconnect()
+                            gatt.close()
                         }
-
-                        override fun onServicesDiscovered(
-                            gatt: BluetoothGatt?,
-                            status: Int
-                        ) {
-                            super.onServicesDiscovered(gatt, status)
-                            val services = gatt?.services
-                            Log.i(TAG, "services: $services")
-                            val getCharacteristic = { gatt?.getService(UUID.fromString("0000FFF0-0000-1000-8000-00805F9B34FB"))?.getCharacteristic(UUID.fromString("0000FFF2-0000-1000-8000-00805F9B34FB")) }
-                            coroutineScope.launch {
-                                if (currentActivity.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
-                                    gatt?.writeCharacteristic(getCharacteristic()?.also { it.value = byteArrayOf(67,2,1,1) })
-                                    delay(100L)
-                                    gatt?.writeCharacteristic(getCharacteristic()?.also { it.value = byteArrayOf(67,2,1,2) })
-                                    delay(100L)
-                                    Toast.makeText(currentActivity, "已关灯", Toast.LENGTH_SHORT).show()
-                                    disableBluetooth()
-                                }
-                            }
-                        }
-
-                    })
+                    } else {
+                        Toast.makeText(currentActivity, "连接失败", Toast.LENGTH_SHORT).show()
+                    }
                 }
             }
 
@@ -152,19 +134,11 @@ fun BluetoothView() {
                                             closeLed(device)
                                         } else {
                                             Toast.makeText(currentActivity, "蓝牙扫描中", Toast.LENGTH_SHORT).show()
-                                            bluetoothLeScanner?.startScan(object : ScanCallback() {
-                                                override fun onScanResult(callbackType: Int, result: android.bluetooth.le.ScanResult) {
-                                                    super.onScanResult(callbackType, result)
-                                                    Log.i(TAG, "onScanResult: $result")
-                                                    if ("0000FFE0-0000-1000-8000-00805F9B34FB" == result.scanRecord?.serviceUuids?.get(0)?.uuid?.toString()?.uppercase()) {
-                                                        if (currentActivity.checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED) {
-                                                            bluetoothLeScanner.stopScan(this)
-                                                        }
-                                                        deviceRef.value = result.device
-                                                        closeLed(result.device)
-                                                    }
-                                                }
-                                            })
+                                            bluetoothLeScanner?.let { scanner ->
+                                                val device = scanForLedDevice(scanner)
+                                                deviceRef.value = device
+                                                closeLed(device)
+                                            }
                                         }
                                     }
                                 }
@@ -183,6 +157,58 @@ fun BluetoothView() {
             ) {
                 Text("关闭蓝牙")
             }
+        }
+    }
+}
+
+// Gatt 连接+服务发现: 成功返回已发现服务的 gatt, 失败返回 null; 取消/协程结束时自动断开
+private suspend fun connectLedGatt(device: BluetoothDevice, activity: Activity): BluetoothGatt? {
+    return suspendCancellableCoroutine { cont ->
+        val gatt = device.connectGatt(activity, false, object : BluetoothGattCallback() {
+            override fun onConnectionStateChange(gatt: BluetoothGatt?, status: Int, newState: Int) {
+                super.onConnectionStateChange(gatt, status, newState)
+                if (newState == BluetoothProfile.STATE_CONNECTED) {
+                    if (activity.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
+                        gatt?.discoverServices()
+                    }
+                } else if (newState == BluetoothProfile.STATE_DISCONNECTED && cont.isActive) {
+                    cont.resume(null)
+                }
+            }
+
+            override fun onServicesDiscovered(gatt: BluetoothGatt?, status: Int) {
+                super.onServicesDiscovered(gatt, status)
+                Log.i(TAG, "services: ${gatt?.services}")
+                if (cont.isActive) {
+                    cont.resume(if (status == BluetoothGatt.GATT_SUCCESS) gatt else null)
+                }
+            }
+        })
+        cont.invokeOnCancellation {
+            gatt.disconnect()
+            gatt.close()
+        }
+    }
+}
+
+// LE 扫描: 等待广播 FFE0 服务的目标设备出现, 命中即停扫; 取消时也停扫
+private suspend fun scanForLedDevice(scanner: android.bluetooth.le.BluetoothLeScanner): BluetoothDevice {
+    return suspendCancellableCoroutine { cont ->
+        val callback = object : ScanCallback() {
+            override fun onScanResult(callbackType: Int, result: ScanResult) {
+                super.onScanResult(callbackType, result)
+                Log.i(TAG, "onScanResult: $result")
+                if ("0000FFE0-0000-1000-8000-00805F9B34FB" == result.scanRecord?.serviceUuids?.get(0)?.uuid?.toString()?.uppercase()) {
+                    if (cont.isActive) {
+                        cont.resume(result.device)
+                    }
+                    runCatching { scanner.stopScan(this) }
+                }
+            }
+        }
+        scanner.startScan(callback)
+        cont.invokeOnCancellation {
+            runCatching { scanner.stopScan(callback) }
         }
     }
 }

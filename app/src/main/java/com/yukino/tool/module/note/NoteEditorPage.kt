@@ -57,6 +57,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.lifecycleScope
+import com.yukino.tool.util.await
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -469,17 +471,19 @@ internal fun QrScanPage(
                             proxy.close()
                         }
                     }
-                    androidx.camera.lifecycle.ProcessCameraProvider.getInstance(ctx).addListener({
-                        val provider = androidx.camera.lifecycle.ProcessCameraProvider.getInstance(ctx).get()
-                        provider.unbindAll()
-                        provider.bindToLifecycle(
-                            lifecycleOwner,
-                            androidx.camera.core.CameraSelector.DEFAULT_BACK_CAMERA,
-                            androidx.camera.core.Preview.Builder().build()
-                                .also { it.setSurfaceProvider(previewView.surfaceProvider) },
-                            analysis
-                        )
-                    }, androidx.core.content.ContextCompat.getMainExecutor(ctx))
+                    androidx.camera.lifecycle.ProcessCameraProvider.getInstance(ctx).let { providerFuture ->
+                        lifecycleOwner.lifecycleScope.launch {
+                            val provider = providerFuture.await()
+                            provider.unbindAll()
+                            provider.bindToLifecycle(
+                                lifecycleOwner,
+                                androidx.camera.core.CameraSelector.DEFAULT_BACK_CAMERA,
+                                androidx.camera.core.Preview.Builder().build()
+                                    .also { it.setSurfaceProvider(previewView.surfaceProvider) },
+                                analysis
+                            )
+                        }
+                    }
                     previewView
                 }
             )

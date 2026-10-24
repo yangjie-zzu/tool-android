@@ -43,6 +43,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -69,6 +70,8 @@ import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
+import com.yukino.tool.util.await
+import kotlinx.coroutines.launch
 import java.util.concurrent.Executors
 
 // 扫码: 相机预览+ML Kit全格式识别; 识别成功去重保存后跳到记录页; 右上角入口进记录页
@@ -206,6 +209,7 @@ private fun ScanCameraPage(onScanned: (List<String>) -> Unit) {
 @Composable
 private fun CameraScanArea(torchOn: Boolean, onResult: (List<String>) -> Unit) {
     val lifecycleOwner = LocalLifecycleOwner.current
+    val coroutineScope = rememberCoroutineScope()
     val executor = remember { Executors.newSingleThreadExecutor() }
     //每个内容的上次触发时间: 逐码防抖, 同一内容2秒内只触发一次
     val lastTimes = remember { java.util.concurrent.ConcurrentHashMap<String, Long>() }
@@ -248,50 +252,49 @@ private fun CameraScanArea(torchOn: Boolean, onResult: (List<String>) -> Unit) {
                 })
             }
     ) {
-        AndroidView(
-            modifier = Modifier.fillMaxSize(),
-            factory = { ctx ->
-                val previewView = PreviewView(ctx)
-                val providerFuture = ProcessCameraProvider.getInstance(ctx)
-                providerFuture.addListener({
-                    val provider = providerFuture.get()
-                    val preview = Preview.Builder().build().also {
-                        it.setSurfaceProvider(previewView.surfaceProvider)
-                    }
-                    val options = BarcodeScannerOptions.Builder()
-                        .setBarcodeFormats(Barcode.FORMAT_ALL_FORMATS)
-                        .build()
-                    val scanner = BarcodeScanning.getClient(options)
-                    val analysis = ImageAnalysis.Builder()
-                        .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                        .build()
-                    analysis.setAnalyzer(executor) { image ->
-                        scanFrame(scanner, image) { contents ->
-                            //逐码防抖: 同一内容2秒内只触发一次
-                            val now = System.currentTimeMillis()
-                            val fired = contents.filter { content ->
-                                val last = lastTimes[content] ?: 0L
-                                if (now - last < 2000) false else {
-                                    lastTimes[content] = now
-                                    true
+            AndroidView(
+                modifier = Modifier.fillMaxSize(),
+                factory = { ctx ->
+                    val previewView = PreviewView(ctx)
+                    coroutineScope.launch {
+                        val provider = ProcessCameraProvider.getInstance(ctx).await()
+                        val preview = Preview.Builder().build().also {
+                            it.setSurfaceProvider(previewView.surfaceProvider)
+                        }
+                        val options = BarcodeScannerOptions.Builder()
+                            .setBarcodeFormats(Barcode.FORMAT_ALL_FORMATS)
+                            .build()
+                        val scanner = BarcodeScanning.getClient(options)
+                        val analysis = ImageAnalysis.Builder()
+                            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                            .build()
+                        analysis.setAnalyzer(executor) { image ->
+                            scanFrame(scanner, image) { contents ->
+                                //逐码防抖: 同一内容2秒内只触发一次
+                                val now = System.currentTimeMillis()
+                                val fired = contents.filter { content ->
+                                    val last = lastTimes[content] ?: 0L
+                                    if (now - last < 2000) false else {
+                                        lastTimes[content] = now
+                                        true
+                                    }
+                                }
+                                if (fired.isNotEmpty()) {
+                                    previewView.post { onResult(fired) }
                                 }
                             }
-                            if (fired.isNotEmpty()) {
-                                previewView.post { onResult(fired) }
-                            }
                         }
+                        provider.unbindAll()
+                        camera = provider.bindToLifecycle(
+                            lifecycleOwner,
+                            CameraSelector.DEFAULT_BACK_CAMERA,
+                            preview,
+                            analysis
+                        )
                     }
-                    provider.unbindAll()
-                    camera = provider.bindToLifecycle(
-                        lifecycleOwner,
-                        CameraSelector.DEFAULT_BACK_CAMERA,
-                        preview,
-                        analysis
-                    )
-                }, ContextCompat.getMainExecutor(ctx))
-                previewView
-            }
-        )
+                    previewView
+                }
+            )
         //取景框遮罩: offscreen合成后用Clear抠出中间镂空
         Canvas(
             modifier = Modifier

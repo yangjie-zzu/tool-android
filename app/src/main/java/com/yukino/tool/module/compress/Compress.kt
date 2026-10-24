@@ -549,7 +549,7 @@ fun SelectFile(
                     coroutineScope.launch {
                         val uri = compressFilePicker.open(arrayOf("*/*"))
                         if (uri != null) {
-                            activity.runOnUiThread {
+                            withContext(Dispatchers.Main) {
                                 navController.navigate(DecompressRoute(uri.toString()))
                             }
                         }

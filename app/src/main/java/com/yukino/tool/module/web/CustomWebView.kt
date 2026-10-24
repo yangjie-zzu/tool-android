@@ -57,13 +57,14 @@ import io.ktor.utils.io.core.readBytes
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
+import kotlin.coroutines.resume
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.io.OutputStream
 import java.net.URLDecoder
-import java.util.concurrent.CompletableFuture
 import kotlin.math.abs
 
 interface WebInterface {
@@ -517,12 +518,12 @@ open class CustomWebView(context: Context) : WebView(context), WebInterface {
         return actionMode
     }
 
-    private fun getSelectedText(): CompletableFuture<String> {
-        val promise = CompletableFuture<String>()
-        this.evaluateJavascript("window.getSelection().toString()") { result ->
-            promise.complete(if (result.isNotEmpty()) result.substring(1, result.length - 1) else result)
+    private suspend fun getSelectedText(): String {
+        return suspendCancellableCoroutine { cont ->
+            this.evaluateJavascript("window.getSelection().toString()") { result ->
+                cont.resume(if (result.isNotEmpty()) result.substring(1, result.length - 1) else result)
+            }
         }
-        return promise
     }
 
     override fun onCreateSelectorActionMode(
@@ -533,8 +534,9 @@ open class CustomWebView(context: Context) : WebView(context), WebInterface {
         super.onCreateSelectorActionMode(mode, menu, callback)
         val menuItem = menu?.add("访问")
         menuItem?.setOnMenuItemClickListener {
-            getSelectedText().thenAccept {
-                onSelected(it)
+            findViewTreeLifecycleOwner()?.lifecycleScope?.launch {
+                val selected = getSelectedText()
+                onSelected(selected)
                 mode?.finish()
             }
             true
