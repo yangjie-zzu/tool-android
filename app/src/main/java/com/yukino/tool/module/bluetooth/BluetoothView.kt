@@ -2,6 +2,7 @@ package com.yukino.tool.module.bluetooth
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -108,6 +109,9 @@ fun BluetoothView(permissions: BlePermissions, executor: PresetExecutor) {
         PresetStore.list(context)
     }
 
+    // 子页(编辑/调试)按系统返回键回预设列表, 而不是退出整个蓝牙 Activity
+    BackHandler(enabled = page != 0) { page = 0 }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -119,7 +123,7 @@ fun BluetoothView(permissions: BlePermissions, executor: PresetExecutor) {
                 1 -> Title(if (editing == null) "新建预设" else "编辑预设")
                 2 -> Title("蓝牙调试")
             }
-            if (page != 0) {
+            if (page == 1) {
                 OutlinedButton(onClick = { page = 0 }) { Text("返回") }
             }
         }
