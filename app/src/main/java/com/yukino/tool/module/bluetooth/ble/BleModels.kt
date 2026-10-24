@@ -16,7 +16,8 @@ data class DiscoveredDevice(
     val mac: String,
     val name: String?,
     val rssi: Int,
-    val serviceUuids: List<String>
+    val serviceUuids: List<String>,
+    val connectable: Boolean = true   // 广播为可连接类型; 纯广播设备(beacon等)为 false
 )
 
 data class CharacteristicNode(

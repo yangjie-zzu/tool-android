@@ -8,6 +8,7 @@ import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothProfile
 import android.content.Context
+import android.content.Intent
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.withTimeout
 import java.util.UUID
@@ -25,6 +26,49 @@ class BleClient(private val context: Context) {
     private var gatt: BluetoothGatt? = null
     private var waiter: CompletableDeferred<Any?>? = null
     private var dataListener: ((ByteArray) -> Unit)? = null
+    private var device: BluetoothDevice? = null
+
+    /** 读写/订阅遇到权限不足触发配对流程时的回调(供执行器输出日志) */
+    var onPairing: (() -> Unit)? = null
+
+    fun isBonded(): Boolean =
+        device?.bondState == BluetoothDevice.BOND_BONDED
+
+    /** 拉起系统配对并等待绑定完成(30s 超时); 已绑定直接返回 true */
+    suspend fun pairIfNeeded(): Boolean {
+        val d = device ?: return false
+        if (d.bondState == BluetoothDevice.BOND_BONDED) return true
+        val done = CompletableDeferred<Boolean>()
+        val receiver = object : android.content.BroadcastReceiver() {
+            override fun onReceive(c: Context, intent: Intent) {
+                when (intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, -1)) {
+                    BluetoothDevice.BOND_BONDED -> done.complete(true)
+                    BluetoothDevice.BOND_NONE -> done.complete(false)
+                }
+            }
+        }
+        context.registerReceiver(receiver, android.content.IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED))
+        try {
+            @Suppress("DEPRECATION")
+            if (!d.createBond()) return false
+            return withTimeout(30000L) { done.await() }
+        } finally {
+            runCatching { context.unregisterReceiver(receiver) }
+        }
+    }
+
+    /** 权限不足恢复: 配对(若未绑) + 重连(加密链路重连生效), 成功后可重试一次原操作 */
+    private suspend fun recoverWithBond(): Boolean {
+        onPairing?.invoke()
+        if (!pairIfNeeded()) return false
+        val d = device ?: return false
+        connect(d)
+        return true
+    }
+
+    /** GATT 权限不足类错误(需配对/加密) */
+    private fun needBond(status: Int): Boolean =
+        status == 5 || status == 15 || status == 0x0F
 
     private fun <T> newWaiter(): CompletableDeferred<T> {
         val d = CompletableDeferred<T>()
@@ -36,6 +80,7 @@ class BleClient(private val context: Context) {
     @SuppressLint("MissingPermission")
     suspend fun connect(device: BluetoothDevice): ServiceTree {
         disconnect() // 兜底: 复用前先释放旧连接
+        this.device = device
         val connected = CompletableDeferred<Boolean>()
         val discovered = newWaiter<Int>()
         val callback = object : BluetoothGattCallback() {
@@ -93,9 +138,17 @@ class BleClient(private val context: Context) {
         if (p and BluetoothGattCharacteristic.PROPERTY_INDICATE != 0) add("indicate")
     }
 
-    /** @return GATT status, 0=成功 */
-    @SuppressLint("MissingPermission")
+    /** @return GATT status, 0=成功; 权限不足自动配对+重连后重试一次 */
     suspend fun write(svc: String, chr: String, bytes: ByteArray, withResp: Boolean): Int {
+        var status = writeOnce(svc, chr, bytes, withResp)
+        if (needBond(status) && recoverWithBond()) {
+            status = writeOnce(svc, chr, bytes, withResp)
+        }
+        return status
+    }
+
+    @SuppressLint("MissingPermission")
+    private suspend fun writeOnce(svc: String, chr: String, bytes: ByteArray, withResp: Boolean): Int {
         val g = gatt ?: throw BleOpException("未连接")
         val characteristic = findCharacteristic(svc, chr) ?: throw BleOpException("特征不存在 $svc/$chr")
         val done = newWaiter<Int>()
@@ -108,9 +161,19 @@ class BleClient(private val context: Context) {
         return withTimeout(OP_TIMEOUT_MS) { done.await() }
     }
 
-    /** @return 读到的字节, 设备返回错误时抛异常 */
-    @SuppressLint("MissingPermission")
+    /** @return 读到的字节, 设备返回错误时抛异常; 权限不足自动配对+重连后重试一次 */
     suspend fun read(svc: String, chr: String): ByteArray {
+        return try {
+            readOnce(svc, chr)
+        } catch (e: BleOpException) {
+            if (e.message?.contains("status=5") == true || e.message?.contains("status=15") == true) {
+                if (recoverWithBond()) readOnce(svc, chr) else throw e
+            } else throw e
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private suspend fun readOnce(svc: String, chr: String): ByteArray {
         val g = gatt ?: throw BleOpException("未连接")
         val characteristic = findCharacteristic(svc, chr) ?: throw BleOpException("特征不存在 $svc/$chr")
         val done = newWaiter<Pair<Int, ByteArray?>>()
@@ -120,9 +183,19 @@ class BleClient(private val context: Context) {
         return value ?: ByteArray(0)
     }
 
-    /** 开启 notify/indicate, 等订阅生效(CCCD 写成功)后返回 */
-    @SuppressLint("MissingPermission")
+    /** 开启 notify/indicate, 等订阅生效(CCCD 写成功)后返回; 权限不足自动配对+重连后重试一次 */
     suspend fun subscribe(svc: String, chr: String, onPacket: (ByteArray) -> Unit): Boolean {
+        return try {
+            subscribeOnce(svc, chr, onPacket)
+        } catch (e: BleOpException) {
+            if (e.message?.contains("status=5") == true || e.message?.contains("status=15") == true) {
+                if (recoverWithBond()) subscribeOnce(svc, chr, onPacket) else throw e
+            } else throw e
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private suspend fun subscribeOnce(svc: String, chr: String, onPacket: (ByteArray) -> Unit): Boolean {
         val g = gatt ?: throw BleOpException("未连接")
         val characteristic = findCharacteristic(svc, chr) ?: throw BleOpException("特征不存在 $svc/$chr")
         val indicate = characteristic.properties and BluetoothGattCharacteristic.PROPERTY_INDICATE != 0

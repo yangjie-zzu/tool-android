@@ -552,7 +552,13 @@ private fun DebugPage(permissions: BlePermissions) {
                     }) {
                         Row(modifier = Modifier.padding(8.dp), horizontalArrangement = Arrangement.SpaceBetween) {
                             Column {
-                                Text(dev.name ?: "(无名)")
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Text(dev.name ?: "(无名)")
+                                    if (!dev.connectable) {
+                                        Text("不可连", fontSize = 11.sp, color = Color.Gray,
+                                            modifier = Modifier.padding(start = 2.dp, top = 1.dp, bottom = 1.dp, end = 4.dp))
+                                    }
+                                }
                                 Text(dev.mac, fontSize = 12.sp, color = Color.Gray)
                             }
                             if (connectingThis) {
@@ -575,7 +581,11 @@ private fun DebugPage(permissions: BlePermissions) {
                     tree = null
                 }) { Text("断开返回") }
             }
-            Text("设备: ${selected?.name ?: "(无名)"} ${selected?.mac}", fontSize = 13.sp)
+            Text(
+                "设备: ${selected?.name ?: "(无名)"} ${selected?.mac}" +
+                    if (client?.isBonded() == true) " (已绑定)" else "",
+                fontSize = 13.sp
+            )
             tree?.services?.forEach { svc ->
                 Text(
                     "服务 ${svc.uuid} (${svc.characteristics.size} 个数据点)",

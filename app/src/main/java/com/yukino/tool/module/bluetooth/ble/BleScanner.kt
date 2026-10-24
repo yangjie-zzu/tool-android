@@ -39,7 +39,13 @@ class BleScanner(private val adapter: BluetoothAdapter) {
                 val name = result.scanRecord?.deviceName ?: result.device?.name
                 if (uuidNorm.isNotEmpty() && uuids.none { it == uuidNorm }) return
                 if (filterName.isNotEmpty() && (name ?: "").contains(filterName, ignoreCase = true).not()) return
-                val dev = DiscoveredDevice(result.device.address, name, result.rssi, uuids)
+                // 可连性: API 26+ 系统直接给出; 低版本用广播 Flags 兜底(General/Limited Discoverable 位)
+                val connectable = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                    result.isConnectable
+                } else {
+                    (result.scanRecord?.advertiseFlags ?: 0) and 0x03 != 0
+                }
+                val dev = DiscoveredDevice(result.device.address, name, result.rssi, uuids, connectable)
                 found[dev.mac] = dev
                 trySend(found.values.toList())
                 if (!collectAll) {

@@ -60,6 +60,7 @@ class PresetExecutor(
         val device = permissions.adapter()!!.getRemoteDevice(dev.mac)
         step("连接中…")
         val client = BleClient(context)
+        client.onPairing = { step("设备要求配对, 已拉起系统配对, 完成后自动重试") }
         client.connect(device)
         this.client = client
         step("已连接, 服务发现完成")
