@@ -594,8 +594,13 @@ private fun DebugPage(permissions: BlePermissions, onBack: () -> Unit) {
     } else {
         // 详情页: 头部设备卡(固定) + 服务区(滚动) + 日志面板(固定高度)
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            // —— 头部设备卡 ——
-            Card(modifier = Modifier.fillMaxWidth()) {
+            // —— 头部设备卡(主色调, 与服务卡/日志卡区分) ——
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = androidx.compose.material3.CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.primaryContainer
+                )
+            ) {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(12.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -766,8 +771,13 @@ private fun DebugPage(permissions: BlePermissions, onBack: () -> Unit) {
                 }
             }
 
-            // —— 日志面板(默认收起只显示最新一条, 点击展开 160dp 独立滚动) ——
-            Card(modifier = Modifier.fillMaxWidth()) {
+            // —— 日志面板(副色调, 与设备卡/服务卡区分) ——
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = androidx.compose.material3.CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.secondaryContainer
+                )
+            ) {
                 Column(modifier = Modifier.padding(8.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth().clickable { logOpen = !logOpen },

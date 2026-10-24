@@ -107,6 +107,9 @@ curl -s -X POST -H "Authorization: token $TOKEN" -H "Content-Type: application/o
 
 ## 6. 历史记录
 
+- 2026-10-25：v1.5.67 release（蓝牙调试页详情卡片配色区分(真机反馈:不同类型卡片同色
+  难辨):设备头部卡改 primaryContainer 主色调,日志卡改 secondaryContainer 副色调,
+  服务卡保持 surfaceVariant 中灰,数据点维持嵌套 surface 浅色——四种区域一眼可辨。）
 - 2026-10-25：v1.5.66 release（蓝牙调试页详情继续优化(真机反馈:日志面板过大/服务与
   数据点无区分):①操作日志默认收起,仅显示最新一条灰字,点标题展开 160dp 滚动面板并
   显示条数;②服务卡片改 surfaceVariant 底色+标题加"服务"前缀,数据点改为服务卡片内
