@@ -483,8 +483,8 @@ private fun DebugPage(permissions: BlePermissions, onBack: () -> Unit) {
     var selected by remember { mutableStateOf<DiscoveredDevice?>(null) }
     var tree by remember { mutableStateOf<ServiceTree?>(null) }
     var log by remember { mutableStateOf<List<String>>(emptyList()) }
-    var expandedSvc by remember { mutableStateOf<String?>(null) }
-    var chrInput by remember { mutableStateOf("") }
+    var expandedSvcs by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var chrInputs by remember { mutableStateOf<Set<String>>(emptySet()) }
     var client by remember { mutableStateOf<BleClient?>(null) }
     var connectingMac by remember { mutableStateOf<String?>(null) }
 
@@ -500,8 +500,8 @@ private fun DebugPage(permissions: BlePermissions, onBack: () -> Unit) {
             selected = null
             tree = null
             log = emptyList()
-            expandedSvc = null
-            chrInput = ""
+            expandedSvcs = emptySet()
+            chrInputs = emptySet()
             err = ""
         } else {
             scanJob?.cancel()
@@ -606,10 +606,13 @@ private fun DebugPage(permissions: BlePermissions, onBack: () -> Unit) {
                     fontSize = 13.sp,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable { expandedSvc = if (expandedSvc == svc.uuid) null else svc.uuid }
+                        .clickable {
+                            expandedSvcs = if (svc.uuid in expandedSvcs) expandedSvcs - svc.uuid
+                            else expandedSvcs + svc.uuid
+                        }
                         .padding(vertical = 2.dp)
                 )
-                if (expandedSvc == svc.uuid) {
+                if (svc.uuid in expandedSvcs) {
                     svc.characteristics.forEach { chr ->
                         Column(modifier = Modifier.fillMaxWidth().padding(start = 12.dp)) {
                             Row(horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -630,7 +633,10 @@ private fun DebugPage(permissions: BlePermissions, onBack: () -> Unit) {
                                     }) { Text("读", fontSize = 12.sp) }
                                 }
                                 if ("write" in chr.properties || "writeNoResp" in chr.properties) {
-                                    OutlinedButton(onClick = { chrInput = chr.uuid }) { Text("写", fontSize = 12.sp) }
+                                    OutlinedButton(onClick = {
+                                        chrInputs = if (chr.uuid in chrInputs) chrInputs - chr.uuid
+                                        else chrInputs + chr.uuid
+                                    }) { Text("写", fontSize = 12.sp) }
                                 }
                                 if ("notify" in chr.properties || "indicate" in chr.properties) {
                                     OutlinedButton(onClick = {
@@ -648,7 +654,7 @@ private fun DebugPage(permissions: BlePermissions, onBack: () -> Unit) {
                                     }) { Text("订阅", fontSize = 12.sp) }
                                 }
                             }
-                            if (chrInput == chr.uuid) {
+                            if (chr.uuid in chrInputs) {
                                 var text by remember(chr.uuid) { mutableStateOf("") }
                                 var asAscii by remember(chr.uuid) { mutableStateOf(false) }
                                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -668,7 +674,7 @@ private fun DebugPage(permissions: BlePermissions, onBack: () -> Unit) {
                                             else parseHex(text) ?: throw BleOpException("HEX 格式错误")
                                             val st = client?.write(svc.uuid, chr.uuid, bytes, "write" in chr.properties)
                                             appendLog("写 ${chr.uuid}: ${toHex(bytes)} status=$st")
-                                            chrInput = ""
+                                            chrInputs = chrInputs - chr.uuid
                                         } catch (e: Exception) {
                                             appendLog("写 ${chr.uuid} 失败: ${e.message}")
                                         }
