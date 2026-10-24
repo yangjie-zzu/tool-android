@@ -111,8 +111,8 @@ fun BluetoothView(permissions: BlePermissions, executor: PresetExecutor) {
         PresetStore.list(context)
     }
 
-    // 子页(编辑/调试)按系统返回键回预设列表, 而不是退出整个蓝牙 Activity
-    BackHandler(enabled = page != 0) { page = 0 }
+    // 编辑页按系统返回键回预设列表; 调试页的层级返回由 DebugPage 自己注册(逐层退)
+    BackHandler(enabled = page == 1) { page = 0 }
 
     Column(
         modifier = Modifier
@@ -152,7 +152,7 @@ fun BluetoothView(permissions: BlePermissions, executor: PresetExecutor) {
                     page = 0
                 }
             )
-            2 -> DebugPage(permissions)
+            2 -> DebugPage(permissions, onBack = { page = 0 })
         }
     }
 
@@ -474,7 +474,7 @@ private fun ExecuteDialog(
 // —— 调试页 ——
 
 @Composable
-private fun DebugPage(permissions: BlePermissions) {
+private fun DebugPage(permissions: BlePermissions, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
     var devices by remember { mutableStateOf<List<DiscoveredDevice>>(emptyList()) }
     var scanning by remember { mutableStateOf(false) }
@@ -491,6 +491,24 @@ private fun DebugPage(permissions: BlePermissions) {
     fun appendLog(s: String) {
         log = (log + s).takeLast(100)
     }
+
+    // 层级返回: 设备详情→设备列表(断开清理)→预设列表
+    fun debugBack() {
+        if (selected != null) {
+            client?.disconnect()
+            client = null
+            selected = null
+            tree = null
+            log = emptyList()
+            expandedSvc = null
+            chrInput = ""
+            err = ""
+        } else {
+            scanJob?.cancel()
+            onBack()
+        }
+    }
+    BackHandler { debugBack() }
 
     if (selected == null) {
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -574,12 +592,7 @@ private fun DebugPage(permissions: BlePermissions) {
     } else {
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = {
-                    client?.disconnect()
-                    client = null
-                    selected = null
-                    tree = null
-                }) { Text("断开返回") }
+                OutlinedButton(onClick = { debugBack() }) { Text("断开返回") }
             }
             Text(
                 "设备: ${selected?.name ?: "(无名)"} ${selected?.mac}" +
