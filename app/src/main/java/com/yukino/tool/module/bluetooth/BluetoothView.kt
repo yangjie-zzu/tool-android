@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
@@ -590,105 +591,185 @@ private fun DebugPage(permissions: BlePermissions, onBack: () -> Unit) {
             }
         }
     } else {
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { debugBack() }) { Text("断开返回") }
-            }
-            Text(
-                "设备: ${selected?.name ?: "(无名)"} ${selected?.mac}" +
-                    if (client?.isBonded() == true) " (已绑定)" else "",
-                fontSize = 13.sp
-            )
-            tree?.services?.forEach { svc ->
-                Text(
-                    "服务 ${svc.uuid} (${svc.characteristics.size} 个数据点)",
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 13.sp,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable {
-                            expandedSvcs = if (svc.uuid in expandedSvcs) expandedSvcs - svc.uuid
-                            else expandedSvcs + svc.uuid
+        // 详情页: 头部设备卡(固定) + 服务区(滚动) + 日志面板(固定高度)
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            // —— 头部设备卡 ——
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(
+                                selected?.name ?: "(无名)",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 16.sp
+                            )
+                            if (client?.isBonded() == true) {
+                                Text("已绑定", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+                            }
+                            if (selected?.connectable == false) {
+                                Text("不可连", fontSize = 11.sp, color = Color.Gray)
+                            }
                         }
-                        .padding(vertical = 2.dp)
-                )
-                if (svc.uuid in expandedSvcs) {
-                    svc.characteristics.forEach { chr ->
-                        Column(modifier = Modifier.fillMaxWidth().padding(start = 12.dp)) {
-                            Row(horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                Text(chr.uuid, fontSize = 13.sp)
-                                Text(chr.properties.joinToString("/"), fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
-                            }
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                if ("read" in chr.properties) {
-                                    OutlinedButton(onClick = {
-                                        scope.launch {
-                                            try {
-                                                val v = client?.read(svc.uuid, chr.uuid) ?: return@launch
-                                                appendLog("读 ${chr.uuid}: ${toHex(v)} | ${toAscii(v)}")
-                                            } catch (e: Exception) {
-                                                appendLog("读 ${chr.uuid} 失败: ${e.message}")
-                                            }
-                                        }
-                                    }) { Text("读", fontSize = 12.sp) }
-                                }
-                                if ("write" in chr.properties || "writeNoResp" in chr.properties) {
-                                    OutlinedButton(onClick = {
-                                        chrInputs = if (chr.uuid in chrInputs) chrInputs - chr.uuid
-                                        else chrInputs + chr.uuid
-                                    }) { Text("写", fontSize = 12.sp) }
-                                }
-                                if ("notify" in chr.properties || "indicate" in chr.properties) {
-                                    OutlinedButton(onClick = {
-                                        scope.launch {
-                                            try {
-                                                val c = client ?: return@launch
-                                                val mode = c.subscribe(svc.uuid, chr.uuid) { bytes ->
-                                                    appendLog("收 ${chr.uuid}: ${toHex(bytes)} | ${toAscii(bytes)}")
-                                                }
-                                                appendLog("已订阅 ${chr.uuid}(${if (mode) "indicate" else "notify"})")
-                                            } catch (e: Exception) {
-                                                appendLog("订阅 ${chr.uuid} 失败: ${e.message}")
-                                            }
-                                        }
-                                    }) { Text("订阅", fontSize = 12.sp) }
-                                }
-                            }
-                            if (chr.uuid in chrInputs) {
-                                var text by remember(chr.uuid) { mutableStateOf("") }
-                                var asAscii by remember(chr.uuid) { mutableStateOf(false) }
-                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    OutlinedTextField(
-                                        value = text,
-                                        onValueChange = { text = it },
-                                        label = { Text(if (asAscii) "ASCII 内容" else "HEX 内容") },
-                                        modifier = Modifier.weight(1f)
+                        Text(selected?.mac ?: "", fontSize = 12.sp, color = Color.Gray)
+                        Text(
+                            "${tree?.services?.size ?: 0} 个服务 · ${tree?.services?.sumOf { it.characteristics.size } ?: 0} 个数据点",
+                            fontSize = 12.sp, color = Color.Gray
+                        )
+                    }
+                    OutlinedButton(onClick = { debugBack() }) { Text("断开") }
+                }
+            }
+
+            // —— 服务区(可滚动) ——
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                tree?.services?.forEach { svc ->
+                    val expanded = svc.uuid in expandedSvcs
+                    Card(modifier = Modifier.fillMaxWidth()) {
+                        Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        expandedSvcs = if (expanded) expandedSvcs - svc.uuid
+                                        else expandedSvcs + svc.uuid
+                                    }
+                                    .padding(vertical = 6.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column {
+                                    Text(
+                                        svc.uuid,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 14.sp
                                     )
-                                    Checkbox(checked = asAscii, onCheckedChange = { asAscii = it })
-                                    Text("ASCII", fontSize = 12.sp)
+                                    Text(
+                                        "${svc.characteristics.size} 个数据点",
+                                        fontSize = 11.sp,
+                                        color = Color.Gray
+                                    )
                                 }
-                                Button(onClick = {
-                                    scope.launch {
-                                        try {
-                                            val bytes = if (asAscii) text.toByteArray(Charsets.US_ASCII)
-                                            else parseHex(text) ?: throw BleOpException("HEX 格式错误")
-                                            val st = client?.write(svc.uuid, chr.uuid, bytes, "write" in chr.properties)
-                                            appendLog("写 ${chr.uuid}: ${toHex(bytes)} status=$st")
-                                            chrInputs = chrInputs - chr.uuid
-                                        } catch (e: Exception) {
-                                            appendLog("写 ${chr.uuid} 失败: ${e.message}")
+                                Text(
+                                    if (expanded) "▾" else "▸",
+                                    fontSize = 16.sp,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                            if (expanded) {
+                                svc.characteristics.forEach { chr ->
+                                    Column(
+                                        modifier = Modifier.fillMaxWidth().padding(start = 8.dp, top = 4.dp, bottom = 4.dp),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Row(
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(chr.uuid, fontSize = 13.sp)
+                                            Text(
+                                                chr.properties.joinToString("/"),
+                                                fontSize = 11.sp,
+                                                color = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+                                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            if ("read" in chr.properties) {
+                                                OutlinedButton(onClick = {
+                                                    scope.launch {
+                                                        try {
+                                                            val v = client?.read(svc.uuid, chr.uuid) ?: return@launch
+                                                            appendLog("读 ${chr.uuid}: ${toHex(v)} | ${toAscii(v)}")
+                                                        } catch (e: Exception) {
+                                                            appendLog("读 ${chr.uuid} 失败: ${e.message}")
+                                                        }
+                                                    }
+                                                }) { Text("读", fontSize = 12.sp) }
+                                            }
+                                            if ("write" in chr.properties || "writeNoResp" in chr.properties) {
+                                                OutlinedButton(onClick = {
+                                                    chrInputs = if (chr.uuid in chrInputs) chrInputs - chr.uuid
+                                                    else chrInputs + chr.uuid
+                                                }) { Text("写", fontSize = 12.sp) }
+                                            }
+                                            if ("notify" in chr.properties || "indicate" in chr.properties) {
+                                                OutlinedButton(onClick = {
+                                                    scope.launch {
+                                                        try {
+                                                            val c = client ?: return@launch
+                                                            val mode = c.subscribe(svc.uuid, chr.uuid) { bytes ->
+                                                                appendLog("收 ${chr.uuid}: ${toHex(bytes)} | ${toAscii(bytes)}")
+                                                            }
+                                                            appendLog("已订阅 ${chr.uuid}(${if (mode) "indicate" else "notify"})")
+                                                        } catch (e: Exception) {
+                                                            appendLog("订阅 ${chr.uuid} 失败: ${e.message}")
+                                                        }
+                                                    }
+                                                }) { Text("订阅", fontSize = 12.sp) }
+                                            }
+                                        }
+                                        if (chr.uuid in chrInputs) {
+                                            var text by remember(chr.uuid) { mutableStateOf("") }
+                                            var asAscii by remember(chr.uuid) { mutableStateOf(false) }
+                                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                                OutlinedTextField(
+                                                    value = text,
+                                                    onValueChange = { text = it },
+                                                    label = { Text(if (asAscii) "ASCII 内容" else "HEX 内容") },
+                                                    modifier = Modifier.weight(1f)
+                                                )
+                                                Checkbox(checked = asAscii, onCheckedChange = { asAscii = it })
+                                                Text("ASCII", fontSize = 12.sp)
+                                            }
+                                            Button(onClick = {
+                                                scope.launch {
+                                                    try {
+                                                        val bytes = if (asAscii) text.toByteArray(Charsets.US_ASCII)
+                                                        else parseHex(text) ?: throw BleOpException("HEX 格式错误")
+                                                        val st = client?.write(svc.uuid, chr.uuid, bytes, "write" in chr.properties)
+                                                        appendLog("写 ${chr.uuid}: ${toHex(bytes)} status=$st")
+                                                        chrInputs = chrInputs - chr.uuid
+                                                    } catch (e: Exception) {
+                                                        appendLog("写 ${chr.uuid} 失败: ${e.message}")
+                                                    }
+                                                }
+                                            }) { Text("发送", fontSize = 12.sp) }
                                         }
                                     }
-                                }) { Text("发送", fontSize = 12.sp) }
+                                }
                             }
                         }
                     }
                 }
+                if (tree?.services?.isEmpty() == true) {
+                    Text("未发现任何服务", fontSize = 13.sp, color = Color.Gray)
+                }
             }
-            Text("日志", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-            LazyColumn(modifier = Modifier.weight(1f)) {
-                items(log) { line ->
-                    Text(line, fontSize = 12.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
+
+            // —— 日志面板(固定高度, 独立滚动) ——
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(8.dp)) {
+                    Text("操作日志", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    LazyColumn(
+                        modifier = Modifier.fillMaxWidth().height(140.dp).padding(top = 4.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        items(log) { line ->
+                            Text(
+                                line,
+                                fontSize = 12.sp,
+                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                            )
+                        }
+                    }
                 }
             }
         }
