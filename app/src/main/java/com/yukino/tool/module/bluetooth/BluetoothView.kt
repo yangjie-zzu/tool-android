@@ -82,7 +82,9 @@ class BluetoothActivity : ComponentActivity() {
         )
         val executor = PresetExecutor(applicationContext, permissions)
         setContent {
-            BluetoothView(permissions, executor)
+            com.yukino.tool.ui.theme.ToolTheme {
+                BluetoothView(permissions, executor)
+            }
         }
     }
 }
@@ -484,6 +486,7 @@ private fun DebugPage(permissions: BlePermissions) {
     var expandedSvc by remember { mutableStateOf<String?>(null) }
     var chrInput by remember { mutableStateOf("") }
     var client by remember { mutableStateOf<BleClient?>(null) }
+    var connectingMac by remember { mutableStateOf<String?>(null) }
 
     fun appendLog(s: String) {
         log = (log + s).takeLast(100)
@@ -522,9 +525,13 @@ private fun DebugPage(permissions: BlePermissions) {
             }
             LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 items(devices, key = { it.mac }) { dev ->
-                    Card(modifier = Modifier.fillMaxWidth().clickable {
+                    val connectingThis = connectingMac == dev.mac
+                    Card(modifier = Modifier.fillMaxWidth().clickable(enabled = connectingMac == null) {
+                        // 连接前先停扫(Android 上扫描进行中发起连接易失败)
+                        scanJob?.cancel()
+                        connectingMac = dev.mac
+                        err = ""
                         scope.launch {
-                            err = ""
                             try {
                                 val adapter = permissions.adapter() ?: throw BleOpException("设备不支持蓝牙")
                                 @Suppress("DEPRECATION")
@@ -537,6 +544,9 @@ private fun DebugPage(permissions: BlePermissions) {
                                 appendLog("已连接 ${dev.name ?: dev.mac}")
                             } catch (e: Exception) {
                                 err = e.message ?: "连接失败"
+                            } finally {
+                                connectingMac = null
+                                scanning = false
                             }
                         }
                     }) {
@@ -545,7 +555,11 @@ private fun DebugPage(permissions: BlePermissions) {
                                 Text(dev.name ?: "(无名)")
                                 Text(dev.mac, fontSize = 12.sp, color = Color.Gray)
                             }
-                            Text("${dev.rssi}dBm", fontSize = 12.sp)
+                            if (connectingThis) {
+                                Text("连接中…", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
+                            } else {
+                                Text("${dev.rssi}dBm", fontSize = 12.sp)
+                            }
                         }
                     }
                 }

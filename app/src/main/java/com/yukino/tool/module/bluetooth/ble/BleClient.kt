@@ -18,6 +18,7 @@ import java.util.UUID
  */
 const val CLIENT_CHARACTERISTIC_CONFIG = "00002902-0000-1000-8000-00805F9B34FB"
 private const val OP_TIMEOUT_MS = 8000L
+private const val CONNECT_TIMEOUT_MS = 12000L
 
 class BleClient(private val context: Context) {
 
@@ -35,12 +36,14 @@ class BleClient(private val context: Context) {
     @SuppressLint("MissingPermission")
     suspend fun connect(device: BluetoothDevice): ServiceTree {
         disconnect() // 兜底: 复用前先释放旧连接
-        val connected = newWaiter<Boolean>()
+        val connected = CompletableDeferred<Boolean>()
         val discovered = newWaiter<Int>()
         val callback = object : BluetoothGattCallback() {
             override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
-                if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                    (waiter as? CompletableDeferred<Boolean>)?.complete(false)
+                if (newState == BluetoothProfile.STATE_CONNECTED) {
+                    connected.complete(true)
+                } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                    connected.complete(false)
                 }
             }
 
@@ -65,8 +68,8 @@ class BleClient(private val context: Context) {
             }
         }
         gatt = device.connectGatt(context, false, callback)
-        if (!withTimeout(OP_TIMEOUT_MS) { connected.await() }) {
-            throw BleOpException("连接超时")
+        if (!withTimeout(CONNECT_TIMEOUT_MS) { connected.await() }) {
+            throw BleOpException("连接超时:设备可能不接受连接(如手机/电视等非外设), 或已被其他设备占用")
         }
         gatt?.discoverServices()
         val status = withTimeout(OP_TIMEOUT_MS) { discovered.await() }
