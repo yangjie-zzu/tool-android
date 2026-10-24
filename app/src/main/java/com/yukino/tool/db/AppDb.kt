@@ -16,7 +16,7 @@ import android.database.sqlite.SQLiteOpenHelper
 object AppDb {
 
     private const val NAME = "tool.db"
-    private const val VERSION = 8
+    private const val VERSION = 9
 
     @Volatile
     private var helper: SQLiteOpenHelper? = null
@@ -65,6 +65,10 @@ object AppDb {
                     // v8: reader_book 加连续滚动页内偏移(目前仅 PDF 用, 其他格式恒 0)
                     if (oldVersion < 8) {
                         db.execSQL("ALTER TABLE reader_book ADD COLUMN scroll_offset INTEGER NOT NULL DEFAULT 0")
+                    }
+                    // v9: 蓝牙预设(三种功能模板, 参数整体存 JSON)
+                    if (oldVersion < 9) {
+                        db.execSQL(Schema.BLE_PRESET)
                     }
                 }
             }
@@ -171,6 +175,8 @@ object AppDb {
             // web下载任务列表
             db.execSQL(WEB_DOWNLOAD)
             db.execSQL("CREATE INDEX idx_dl_updated ON web_download(updated_at DESC)")
+            // 蓝牙预设: template=write/read/listen, params 为该模板参数整体(JSON)
+            db.execSQL(BLE_PRESET)
             // 迁移标记: 每模块一行, 有行即该模块已迁完
             db.execSQL(
                 "CREATE TABLE migration_flag (" +
@@ -195,6 +201,15 @@ object AppDb {
                 "name TEXT NOT NULL, " +
                 "parent_id TEXT, " +
                 "added_at INTEGER NOT NULL)"
+
+        // v9: 蓝牙预设
+        const val BLE_PRESET =
+            "CREATE TABLE ble_preset (" +
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
+                "name TEXT NOT NULL, " +
+                "template TEXT NOT NULL, " +   // write/read/listen
+                "params TEXT NOT NULL, " +     // 模板参数 JSON
+                "created_at INTEGER NOT NULL)"
 
         // v2: web下载任务列表(下载页面数据源)
         const val WEB_DOWNLOAD =

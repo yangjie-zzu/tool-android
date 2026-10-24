@@ -107,6 +107,17 @@ curl -s -X POST -H "Authorization: token $TOKEN" -H "Content-Type: application/o
 
 ## 6. 历史记录
 
+- 2026-10-24：v1.5.59 release（蓝牙模块通用化改造:①三种功能模板(发指令/读数据/监听)+
+  一键预设,执行面板参数可临时改(仅本次/存回);②全量调试页——扫描周围所有 BLE 设备、
+  展示全部服务/数据点树,可读/写(HEX/ASCII)/订阅并滚动日志;③参数输入支持手填或从调试
+  结果选择(设备扫描选择器/特征树选择器);④AppDb v9 新增 ble_preset 表,首次自动生成
+  内置"关灯"预设等价替代旧硬编码逻辑(FFE0 匹配/FFF0/FFF2/两条指令/间隔100ms/执行完
+  关蓝牙);⑤权限收拢 BlePermissions+蓝牙使能异步轮询 6s(修复允许后立即误报"蓝牙未开启"),
+  删除全局 lateinit。单测新增 BleModelsTest 15 个全过(HEX/UUID/JSON 往返);模拟器验证
+  种子/列表/执行面板/保存/编辑回填/删除/错误路径,截图在 local/shots/ble_01~11;真实 BLE
+  关灯与调试待真机手动验证。另:单测环境修复——中文用户名路径致 Gradle 测试 worker 起
+  不来,复制 GRADLE_USER_HOME 到 D:\gradle-home 绕开,详见 docs/bluetooth-verify-notes.md;
+  master 存量失败 EpubRichContentTest/PdfOutlineParserTest 各 1 个与本版无关）。
 - 2026-10-22：v1.5.58 release（删除确认弹窗的"删除"按钮改红色(colorScheme.error),
   与"取消"形成破坏性操作对比。模拟器 debug 实测截图确认）。
 - 2026-10-22：v1.5.57 release（WebView 阅读页返回键修复+删除二次确认:①WebBookReader
