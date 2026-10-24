@@ -488,6 +488,7 @@ private fun DebugPage(permissions: BlePermissions, onBack: () -> Unit) {
     var chrInputs by remember { mutableStateOf<Set<String>>(emptySet()) }
     var client by remember { mutableStateOf<BleClient?>(null) }
     var connectingMac by remember { mutableStateOf<String?>(null) }
+    var logOpen by remember { mutableStateOf(false) }
 
     fun appendLog(s: String) {
         log = (log + s).takeLast(100)
@@ -633,7 +634,12 @@ private fun DebugPage(permissions: BlePermissions, onBack: () -> Unit) {
             ) {
                 tree?.services?.forEach { svc ->
                     val expanded = svc.uuid in expandedSvcs
-                    Card(modifier = Modifier.fillMaxWidth()) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = androidx.compose.material3.CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant
+                        )
+                    ) {
                         Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
                             Row(
                                 modifier = Modifier
@@ -648,7 +654,7 @@ private fun DebugPage(permissions: BlePermissions, onBack: () -> Unit) {
                             ) {
                                 Column {
                                     Text(
-                                        svc.uuid,
+                                        "服务 ${svc.uuid}",
                                         fontWeight = FontWeight.Bold,
                                         fontSize = 14.sp
                                     )
@@ -666,15 +672,20 @@ private fun DebugPage(permissions: BlePermissions, onBack: () -> Unit) {
                             }
                             if (expanded) {
                                 svc.characteristics.forEach { chr ->
+                                    androidx.compose.material3.Surface(
+                                        shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
+                                        color = MaterialTheme.colorScheme.surface,
+                                        modifier = Modifier.fillMaxWidth().padding(start = 8.dp, top = 4.dp, bottom = 4.dp)
+                                    ) {
                                     Column(
-                                        modifier = Modifier.fillMaxWidth().padding(start = 8.dp, top = 4.dp, bottom = 4.dp),
+                                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
                                         verticalArrangement = Arrangement.spacedBy(4.dp)
                                     ) {
                                         Row(
                                             horizontalArrangement = Arrangement.SpaceBetween,
                                             verticalAlignment = Alignment.CenterVertically
                                         ) {
-                                            Text(chr.uuid, fontSize = 13.sp)
+                                            Text("数据点 ${chr.uuid}", fontSize = 13.sp)
                                             Text(
                                                 chr.properties.joinToString("/"),
                                                 fontSize = 11.sp,
@@ -744,6 +755,7 @@ private fun DebugPage(permissions: BlePermissions, onBack: () -> Unit) {
                                             }) { Text("发送", fontSize = 12.sp) }
                                         }
                                     }
+                                    }
                                 }
                             }
                         }
@@ -754,21 +766,46 @@ private fun DebugPage(permissions: BlePermissions, onBack: () -> Unit) {
                 }
             }
 
-            // —— 日志面板(固定高度, 独立滚动) ——
+            // —— 日志面板(默认收起只显示最新一条, 点击展开 160dp 独立滚动) ——
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(8.dp)) {
-                    Text("操作日志", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    LazyColumn(
-                        modifier = Modifier.fillMaxWidth().height(140.dp).padding(top = 4.dp),
-                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    Row(
+                        modifier = Modifier.fillMaxWidth().clickable { logOpen = !logOpen },
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        items(log) { line ->
-                            Text(
-                                line,
-                                fontSize = 12.sp,
-                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
-                            )
+                        Text(
+                            "操作日志" + if (log.isEmpty()) "" else " (${log.size})",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp
+                        )
+                        Text(
+                            if (logOpen) "▾ 收起" else "▸ 展开",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    if (logOpen) {
+                        LazyColumn(
+                            modifier = Modifier.fillMaxWidth().height(160.dp).padding(top = 4.dp),
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            items(log) { line ->
+                                Text(
+                                    line,
+                                    fontSize = 12.sp,
+                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                )
+                            }
                         }
+                    } else if (log.isNotEmpty()) {
+                        Text(
+                            log.last(),
+                            fontSize = 12.sp,
+                            color = Color.Gray,
+                            maxLines = 1,
+                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                        )
                     }
                 }
             }
