@@ -39,6 +39,12 @@ import kotlinx.coroutines.withContext
 
 private const val TAG = "Reader"
 
+// 书籍文件选择器的可选类型(书架导入与阅读页重新授权共用)
+private val BOOK_PICK_MIMES = arrayOf(
+    "text/*", "application/octet-stream", "application/epub+zip", "application/pdf",
+    "text/html", "image/*"
+)
+
 class ReaderActivity : ComponentActivity() {
 
     private lateinit var readerFilePicker: FilePicker
@@ -141,13 +147,7 @@ fun ReaderApp(
     // 导入文件: 登记 → 自动打开(懒初始化在阅读页 loading 内完成)
     fun importFile() {
         scope.launch {
-            val uri = filePicker.open(
-                arrayOf(
-                    "text/*", "application/octet-stream", "application/epub+zip", "application/pdf",
-                    "text/html", "image/*"
-                )
-            )
-                ?: return@launch
+            val uri = filePicker.open(BOOK_PICK_MIMES) ?: return@launch
             importing = true
             val result = BookRegistrar.register(context, uri, currentGroupId)
             importing = false
@@ -308,6 +308,7 @@ fun ReaderApp(
                 onInitComplete = { refreshed ->
                     books = books.map { if (it.id == refreshed.id) refreshed else it }
                 },
+                pickFile = { filePicker.open(BOOK_PICK_MIMES) },
                 onBack = { readingId = null }
             )
         } else if (current.format == com.yukino.tool.module.reader.common.BookFormat.WEB) {
@@ -335,6 +336,7 @@ fun ReaderApp(
                 // 懒初始化回填(ready/chapters/书名)同步进内存态;行已在库, 仅更新本地
                 books = books.map { if (it.id == refreshed.id) refreshed else it }
             },
+            pickFile = { filePicker.open(BOOK_PICK_MIMES) },
             onBack = {
                 readingId = null   // 进度已是单行即时落盘, 返回无需整表写回
             }

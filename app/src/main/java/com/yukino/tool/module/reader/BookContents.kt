@@ -14,7 +14,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 // 打开书失败的用户文案(登记态初始化失败/缓存缺失重转存失败)
-class BookInitException(message: String) : Exception(message)
+open class BookInitException(message: String) : Exception(message)
+
+// 源文件 SAF 持久化授权丢失(Permission Denial): 阅读页据此展示"重新授权"入口
+class BookSourceAuthException : BookInitException("源文件访问授权已失效")
 
 // 内容加载分派: 按书格式进入各自主流程的懒初始化(登记态 → 内容落盘+章节解析),
 // 之后汇合成统一的 BookContent, 阅读页只消费公共接口。
@@ -42,6 +45,9 @@ object BookContents {
             }
         } catch (e: BookInitException) {
             throw e
+        } catch (e: SecurityException) {
+            // openInputStream 源 uri 无授权: 授权被系统收回(卸载重装/权限自动重置等)
+            throw BookSourceAuthException()
         } catch (e: EpubDrmException) {
             throw BookInitException(e.message ?: "不支持加密书籍")
         } catch (e: EpubFormatException) {

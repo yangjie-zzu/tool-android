@@ -143,6 +143,42 @@
   进程内开过一次"web"工具即对所有 WebView 生效;但离屏块渲染的 WebView 生命周期短
   (渲染完即销毁),DevTools `/json` 轮询很难抓到,块内排查优先走位图缓存+章缓存。
 
+## SAF 持久化授权丢失复现方法(2026-10-25)
+
+- 复现"Permission Denial: opening provider com.android.externalstorage.
+  ExternalStorageProvider"（SAF 持久化授权被系统收回）：`adb shell cmd package
+  uninstall -k <pkg>` 保数据卸载——**应用数据(书架/进度/缓存)全保留,但系统侧
+  持久化 URI 授权被清空**；随后 `adb install -r` 同签名重装即可。完全卸载(无 -k)
+  会连书架数据一起清掉,不适合复现"书目还在、授权没了"的场景。
+- 只清授权还不够：已读过的书 cache 命中时根本不读源文件(不触发授权检查),需
+  `run-as <pkg> rm cache/reader/books/<bookId>.txt|.pdf|.cover.png` 删掉转存缓存,
+  下次打开才会重读源 uri。cache 文件名即 bookId,`run-as ls cache/reader/books/`
+  按体积/时间对应到书目。
+- `dumpsys package <pkg>` 在 Android 14 上看不到 "Granted URI Permissions" 段,
+  授权是否被清以实际打开行为为准。
+- 真机上授权丢失的常见来源：卸载重装、Android 11+ 未使用应用权限自动重置、
+  部分 ROM 清理策略、源文件/目录被移动或存储卷变化。
+
+## adb push 的 Git Bash 路径转换陷阱(2026-10-25 实测补充)
+
+- 除扩展名截断外,`adb push src /sdcard/...` 的目标路径会被 MSYS 转成本地盘符
+  (如 `D:/Git/sdcard/Download/x.txt`),报 `remote secure_mkdirs failed`；且实测
+  出现过**同一命令里第一次 push 打印 Success 但设备上并无此文件**的假成功——
+  push 后必须 `adb shell ls` 复核文件真实存在。稳妥做法:命令前加
+  `MSYS_NO_PATHCONV=1`,且从文件所在目录用相对路径推。
+
+## 书架与 DocumentsUI 定位注意(2026-10-25 补充)
+
+- 书架按 lastReadAt 排序,读过一本书后全列表位置下移——**每次回书架点书前必须
+  重新 dump 定位**,沿用旧坐标会点错书(实测点成另一本)。
+- 系统文件选择器(DocumentsUI)会记住上次目录、滚动位置与**网格/列表视图**;
+  同一文件两次打开时坐标可能完全不同(网格 2 列 vs 列表 1 列),每次都重新 dump。
+  Download 文件多时需连续滚动多次,注意滚动过头时反向小滚。
+- 阅读页错误提示/按钮是 Compose 节点,可 dump 定位;正文 Canvas 区无节点,内容
+  是否渲染用截图像素方差判(content 区 stdev≈50 有字,≈10 近空白,≈0 纯背景)。
+- Toast 验证:uiautomator dump 抓不到 Toast,须 tap 后立即 `exec-out screencap`
+  (0.5~1s 内),晚了 2s 即消失;视觉确认可用截图。
+
 ## 二进制文件抓取陷阱(2026-10-07)
 
 - `adb shell`/`adb shell run-as ... cat` 通道会把 LF 转 CRLF——拉 APK/PNG/JPG 等

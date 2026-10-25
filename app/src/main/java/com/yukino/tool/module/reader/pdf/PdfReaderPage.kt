@@ -5,6 +5,8 @@ package com.yukino.tool.module.reader.pdf
 
 import android.os.ParcelFileDescriptor
 import android.graphics.pdf.PdfRenderer
+import android.net.Uri
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animate
@@ -83,7 +85,9 @@ import androidx.compose.foundation.layout.systemBars
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.core.view.WindowCompat
 import com.yukino.tool.module.reader.BookInitException
+import com.yukino.tool.module.reader.BookRegistrar
 import com.yukino.tool.module.reader.ReaderSettingsSheet
+import com.yukino.tool.module.reader.ReaderStore
 import com.yukino.tool.module.reader.ReaderTocSheet
 import com.yukino.tool.module.reader.common.ReaderBook
 import com.yukino.tool.module.reader.common.ReaderSettings
@@ -143,6 +147,7 @@ fun PdfPage(
     onSettingsChange: (ReaderSettings) -> Unit,
     onProgress: (page: Long, percent: Double, scrollOffset: Int) -> Unit,
     onInitComplete: (ReaderBook) -> Unit,
+    pickFile: suspend () -> Uri?,
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
@@ -153,6 +158,10 @@ fun PdfPage(
     var doc by remember(book.id) { mutableStateOf<PdfDoc?>(null) }
     var initStage by remember(book.id) { mutableStateOf<String?>(null) }
     var loadError by remember(book.id) { mutableStateOf<String?>(null) }
+    // 源文件 SAF 授权丢失: 展示"重新授权"入口而非删除重导提示
+    var authLost by remember(book.id) { mutableStateOf(false) }
+    // 重载触发: 重新授权后自增。不能只 key sourceUri——重选同一文件时 uri 串不变
+    var reloadNonce by remember(book.id) { mutableStateOf(0) }
     var viewport by remember { mutableStateOf<IntSize?>(null) }
     var menuVisible by remember { mutableStateOf(false) }
     var showToc by remember { mutableStateOf(false) }
@@ -178,12 +187,19 @@ fun PdfPage(
     }
 
     // 懒初始化(登记态: 转存/目录/封面) + 打开渲染器
-    LaunchedEffect(book.id) {
+    // key 含 reloadNonce: 重新授权换源后同 id 重载(进度不丢)
+    LaunchedEffect(book.id, reloadNonce) {
         loadError = null
+        authLost = false
         try {
             val refreshed = PdfImporter.ensureReady(context, book) { initStage = it }
             if (refreshed != book) onInitComplete(refreshed)
+            doc?.close()
             doc = PdfDoc(refreshed.cachePath)
+        } catch (e: SecurityException) {
+            // copySource 读源 uri 无授权: 授权被系统收回(卸载重装/权限自动重置等)
+            loadError = "源文件访问授权已失效"
+            authLost = true
         } catch (e: BookInitException) {
             loadError = e.message ?: "打开失败"
         } catch (e: Exception) {
@@ -390,11 +406,35 @@ fun PdfPage(
                 modifier = Modifier.align(Alignment.Center)
             ) {
                 if (loadError != null) {
-                    Text(
-                        loadError + "，请返回书架删除后重新导入",
-                        color = secondary,
-                        style = MaterialTheme.typography.bodyMedium
-                    )
+                    if (authLost) {
+                        Text(
+                            "源文件访问授权已失效，重新授权后继续阅读（进度保留）",
+                            color = secondary,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        TextButton(onClick = {
+                            scope.launch {
+                                val picked = pickFile() ?: return@launch
+                                val updated = withContext(Dispatchers.IO) {
+                                    BookRegistrar.reauthorize(context, book, picked)
+                                }
+                                if (updated == null) {
+                                    Toast.makeText(context, "所选文件与原书不一致", Toast.LENGTH_SHORT).show()
+                                    return@launch
+                                }
+                                withContext(Dispatchers.IO) { ReaderStore.upsertBook(context, updated) }
+                                onInitComplete(updated)
+                                reloadNonce++   // 触发同 id 重载
+                            }
+                        }) { Text("重新授权") }
+                    } else {
+                        Text(
+                            loadError + "，请返回书架删除后重新导入",
+                            color = secondary,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
                 } else {
                     CircularProgressIndicator(color = fgColor)
                     initStage?.let {

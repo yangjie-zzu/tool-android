@@ -107,6 +107,17 @@ curl -s -X POST -H "Authorization: token $TOKEN" -H "Content-Type: application/o
 
 ## 6. 历史记录
 
+- 2026-10-26：v1.5.68 release（阅读器源文件授权失效可"重新授权"：打开书遇
+  SecurityException（SAF 持久化授权被系统收回，如卸载重装/权限自动重置）时，
+  阅读页由"请返回书架删除后重新导入"改为显示"重新授权"按钮——重选原文件后按
+  authority+文档 id 匹配确认同一文件，恢复授权并更新 sourceUri 自动重载（nonce
+  触发，同 id 进度/分组不变）；选错文件 Toast"所选文件与原书不一致"拦截不替换
+  内容；txt/epub（BookContents 统一识别）与 pdf（独立链路）全覆盖；文件夹导入
+  的树子项 uri 与单文件 uri 均可匹配。模拟器 debug 全流程实测（TXT 授权丢失→
+  重授权进度 50% 保留/选错文件拦截/PDF 全流程/旧书回归）+release 混淆包文件夹
+  导入场景全流程实测通过；授权丢失复现方法（uninstall -k 保数据清授权）与坑
+  已记 docs/emulator-ui-automation.md。另：发现既有问题——跳页对话框跳至目标页
+  首屏物化偶发空白页（翻一页即恢复），与本次改动无关，待查。）
 - 2026-10-25：v1.5.67 release（蓝牙调试页详情卡片配色区分(真机反馈:不同类型卡片同色
   难辨):设备头部卡改 primaryContainer 主色调,日志卡改 secondaryContainer 副色调,
   服务卡保持 surfaceVariant 中灰,数据点维持嵌套 surface 浅色——四种区域一眼可辨。）

@@ -157,6 +157,7 @@ import android.graphics.Rect
 import android.graphics.RectF
 import android.os.Build
 import android.os.SystemClock
+import android.net.Uri
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
@@ -205,6 +206,7 @@ fun ReaderPage(
     onSettingsChange: (ReaderSettings) -> Unit,
     onProgress: (globalCharOffset: Long, percent: Double) -> Unit,
     onInitComplete: (ReaderBook) -> Unit,
+    pickFile: suspend () -> Uri?,
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
@@ -215,6 +217,10 @@ fun ReaderPage(
     var content by remember(book.id) { mutableStateOf<BookContent?>(null) }
     var initStage by remember(book.id) { mutableStateOf<String?>(null) }
     var loadError by remember(book.id) { mutableStateOf<String?>(null) }
+    // 源文件 SAF 授权丢失: 展示"重新授权"入口而非删除重导提示
+    var authLost by remember(book.id) { mutableStateOf(false) }
+    // 重载触发: 重新授权后自增。不能只 key sourceUri——重选同一文件时 uri 串不变
+    var reloadNonce by remember(book.id) { mutableStateOf(0) }
     // 全书页目录: null=构建中(loading 遮盖)。版式变化整本重建,锚点重定位不漂移
     var specs by remember(book.id) { mutableStateOf<List<PageSpec>?>(null) }
     // specs 对应的版式指纹: 与 typoKey 一致才可信(区别于"旧版式的遗留结果")
@@ -251,13 +257,19 @@ fun ReaderPage(
     }
 
     // 加载内容源(按格式分派到各自主流程);登记态书在此完成懒初始化(转码/解压+章节解析)
-    LaunchedEffect(book.id) {
+    // key 含 reloadNonce: 重新授权换源后同 id 重载(进度/目录不丢)
+    LaunchedEffect(book.id, reloadNonce) {
         pageViewRef.value?.clearImages()   // 图片缓存不跨书复用
         loadError = null
+        authLost = false
         content = try {
             val (c, refreshed) = BookContents.load(context, book) { initStage = it }
             if (refreshed != book) onInitComplete(refreshed)   // 同步回上层内存态, 防进度落盘覆盖初始化结果
             c
+        } catch (e: BookSourceAuthException) {
+            loadError = e.message
+            authLost = true
+            null
         } catch (e: BookInitException) {
             loadError = e.message ?: "打开失败"
             null
@@ -1074,11 +1086,35 @@ fun ReaderPage(
                 modifier = Modifier.align(Alignment.Center)
             ) {
                 if (loadError != null) {
-                    Text(
-                        loadError + "，请返回书架删除后重新导入",
-                        color = secondary,
-                        style = MaterialTheme.typography.bodyMedium
-                    )
+                    if (authLost) {
+                        Text(
+                            "源文件访问授权已失效，重新授权后继续阅读（进度保留）",
+                            color = secondary,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        TextButton(onClick = {
+                            scope.launch {
+                                val picked = pickFile() ?: return@launch
+                                val updated = withContext(Dispatchers.IO) {
+                                    BookRegistrar.reauthorize(context, book, picked)
+                                }
+                                if (updated == null) {
+                                    Toast.makeText(context, "所选文件与原书不一致", Toast.LENGTH_SHORT).show()
+                                    return@launch
+                                }
+                                withContext(Dispatchers.IO) { ReaderStore.upsertBook(context, updated) }
+                                onInitComplete(updated)
+                                reloadNonce++   // 触发同 id 重载
+                            }
+                        }) { Text("重新授权") }
+                    } else {
+                        Text(
+                            loadError + "，请返回书架删除后重新导入",
+                            color = secondary,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
                 } else {
                     CircularProgressIndicator(color = fgColor)
                     initStage?.let {

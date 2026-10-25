@@ -134,6 +134,36 @@ object BookRegistrar {
         }
     }
 
+    // 重新授权: 阅读页打开遇 Permission Denial 后,用户重选原文件时调用。
+    // 对新 uri 重新持久化授权;authority+文档 id 与原书一致(同一文件)才换源,
+    // 不一致返回 null(内容无法确认,只能删除重导)。授权持久化失败不阻断——
+    // 本次进程内仍可读,转存完成后书已可离线阅读。
+    fun reauthorize(context: Context, book: ReaderBook, picked: Uri): ReaderBook? {
+        runCatching {
+            context.contentResolver.takePersistableUriPermission(
+                picked, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+        }
+        if (!sameSource(picked, Uri.parse(book.sourceUri))) return null
+        return book.copy(sourceUri = picked.toString())
+    }
+
+    // 同一文档判定: authority 相同且文档 id 相同。单文件 uri(.../document/<id>)与
+    // 文件夹子项 uri(.../tree/<root>/document/<id>)的文档 id 都取最后一个路径段;
+    // 非 documents 结构的 uri 退化为整串比较。
+    private fun sameSource(a: Uri, b: Uri): Boolean {
+        if (a.authority != b.authority) return false
+        val idA = documentIdOf(a)
+        val idB = documentIdOf(b)
+        return if (idA != null && idB != null) idA == idB else a.toString() == b.toString()
+    }
+
+    private fun documentIdOf(uri: Uri): String? {
+        val segs = uri.pathSegments
+        if (segs.size >= 2 && segs[segs.size - 2] == "document") return segs.last()
+        return null
+    }
+
     private fun doRegister(context: Context, uri: Uri, groupId: String?): ImportResult {
         // 持久化授权失败(系统"打开方式/分享"进来的 grant 不带 persistable flag)时,
         // 授权随进程死亡失效, 懒初始化将报 Permission Denial——此类 uri 登记时立即
