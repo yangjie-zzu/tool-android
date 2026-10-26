@@ -189,7 +189,14 @@
   SYSTEM_ALERT_WINDOW` 确认(allow/default)。
 - 悬浮条可见性断言: uiautomator dump 不稳定暴露 overlay 窗口,用截图像素扫描——
   底部区域逐行条带 mean<150 计深色条带数(悬浮条≈10+ 条带,移除后 0);精确文字
-  读数用底部裁剪图视觉确认。
+  读数用底部裁剪图视觉确认。顶部条同理(y 140-360 扫描)。悬浮条按钮点击坐标:
+  `dumpsys window windows` 拿窗口 `mAttrs y=` 与 Requested 宽高 + 像素暗带推算,
+  ✕ 在条右端内侧。
+- 悬浮窗横滑(HorizontalScrollView)注入: `input swipe` 快滑(600ms 级)实测不滚动,
+  需 ≥900ms 慢速拖动;滚动是否生效用前后截图条内像素 diff(>1% 即动)判定。
+- WindowManager 悬浮窗的宽度别依赖 weight: LinearLayout 的 weight 子项在窗口
+  UNSPECIFIED 测量下会塌成 0 宽(条只剩关闭钮一小块)——显式 measure 文本/按钮
+  后按 `min(文本宽, 上限-装饰宽)` 定子项与窗口宽(SourcePathOverlay 实现即此)。
 - DocumentsUI 选择器的 BACK 语义: **先向上退目录,到根目录再按才关闭选择器**——
   验证"取消路径"的悬浮条移除断言必须先把选择器真正退掉,别在目录导航中途下结论。
 - 模拟器多包共存时, uninstall -k/monkey/导航后必须核对 topResumedActivity 包名

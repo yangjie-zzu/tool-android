@@ -107,6 +107,14 @@ curl -s -X POST -H "Authorization: token $TOKEN" -H "Content-Type: application/o
 
 ## 6. 历史记录
 
+- 2026-10-26：v1.5.70 release（悬浮路径条改进：改顶部居中（状态栏高度+8dp 避让），
+  单行显示完整路径（不折行不省略，条宽按文本贴合、90% 屏宽封顶），超宽部分横滑
+  （HorizontalScrollView）查看，右侧 ✕ 可随时关闭（仅移除悬浮条，选择器保持打开）；
+  保留 FLAG_NOT_FOCUSABLE 不抢选择器返回键，条外触摸穿透。修复 weight 子项在
+  WindowManager UNSPECIFIED 测量下塌 0 宽的问题（改显式测量定宽）。模拟器 debug
+  实测：顶部位置/单行/✕关闭/选回重载/长路径横滑见尾部；release 混淆包文件夹导入
+  场景全流程通过。注入滑动需 ≥900ms 慢拖属模拟器特性已记
+  docs/emulator-ui-automation.md。）
 - 2026-10-26：v1.5.69 release（重新授权期间系统悬浮条展示原文件绝对路径：授权失效
   点"重新授权"后，文件选择器上层悬浮深色圆角条显示原文件绝对路径（文档 id 按卷
   id 还原：primary→/storage/emulated/0、SD 卷→/storage/<卷id>，兼容单文件与文件夹
