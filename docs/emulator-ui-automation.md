@@ -179,6 +179,23 @@
 - Toast 验证:uiautomator dump 抓不到 Toast,须 tap 后立即 `exec-out screencap`
   (0.5~1s 内),晚了 2s 即消失;视觉确认可用截图。
 
+## 系统悬浮窗(TYPE_APPLICATION_OVERLAY)验证方法(2026-10-26)
+
+- 悬浮窗权限免 UI 授予: `adb shell appops set <pkg> SYSTEM_ALERT_WINDOW allow`,
+  免去真实设置页走查(重复测试/release 包提速用);首次功能验证仍应走真实路径:
+  canDrawOverlays 检查 → `ACTION_MANAGE_OVERLAY_PERMISSION` 跳"Display over other
+  apps"列表 → 点应用行 → 详情页开关。注意开关本身在 dump 里**无 checkable 节点**,
+  直接点"Allow display over other apps"整行;授权生效用 `appops get <pkg>
+  SYSTEM_ALERT_WINDOW` 确认(allow/default)。
+- 悬浮条可见性断言: uiautomator dump 不稳定暴露 overlay 窗口,用截图像素扫描——
+  底部区域逐行条带 mean<150 计深色条带数(悬浮条≈10+ 条带,移除后 0);精确文字
+  读数用底部裁剪图视觉确认。
+- DocumentsUI 选择器的 BACK 语义: **先向上退目录,到根目录再按才关闭选择器**——
+  验证"取消路径"的悬浮条移除断言必须先把选择器真正退掉,别在目录导航中途下结论。
+- 模拟器多包共存时, uninstall -k/monkey/导航后必须核对 topResumedActivity 包名
+  再操作——实测出现过 debug 包测试中焦点漂到 release 包阅读页导致 dump 全空的
+  串扰(老坑再现),HOME 键回桌面再 monkey 指定包即可复位。
+
 ## 二进制文件抓取陷阱(2026-10-07)
 
 - `adb shell`/`adb shell run-as ... cat` 通道会把 LF 转 CRLF——拉 APK/PNG/JPG 等

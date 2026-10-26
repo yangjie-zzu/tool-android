@@ -107,6 +107,15 @@ curl -s -X POST -H "Authorization: token $TOKEN" -H "Content-Type: application/o
 
 ## 6. 历史记录
 
+- 2026-10-26：v1.5.69 release（重新授权期间系统悬浮条展示原文件绝对路径：授权失效
+  点"重新授权"后，文件选择器上层悬浮深色圆角条显示原文件绝对路径（文档 id 按卷
+  id 还原：primary→/storage/emulated/0、SD 卷→/storage/<卷id>，兼容单文件与文件夹
+  子项 uri），指引定位同一文件；悬浮条不可获焦/不可触摸不干扰选择器，选择器关闭
+  （选中/取消）即移除；无"显示在其他应用上层"权限先跳系统设置页+Toast 引导，授权
+  一次长期有效；txt/epub/pdf 两阅读页一致，Manifest 新增 SYSTEM_ALERT_WINDOW。
+  模拟器 debug 实测：无权限跳设置真实开关流程/TXT 与 PDF 悬浮条路径与真实路径
+  一致/选回重载+悬浮条移除/取消路径移除；release 混淆包文件夹导入场景全流程
+  通过（appops 授权提速）。坑与断言方法已记 docs/emulator-ui-automation.md。）
 - 2026-10-26：v1.5.68 release（阅读器源文件授权失效可"重新授权"：打开书遇
   SecurityException（SAF 持久化授权被系统收回，如卸载重装/权限自动重置）时，
   阅读页由"请返回书架删除后重新导入"改为显示"重新授权"按钮——重选原文件后按

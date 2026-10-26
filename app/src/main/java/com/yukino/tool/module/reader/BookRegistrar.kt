@@ -2,6 +2,7 @@ package com.yukino.tool.module.reader
 
 import android.content.Context
 import android.net.Uri
+import android.os.Environment
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import com.yukino.tool.module.reader.common.BookFormat
@@ -162,6 +163,21 @@ object BookRegistrar {
         val segs = uri.pathSegments
         if (segs.size >= 2 && segs[segs.size - 2] == "document") return segs.last()
         return null
+    }
+
+    // 源文件绝对路径(授权失效时悬浮展示, 指引用户去选择器里定位原文件):
+    // 文档 id 形如 "primary:Download/x.txt"(内部存储)或 "0000-0000:Book/x.epub"(SD 卷),
+    // primary 卷 → Environment 外存根路径(/storage/emulated/0), 其他卷 → /storage/<卷id>;
+    // 非文档结构 uri(其他 provider)返回原串兜底。
+    @Suppress("DEPRECATION")
+    fun sourceAbsolutePath(uri: Uri): String {
+        val docId = documentIdOf(uri) ?: return uri.toString()
+        val idx = docId.indexOf(':')
+        if (idx <= 0 || idx == docId.length - 1) return uri.toString()
+        val root = if (docId.substring(0, idx) == "primary") {
+            Environment.getExternalStorageDirectory().absolutePath
+        } else "/storage/${docId.substring(0, idx)}"
+        return "$root/${docId.substring(idx + 1)}"
     }
 
     private fun doRegister(context: Context, uri: Uri, groupId: String?): ImportResult {

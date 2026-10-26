@@ -17,6 +17,8 @@
     <uses-permission android:name="android.permission.CAMERA"/>
     <!-- APK下载完成点击通知直达安装: Android 8+触发安装需"允许安装未知应用"授权 -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
+    <!-- 阅读器授权失效重新选文件期间, 悬浮条展示原文件绝对路径(盖在系统选择器上层) -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
 
     <!-- 下载完成通知点击打开文件: resolveActivity需可见能处理VIEW的包(Android 11+包可见性) -->
     <queries>

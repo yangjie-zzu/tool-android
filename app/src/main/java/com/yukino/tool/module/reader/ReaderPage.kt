@@ -1095,7 +1095,32 @@ fun ReaderPage(
                         Spacer(Modifier.height(12.dp))
                         TextButton(onClick = {
                             scope.launch {
-                                val picked = pickFile() ?: return@launch
+                                // 悬浮条需"显示在其他应用上层"权限: 未授予先跳系统设置, 开启后返回重试
+                                if (!android.provider.Settings.canDrawOverlays(context)) {
+                                    runCatching {
+                                        context.startActivity(
+                                            android.content.Intent(
+                                                android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                                Uri.parse("package:${context.packageName}")
+                                            )
+                                        )
+                                    }
+                                    Toast.makeText(
+                                        context, "请先允许\"显示在其他应用上层\"权限，开启后返回重试",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                    return@launch
+                                }
+                                // 选择器期间悬浮展示原文件绝对路径, 指引在选择器中定位同一文件
+                                SourcePathOverlay.show(
+                                    context,
+                                    BookRegistrar.sourceAbsolutePath(Uri.parse(book.sourceUri))
+                                )
+                                val picked = try {
+                                    pickFile()
+                                } finally {
+                                    SourcePathOverlay.hide(context)
+                                } ?: return@launch
                                 val updated = withContext(Dispatchers.IO) {
                                     BookRegistrar.reauthorize(context, book, picked)
                                 }
