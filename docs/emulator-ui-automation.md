@@ -197,6 +197,20 @@
 - WindowManager 悬浮窗的宽度别依赖 weight: LinearLayout 的 weight 子项在窗口
   UNSPECIFIED 测量下会塌成 0 宽(条只剩关闭钮一小块)——显式 measure 文本/按钮
   后按 `min(文本宽, 上限-装饰宽)` 定子项与窗口宽(SourcePathOverlay 实现即此)。
+- 悬浮窗"文字画出来、background 不画"故障(2026-10-27 实测): 是**模拟器图形会话
+  损坏**, 不是代码问题——同 APK 跨多个 app 进程持续复现, 重启模拟器后即恢复;
+  排查顺序应为先重启模拟器做判定实验, 再怀疑代码(本次为此空跑了两轮代码实验)。
+  连带坑: 模拟器重启本身可能失败/挂死——%TEMP%\AndroidEmulator crashpad 库损坏
+  (反复报 attachments GetFileAttributes 错)会阻塞启动, 将该目录改名删除+清 AVD
+  *.lock+taskkill 僵尸 qemu 后正常。
+- 悬浮条触摸死区排查法(2026-10-27): 条看似整块深色, 但可滚动条带只占一小段
+  ——逐 y 值 input swipe 探测(log 该层 onTouchEvent 是否收到事件)定位真实消费
+  带; 根因常是某个子视图(如关闭钮 TextView)的竖向 padding 在高 dpi 下把整条
+  撑高(440dpi 实测 15sp+2×10dp 内边距=110px), 修法: 竖向零内边距+高度
+  MATCH_PARENT 垂直居中。overlay 窗口加 `setFitInsetsTypes(0)`(API30+)防系统栏
+  inset 被当窗口内边距。
+- 重新授权选错文件仍会对"被选的那个 uri"take 持久化授权(匹配校验在 take 之后)
+  ——测试书的授权可能被误选操作顺带恢复, 复现授权丢失时注意此干扰。
 - DocumentsUI 选择器的 BACK 语义: **先向上退目录,到根目录再按才关闭选择器**——
   验证"取消路径"的悬浮条移除断言必须先把选择器真正退掉,别在目录导航中途下结论。
 - 模拟器多包共存时, uninstall -k/monkey/导航后必须核对 topResumedActivity 包名
