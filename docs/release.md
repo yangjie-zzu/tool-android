@@ -107,6 +107,13 @@ curl -s -X POST -H "Authorization: token $TOKEN" -H "Content-Type: application/o
 
 ## 6. 历史记录
 
+- 2026-10-29：v1.5.74 release（路径显示修复定稿：文档 ID 冒号后以 /storage/ 开头
+  视为已是完整绝对路径直接使用，不再拼卷根——真机实测文件管理器提供方
+  com.android.fileexplorer.documents 的 docId 即 "primary:/storage/emulated/0/..."
+  形态，此前始终拼卷根导致"新"路径 /storage/emulated/0 重复两遍；其余形态仍卷根
+  拼接，两种结果均压缩连续斜杠。镜像校验（真机样例/SD 卷/理论前导相对路径/常规）
+  全过+模拟器弹窗 UI 回归通过。迭代过程与教训已记 docs/emulator-ui-automation.md：
+  按 docId 形态推断改法前先拿真机实样截图确认。）
 - 2026-10-29：v1.5.73 release（路径显示修复：文档 ID 还原绝对路径维持"卷根拼接"
   原逻辑不变，仅对拼接结果压缩连续斜杠——真机部分提供方 docId 冒号后带前导/
   （如 primary:/Download/x.txt），拼接出现 // 且难辨位置，压缩后即为正确路径且
