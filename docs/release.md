@@ -107,6 +107,13 @@ curl -s -X POST -H "Authorization: token $TOKEN" -H "Content-Type: application/o
 
 ## 6. 历史记录
 
+- 2026-10-29：v1.5.73 release（路径显示修复：文档 ID 还原绝对路径维持"卷根拼接"
+  原逻辑不变，仅对拼接结果压缩连续斜杠——真机部分提供方 docId 冒号后带前导/
+  （如 primary:/Download/x.txt），拼接出现 // 且难辨位置，压缩后即为正确路径且
+  卷根不丢；弹窗新路径与悬浮条共用一处。镜像校验（前导/、双前导/、常规、SD 卷）
+  +模拟器弹窗 UI 回归通过。过程教训已记 docs/emulator-ui-automation.md：
+  从 docId 形态推断改法前须先与用户确认真机实际样例，本次曾按 raw: 绝对路径
+  假设改过一版"不拼卷根"被用户否决回退。）
 - 2026-10-29：v1.5.72 release（重新授权不一致改详情弹窗+强制授权：选错文件不再只
   Toast 一句话, 改弹 AlertDialog 逐项列出差异——路径(原/新绝对路径, 解析不出则
   标注)/提供方(authority)/文档类型(按格式类, txt/md 同属 TXT), 仅不同项列出,

@@ -218,7 +218,8 @@ object BookRegistrar {
         return absPathOfDocId(docId)
     }
 
-    // 文档 id "卷id:相对路径" → 绝对路径;非 "卷:路径" 结构原样返回
+    // 文档 id "卷id:路径" → 绝对路径(卷根拼接), 结果压缩连续斜杠
+    // (部分提供方冒号后带前导/等冗余分隔符时避免出现 //);非 "卷:路径" 结构原样返回
     @Suppress("DEPRECATION")
     private fun absPathOfDocId(docId: String): String {
         val idx = docId.indexOf(':')
@@ -226,7 +227,7 @@ object BookRegistrar {
         val root = if (docId.substring(0, idx) == "primary") {
             Environment.getExternalStorageDirectory().absolutePath
         } else "/storage/${docId.substring(0, idx)}"
-        return "$root/${docId.substring(idx + 1)}"
+        return "$root/${docId.substring(idx + 1)}".replace(Regex("/{2,}"), "/")
     }
 
     // 弹窗展示用大小文本;0/负数视为未知(导入时 querySize 失败落 0)
