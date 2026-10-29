@@ -16,6 +16,18 @@ import java.util.UUID
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
+// 重新授权差异项: label 如"路径"/"提供方"/"文档类型"/"文件大小（不同）"
+data class ReauthDiffItem(val label: String, val old: String, val new: String)
+
+// 重新授权比对结果: matched=完全一致可直接换源;forced=忽略差异的强制换源结果;
+// diffs=差异清单(仅不同项, 大小始终含);forceAllowed=类型相同才可强制授权
+data class ReauthCheck(
+    val matched: ReaderBook?,
+    val forced: ReaderBook,
+    val diffs: List<ReauthDiffItem>,
+    val forceAllowed: Boolean
+)
+
 // 登记式导入: 只写一行元数据(文件名/格式/大小/组), 内容转码/解压与章节解析
 // 全部推迟到首次打开(TxtImporter/EpubImporter.ensureReady)。
 // 同 sourceUri 去重: 重复登记返回已有书目, 进度/组不变。
@@ -135,28 +147,57 @@ object BookRegistrar {
         }
     }
 
-    // 重新授权: 阅读页打开遇 Permission Denial 后,用户重选原文件时调用。
-    // 对新 uri 重新持久化授权;authority+文档 id 与原书一致(同一文件)才换源,
-    // 不一致返回 null(内容无法确认,只能删除重导)。授权持久化失败不阻断——
-    // 本次进程内仍可读,转存完成后书已可离线阅读。
-    fun reauthorize(context: Context, book: ReaderBook, picked: Uri): ReaderBook? {
+    // 重新授权比对: 阅读页打开遇 Permission Denial 后, 用户重选文件时调用。
+    // 对新 uri 重新持久化授权(先于匹配校验);完全一致(authority+文档 id)返回 matched
+    // 直接换源;否则返回逐项差异清单供弹窗展示, forced 为忽略差异的强制换源结果。
+    // forceAllowed=文档类型(格式类)相同——类型不同强换后阅读器按原格式解析必乱, 禁止。
+    fun reauthorizeCheck(context: Context, book: ReaderBook, picked: Uri): ReauthCheck {
         runCatching {
             context.contentResolver.takePersistableUriPermission(
                 picked, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
             )
         }
-        if (!sameSource(picked, Uri.parse(book.sourceUri))) return null
-        return book.copy(sourceUri = picked.toString())
-    }
-
-    // 同一文档判定: authority 相同且文档 id 相同。单文件 uri(.../document/<id>)与
-    // 文件夹子项 uri(.../tree/<root>/document/<id>)的文档 id 都取最后一个路径段;
-    // 非 documents 结构的 uri 退化为整串比较。
-    private fun sameSource(a: Uri, b: Uri): Boolean {
-        if (a.authority != b.authority) return false
-        val idA = documentIdOf(a)
-        val idB = documentIdOf(b)
-        return if (idA != null && idB != null) idA == idB else a.toString() == b.toString()
+        val oldUri = Uri.parse(book.sourceUri)
+        val oldId = documentIdOf(oldUri)
+        val newId = documentIdOf(picked)
+        val diffs = ArrayList<ReauthDiffItem>()
+        // 路径: 文档 id 还原绝对路径;任一侧解析不出则标注
+        if (oldId == null || newId == null) {
+            diffs += ReauthDiffItem(
+                "路径",
+                oldId?.let { absPathOfDocId(it) } ?: "无法解析文档路径",
+                newId?.let { absPathOfDocId(it) } ?: "无法解析文档路径"
+            )
+        } else if (oldId != newId) {
+            diffs += ReauthDiffItem("路径", absPathOfDocId(oldId), absPathOfDocId(newId))
+        }
+        // 提供方
+        if (oldUri.authority != picked.authority) {
+            diffs += ReauthDiffItem("提供方", oldUri.authority ?: "?", picked.authority ?: "?")
+        }
+        // 文档类型(按格式分流判定, txt/md 同属 TXT 类)
+        val newName = queryName(context, picked) ?: ""
+        val newFormat = formatOf(newName)
+        val typeSame = newFormat != null && newFormat == book.format
+        if (!typeSame) {
+            diffs += ReauthDiffItem(
+                "文档类型",
+                book.format,
+                newFormat ?: "不支持(.${extOf(newName).ifEmpty { "?" }})"
+            )
+        }
+        // 文件大小: 始终显示对比(相同≠同一文件, 仅参考);登记大小 0 视为未知
+        val newSize = querySize(context, picked)
+        diffs += ReauthDiffItem(
+            "文件大小" + if (newSize == book.fileSize) "（相同）" else "（不同）",
+            sizeText(book.fileSize),
+            sizeText(newSize)
+        )
+        val matched =
+            if (oldUri.authority == picked.authority && oldId != null && oldId == newId) {
+                book.copy(sourceUri = picked.toString())
+            } else null
+        return ReauthCheck(matched, book.copy(sourceUri = picked.toString()), diffs, typeSame)
     }
 
     private fun documentIdOf(uri: Uri): String? {
@@ -174,10 +215,26 @@ object BookRegistrar {
         val docId = documentIdOf(uri) ?: return uri.toString()
         val idx = docId.indexOf(':')
         if (idx <= 0 || idx == docId.length - 1) return uri.toString()
+        return absPathOfDocId(docId)
+    }
+
+    // 文档 id "卷id:相对路径" → 绝对路径;非 "卷:路径" 结构原样返回
+    @Suppress("DEPRECATION")
+    private fun absPathOfDocId(docId: String): String {
+        val idx = docId.indexOf(':')
+        if (idx <= 0 || idx == docId.length - 1) return docId
         val root = if (docId.substring(0, idx) == "primary") {
             Environment.getExternalStorageDirectory().absolutePath
         } else "/storage/${docId.substring(0, idx)}"
         return "$root/${docId.substring(idx + 1)}"
+    }
+
+    // 弹窗展示用大小文本;0/负数视为未知(导入时 querySize 失败落 0)
+    internal fun sizeText(bytes: Long): String = when {
+        bytes <= 0 -> "未知"
+        bytes < 1024 -> "$bytes B"
+        bytes < 1024 * 1024 -> String.format("%.1f KB", bytes / 1024.0)
+        else -> String.format("%.1f MB", bytes / 1024.0 / 1024.0)
     }
 
     private fun doRegister(context: Context, uri: Uri, groupId: String?): ImportResult {

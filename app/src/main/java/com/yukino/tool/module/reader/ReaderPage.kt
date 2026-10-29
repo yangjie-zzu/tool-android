@@ -219,6 +219,8 @@ fun ReaderPage(
     var loadError by remember(book.id) { mutableStateOf<String?>(null) }
     // 源文件 SAF 授权丢失: 展示"重新授权"入口而非删除重导提示
     var authLost by remember(book.id) { mutableStateOf(false) }
+    // 重选文件与原书不一致: 弹详情对话框(差异清单/强制授权)
+    var reauthMismatch by remember(book.id) { mutableStateOf<ReauthCheck?>(null) }
     // 重载触发: 重新授权后自增。不能只 key sourceUri——重选同一文件时 uri 串不变
     var reloadNonce by remember(book.id) { mutableStateOf(0) }
     // 全书页目录: null=构建中(loading 遮盖)。版式变化整本重建,锚点重定位不漂移
@@ -1121,16 +1123,17 @@ fun ReaderPage(
                                 } finally {
                                     SourcePathOverlay.hide(context)
                                 } ?: return@launch
-                                val updated = withContext(Dispatchers.IO) {
-                                    BookRegistrar.reauthorize(context, book, picked)
+                                val check = withContext(Dispatchers.IO) {
+                                    BookRegistrar.reauthorizeCheck(context, book, picked)
                                 }
-                                if (updated == null) {
-                                    Toast.makeText(context, "所选文件与原书不一致", Toast.LENGTH_SHORT).show()
-                                    return@launch
+                                val updated = check.matched
+                                if (updated != null) {
+                                    withContext(Dispatchers.IO) { ReaderStore.upsertBook(context, updated) }
+                                    onInitComplete(updated)
+                                    reloadNonce++   // 触发同 id 重载
+                                } else {
+                                    reauthMismatch = check   // 差异详情弹窗, 由用户决定强制/取消
                                 }
-                                withContext(Dispatchers.IO) { ReaderStore.upsertBook(context, updated) }
-                                onInitComplete(updated)
-                                reloadNonce++   // 触发同 id 重载
                             }
                         }) { Text("重新授权") }
                     } else {
@@ -1148,6 +1151,22 @@ fun ReaderPage(
                     }
                 }
             }
+        }
+
+        // 重新授权不一致详情: 差异清单 + 类型门禁的强制授权
+        reauthMismatch?.let { chk ->
+            ReauthMismatchDialog(
+                check = chk,
+                onForce = {
+                    reauthMismatch = null
+                    scope.launch {
+                        withContext(Dispatchers.IO) { ReaderStore.upsertBook(context, chk.forced) }
+                        onInitComplete(chk.forced)
+                        reloadNonce++   // 忽略差异强换源, 同 id 重载
+                    }
+                },
+                onDismiss = { reauthMismatch = null }
+            )
         }
 
         // 阅读中重排遮盖: 半透明底挡住正文与翻页手势, 完成后一次性切新排版
