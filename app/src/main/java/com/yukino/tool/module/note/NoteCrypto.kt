@@ -424,6 +424,10 @@ object NoteCrypto {
         return "$iv$FIELD_SEP$ct"
     }
 
+    // 备份恢复导入用: 以主密钥加密单个明文字段,产出与库内一致的密文格式
+    internal fun encryptField(key: ByteArray, value: String): String =
+        encryptFieldValue(SecretKeySpec(key, "AES"), value)
+
     private fun decryptFieldValue(key: SecretKey, stored: String): String? {
         val iv = stored.substringBefore(FIELD_SEP)
         val ct = stored.substringAfter(FIELD_SEP, "")

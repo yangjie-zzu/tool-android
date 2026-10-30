@@ -1,5 +1,6 @@
 package com.yukino.tool.module.note
 
+import android.net.Uri
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -16,6 +17,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -36,7 +38,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-// 设置页: 主密码/指纹的按需管理 + 导出备份
+// 设置页: 主密码/指纹的按需管理 + 备份与恢复 + 导出备份
 @Composable
 internal fun SettingsPage(
     entries: List<NoteEntry>,
@@ -45,12 +47,21 @@ internal fun SettingsPage(
     onSetupMaster: () -> Unit,
     onChangeMasterPassword: suspend (String, String) -> Unit,
     onEnableBiometric: () -> Unit,
-    onDisableBiometric: () -> Unit
+    onDisableBiometric: () -> Unit,
+    pickBackupDir: suspend () -> Boolean,
+    onBackupAction: suspend (String?) -> NoteBackup.Outcome,
+    onShareBackup: (Uri, String) -> Unit,
+    onStartRestore: () -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var showExport by remember { mutableStateOf(false) }
     var showChangePassword by remember { mutableStateOf(false) }
+    var showPlainBackup by remember { mutableStateOf(false) }
+    var backupDirName by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(Unit) {
+        backupDirName = withContext(Dispatchers.IO) { NoteBackup.dirDisplayName(context) }
+    }
     // 指纹/主密码状态是文件读取的普通值，停用等落盘操作本身不触发重组；
     // 以bioVersion为key缓存，NoteActivity在启用/停用落盘后自增版本，这里随之重读刷新
     val masterReady = remember(bioVersion) { NoteCrypto.masterReady(context) }
@@ -85,6 +96,45 @@ internal fun SettingsPage(
                 if (bioEnabled) {
                     TextButton(onClick = onDisableBiometric) { Text(text = "停用") }
                 }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(text = "备份目录")
+                    Text(
+                        text = backupDirName ?: "未配置(备份时再选)",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                TextButton(onClick = {
+                    scope.launch {
+                        if (pickBackupDir()) {
+                            backupDirName = withContext(Dispatchers.IO) { NoteBackup.dirDisplayName(context) }
+                        }
+                    }
+                }) { Text(text = "选择") }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(text = "立即备份")
+                    Text(
+                        text = "备份为ZIP(密码可选，电脑可解压)存入备份目录",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                TextButton(onClick = { showPlainBackup = true }) { Text(text = "备份") }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(text = "恢复备份")
+                    Text(
+                        text = "从备份ZIP导入记录，追加到列表末尾",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                TextButton(onClick = onStartRestore) { Text(text = "恢复") }
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(modifier = Modifier.weight(1f)) {
@@ -140,6 +190,18 @@ internal fun SettingsPage(
                     }
                 }
             }
+        )
+    }
+    //设置·备份弹窗(纯备份,与提醒逻辑无关)
+    if (showPlainBackup) {
+        BackupDialog(
+            showReminderInfo = false,
+            pending = 0,
+            count = 0,
+            log = emptyList(),
+            onBackup = onBackupAction,
+            onShare = onShareBackup,
+            onClose = { showPlainBackup = false }
         )
     }
     //修改主密码对话框

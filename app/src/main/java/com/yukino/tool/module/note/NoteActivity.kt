@@ -1,5 +1,7 @@
 package com.yukino.tool.module.note
 
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.util.Log
 import android.widget.Toast
@@ -7,6 +9,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -29,6 +32,7 @@ import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.yukino.tool.ui.theme.ToolTheme
+import com.yukino.tool.util.FilePicker
 import com.yukino.tool.util.findActivity
 import kotlin.coroutines.resume
 import kotlinx.coroutines.Dispatchers
@@ -45,8 +49,13 @@ private const val TAG = "Note"
 
 // 继承 FragmentActivity: androidx.biometric 的 BiometricPrompt 只接受 FragmentActivity
 class NoteActivity : FragmentActivity() {
+    // FilePicker构造时要注册ActivityResultLauncher,必须在Activity STARTED之前完成
+    internal lateinit var filePicker: FilePicker
+        private set
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        filePicker = FilePicker(this)
         setContent {
             ToolTheme {
                 Surface(
@@ -169,11 +178,28 @@ fun NoteApp() {
         }
     }
 
+    // ===== 备份提醒(方案见 docs/note-backup-plan.md) =====
+    val filePicker = remember { (activity as NoteActivity).filePicker }
+    var backupStatus by remember { mutableStateOf<BackupStatusUi?>(null) }
+    // 关闭提醒时记录当时的lastChange快照: 再次发生数据变动(快照不等)后提醒条重新出现
+    var backupDismissedChange by remember { mutableStateOf<Long?>(null) }
+    var showReminderDialog by remember { mutableStateOf(false) }
+    var zipPwdRequest by remember { mutableStateOf<ZipPwdRequest?>(null) }
+    var restoreConfirmRequest by remember { mutableStateOf<RestoreConfirmRequest?>(null) }
+
+    fun refreshBackupStatus() {
+        scope.launch {
+            backupStatus = withContext(Dispatchers.IO) { NoteBackup.status(context) }
+        }
+    }
+
+
     val biometricUsable = remember { canBiometric(activity) }
 
     // 进入页面: 读明文段(无需任何验证)
     LaunchedEffect(Unit) {
         ui = ui.copy(entries = withContext(Dispatchers.IO) { NoteCrypto.readPlain(context) })
+        refreshBackupStatus()
     }
 
     // 退到后台清空敏感缓存
@@ -190,6 +216,7 @@ fun NoteApp() {
 
     val navController = rememberNavController()
 
+    // 提醒条: X>0 且未被手动关闭时,常驻所有备忘录页面顶部
     fun copyText(label: String, value: String) {
         clipboard.setText(AnnotatedString(value))
         Toast.makeText(context, "已复制 $label", Toast.LENGTH_SHORT).show()
@@ -363,6 +390,8 @@ fun NoteApp() {
                     withContext(Dispatchers.IO) { NoteCrypto.save(context, nextEntries) }
                 }.onSuccess {
                     ui = ui.copy(entries = nextEntries, editing = null, editingIsNew = false)
+                    withContext(Dispatchers.IO) { NoteBackup.markChanged(context) }
+                    refreshBackupStatus()
                 }.onFailure { e ->
                     Log.e(TAG, "persist: 保存失败", e)
                     Toast.makeText(context, "保存失败: ${e.message}", Toast.LENGTH_LONG).show()
@@ -393,6 +422,8 @@ fun NoteApp() {
                 val finalEntries = withContext(Dispatchers.IO) { NoteCrypto.encryptEntries(nextEntries, merged, key) }
                 withContext(Dispatchers.IO) { NoteCrypto.save(context, finalEntries) }
                 ui = ui.copy(entries = finalEntries, secrets = merged, editing = null, editingIsNew = false)
+                withContext(Dispatchers.IO) { NoteBackup.markChanged(context) }
+                refreshBackupStatus()
             } catch (e: Exception) {
                 Log.e(TAG, "persist: 保存失败", e)
                 Toast.makeText(context, "保存失败: ${e.message}", Toast.LENGTH_LONG).show()
@@ -408,6 +439,112 @@ fun NoteApp() {
             enableBiometricWith(key)
         }
     }
+
+    // ---------- 备份/恢复编排 ----------
+
+    // 选择备份目录(SAF): 持久化读写授权后保存。返回是否设置成功
+    suspend fun pickBackupDir(): Boolean {
+        val picked = filePicker.openFolder() ?: return false
+        runCatching {
+            context.contentResolver.takePersistableUriPermission(
+                picked,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            )
+        }.onFailure { Log.w(TAG, "备份目录授权持久化失败(重启后可能失效): ${it.message}") }
+        NoteBackup.saveDir(context, picked)
+        return true
+    }
+
+    /*
+     * 执行备份(两个备份弹窗共用): 未配置目录先选目录;未设主密码先引导设置(空库首存场景);
+     * 认证拿DK后在IO线程打包写盘。成功后刷新底版与记录状态。
+     */
+    suspend fun performBackup(zipPassword: String?): NoteBackup.Outcome {
+        if (NoteBackup.dirUri(context) == null && !pickBackupDir()) return NoteBackup.Outcome.Cancelled
+        val key = if (NoteCrypto.masterReady(context)) {
+            obtainKey("备份备忘录")
+        } else {
+            setupMasterFlow()
+        } ?: return NoteBackup.Outcome.Cancelled
+        val outcome = NoteBackup.backup(context, zipPassword, key)
+        if (outcome is NoteBackup.Outcome.Success) refreshBackupStatus()
+        return outcome
+    }
+
+    // 分享备份zip(SAF uri直接分享,免FileProvider)
+    fun shareBackup(uri: Uri, fileName: String) {
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "application/zip"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            putExtra(Intent.EXTRA_TITLE, fileName.substringBeforeLast('.'))
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(Intent.createChooser(intent, "分享备忘录备份"))
+    }
+
+    // 弹"输入ZIP密码"对话框(挂起): 返回输入内容,取消返回null
+    suspend fun askZipPassword(): String? = suspendCancellableCoroutine { cont ->
+        val request = ZipPwdRequest { result ->
+            if (cont.isActive) cont.resume(result)
+        }
+        zipPwdRequest = request
+        cont.invokeOnCancellation { if (zipPwdRequest == request) zipPwdRequest = null }
+    }
+
+    // 弹"恢复确认"对话框(挂起): 确定导入返回true
+    suspend fun askRestoreConfirm(time: Long, count: Int): Boolean =
+        suspendCancellableCoroutine { cont ->
+            val request = RestoreConfirmRequest(time, count) { result ->
+                if (cont.isActive) cont.resume(result)
+            }
+            restoreConfirmRequest = request
+            cont.invokeOnCancellation { if (restoreConfirmRequest == request) restoreConfirmRequest = null }
+        }
+
+    /*
+     * 恢复流程(纯导入): 选zip → 解压(密码错循环重试) → 确认 → 验证身份(空库先设主密码)
+     * → 全部追加导入 → 刷新列表与备份状态。
+     */
+    fun startRestore() {
+        scope.launch {
+            val uri = filePicker.open(arrayOf("application/zip", "application/x-zip-compressed"))
+                ?: return@launch
+            var backup: NoteBackupFile? = null
+            var password: String? = null
+            while (backup == null) {
+                val parsed = runCatching { NoteBackup.readBackup(context, uri, password) }
+                val err = parsed.exceptionOrNull()
+                when {
+                    parsed.isSuccess -> backup = parsed.getOrThrow()
+                    err?.message == "ZIP密码错误" ->
+                        password = askZipPassword() ?: return@launch   // 取消恢复
+                    else -> {
+                        Toast.makeText(context, "无法读取备份: ${err?.message}", Toast.LENGTH_LONG).show()
+                        return@launch
+                    }
+                }
+            }
+            val b = backup
+            if (!askRestoreConfirm(b.exportedAt, b.entries.size)) return@launch
+            val key = if (NoteCrypto.masterReady(context)) {
+                obtainKey("恢复备份")
+            } else {
+                setupMasterFlow()
+            } ?: return@launch
+            try {
+                val count = NoteBackup.importBackup(context, b, key)
+                ui = ui.copy(entries = withContext(Dispatchers.IO) { NoteCrypto.readPlain(context) })
+                Toast.makeText(context, "已导入 $count 条", Toast.LENGTH_SHORT).show()
+                refreshBackupStatus()
+                // 恢复可能设置/变更了主密码状态,设置页的remember(bioVersion)缓存需失效重读
+                bioVersion++
+            } catch (e: Exception) {
+                Log.e(TAG, "恢复导入失败", e)
+                Toast.makeText(context, "恢复失败: ${e.message}", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
 
     // ---------- 对话框渲染 ----------
 
@@ -450,9 +587,80 @@ fun NoteApp() {
         )
     }
 
+    // 备份提醒弹窗: X/N/记录实时取自backupStatus快照;关闭需本次变动后备份过(N>0)
+    if (showReminderDialog) {
+        val st = backupStatus
+        BackupDialog(
+            showReminderInfo = true,
+            pending = st?.pending ?: 0,
+            count = st?.count ?: 0,
+            log = st?.log ?: emptyList(),
+            onBackup = { pw -> performBackup(pw) },
+            onShare = { uri, name -> shareBackup(uri, name) },
+            onClose = {
+                val s = backupStatus
+                if (s != null && s.count > 0) {
+                    backupDismissedChange = s.lastChange
+                    showReminderDialog = false
+                } else {
+                    Toast.makeText(context, "本次变动后还没有备份过，先完成备份再关闭", Toast.LENGTH_SHORT).show()
+                }
+            }
+        )
+    }
+
+    // ZIP密码输入(恢复用): 结果交给挂起中的startRestore
+    zipPwdRequest?.let { req ->
+        ZipPwdDialog(
+            onConfirm = { pwd ->
+                if (zipPwdRequest == req) {
+                    zipPwdRequest = null
+                    req.onResult(pwd)
+                }
+            },
+            onDismiss = {
+                if (zipPwdRequest == req) {
+                    zipPwdRequest = null
+                    req.onResult(null)
+                }
+            }
+        )
+    }
+
+    // 恢复确认: 结果交给挂起中的startRestore
+    restoreConfirmRequest?.let { req ->
+        RestoreConfirmDialog(
+            time = req.time,
+            count = req.count,
+            onConfirm = {
+                if (restoreConfirmRequest == req) {
+                    restoreConfirmRequest = null
+                    req.onResult(true)
+                }
+            },
+            onDismiss = {
+                if (restoreConfirmRequest == req) {
+                    restoreConfirmRequest = null
+                    req.onResult(false)
+                }
+            }
+        )
+    }
+
     // ---------- 页面路由(navigation统一模式) ----------
 
-    NavHost(navController = navController, startDestination = NoteListRoute) {
+    // 提醒条: X>0 且未被手动关闭时,常驻所有备忘录页面顶部
+    Column(modifier = Modifier.fillMaxSize()) {
+        backupStatus?.let { st ->
+            if (st.pending > 0 && backupDismissedChange != st.lastChange) {
+                BackupBanner(pending = st.pending, onClick = { showReminderDialog = true })
+            }
+        }
+        NavHost(
+            navController = navController,
+            startDestination = NoteListRoute,
+            modifier = Modifier.weight(1f)
+        ) {
         composable<NoteListRoute> {
             ListPage(
             entries = ui.entries,
@@ -525,6 +733,8 @@ fun NoteApp() {
                             NoteCrypto.changeMasterPassword(context, oldPw, newPw)
                         }
                         Toast.makeText(context, "主密码已修改", Toast.LENGTH_SHORT).show()
+                        withContext(Dispatchers.IO) { NoteBackup.markChanged(context) }
+                        refreshBackupStatus()
                         // 指纹封存随旧密钥失效: 原启用过则自动引导重新认证封存新主密钥
                         if (hadBio) enableBiometricWith(newDk)
                     } catch (e: Exception) {
@@ -543,7 +753,11 @@ fun NoteApp() {
                 NoteCrypto.disableBiometric(context)
                 bioVersion++
                 Toast.makeText(context, "指纹已停用", Toast.LENGTH_SHORT).show()
-            }
+            },
+            pickBackupDir = { pickBackupDir() },
+            onBackupAction = { pw -> performBackup(pw) },
+            onShareBackup = { uri, name -> shareBackup(uri, name) },
+            onStartRestore = { startRestore() }
         )
         }
         composable<NoteEditorRoute> {
@@ -572,6 +786,7 @@ fun NoteApp() {
             },
             onCancel = { navController.popBackStack() }
         )
+        }
         }
     }
 }
