@@ -26,8 +26,10 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.io.File
@@ -204,7 +206,10 @@ object NoteBackup {
                         if (f.secret) f.copy(value = secrets["${e.id}:${f.key}"] ?: "") else f
                     })
                 }
-                val name = "备忘录备份_" + SimpleDateFormat("yyyyMMdd_HHmm", Locale.getDefault()).format(Date())
+                // 文件名自带用途说明: 未来在电脑/网盘里看到也能认出这是可导入本应用恢复的备份
+                val name = "备忘录备份_" +
+                    SimpleDateFormat("yyyyMMdd_HHmm", Locale.getDefault()).format(Date()) +
+                    "_可导入个人工具集恢复"
                 val workDir = File(context.cacheDir, "note_backup").apply {
                     mkdirs(); listFiles()?.forEach { it.delete() }
                 }
@@ -299,29 +304,29 @@ object NoteBackup {
 
 // ---------- UI: 提醒条 / 备份弹窗 / 恢复相关对话框 ----------
 
-// 数据变动提醒条(X>0时常驻所有备忘录页面顶部,点击打开提醒弹窗)
+// 数据变动提醒条(X>0时常驻所有备忘录页面底部,红色醒目,点击打开提醒弹窗)
 @Composable
 internal fun BackupBanner(pending: Int, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.tertiaryContainer)
+            .background(MaterialTheme.colorScheme.error)
             .clickable(onClick = onClick)
-            .padding(horizontal = 15.dp, vertical = 8.dp),
+            .padding(horizontal = 15.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
-            text = "$pending 条变动未备份",
+            text = "⚠ $pending 条变动未备份",
             fontSize = 13.sp,
-            fontWeight = FontWeight.Medium,
-            color = MaterialTheme.colorScheme.onTertiaryContainer,
+            fontWeight = FontWeight.Bold,
+            color = Color.White,
             modifier = Modifier.weight(1f)
         )
         Text(
             text = "去备份",
-            fontSize = 13.sp,
+            fontSize = 14.sp,
             fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.primary
+            color = Color.White
         )
     }
 }
@@ -389,7 +394,9 @@ internal fun BackupDialog(
                                 Text(
                                     text = "${timeFmt.format(Date(it.time))}  ${it.fileName}",
                                     fontSize = 11.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             }
                         }

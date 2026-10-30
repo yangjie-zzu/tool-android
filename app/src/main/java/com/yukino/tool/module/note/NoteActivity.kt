@@ -649,13 +649,8 @@ fun NoteApp() {
 
     // ---------- 页面路由(navigation统一模式) ----------
 
-    // 提醒条: X>0 且未被手动关闭时,常驻所有备忘录页面顶部
+    // 提醒条: X>0 且未被手动关闭时,红色常驻所有备忘录页面底部
     Column(modifier = Modifier.fillMaxSize()) {
-        backupStatus?.let { st ->
-            if (st.pending > 0 && backupDismissedChange != st.lastChange) {
-                BackupBanner(pending = st.pending, onClick = { showReminderDialog = true })
-            }
-        }
         NavHost(
             navController = navController,
             startDestination = NoteListRoute,
@@ -787,6 +782,12 @@ fun NoteApp() {
             onCancel = { navController.popBackStack() }
         )
         }
+        }
+        // 底部提醒条: X>0 且未被手动关闭时,红色常驻所有备忘录页面底部
+        backupStatus?.let { st ->
+            if (st.pending > 0 && backupDismissedChange != st.lastChange) {
+                BackupBanner(pending = st.pending, onClick = { showReminderDialog = true })
+            }
         }
     }
 }
