@@ -2,7 +2,6 @@ package com.yukino.tool.module.reader
 
 import android.content.Context
 import android.net.Uri
-import android.os.Environment
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import com.yukino.tool.module.reader.common.BookFormat
@@ -11,6 +10,7 @@ import com.yukino.tool.module.reader.common.Progress
 import com.yukino.tool.module.reader.common.ReaderBook
 import com.yukino.tool.module.reader.common.ReaderGroup
 import com.yukino.tool.module.reader.epub.EpubImporter
+import com.yukino.tool.util.DocPaths
 import java.io.File
 import java.util.UUID
 import kotlinx.coroutines.Dispatchers
@@ -158,18 +158,22 @@ object BookRegistrar {
             )
         }
         val oldUri = Uri.parse(book.sourceUri)
-        val oldId = documentIdOf(oldUri)
-        val newId = documentIdOf(picked)
+        val oldId = DocPaths.documentIdOf(oldUri)
+        val newId = DocPaths.documentIdOf(picked)
         val diffs = ArrayList<ReauthDiffItem>()
         // 路径: 文档 id 还原绝对路径;任一侧解析不出则标注
         if (oldId == null || newId == null) {
             diffs += ReauthDiffItem(
                 "路径",
-                oldId?.let { absPathOfDocId(it) } ?: "无法解析文档路径",
-                newId?.let { absPathOfDocId(it) } ?: "无法解析文档路径"
+                oldId?.let { DocPaths.absolutePathOfDocId(it) } ?: "无法解析文档路径",
+                newId?.let { DocPaths.absolutePathOfDocId(it) } ?: "无法解析文档路径"
             )
         } else if (oldId != newId) {
-            diffs += ReauthDiffItem("路径", absPathOfDocId(oldId), absPathOfDocId(newId))
+            diffs += ReauthDiffItem(
+                "路径",
+                DocPaths.absolutePathOfDocId(oldId),
+                DocPaths.absolutePathOfDocId(newId)
+            )
         }
         // 提供方
         if (oldUri.authority != picked.authority) {
@@ -200,41 +204,10 @@ object BookRegistrar {
         return ReauthCheck(matched, book.copy(sourceUri = picked.toString()), diffs, typeSame)
     }
 
-    private fun documentIdOf(uri: Uri): String? {
-        val segs = uri.pathSegments
-        if (segs.size >= 2 && segs[segs.size - 2] == "document") return segs.last()
-        return null
-    }
-
     // 源文件绝对路径(授权失效时悬浮展示, 指引用户去选择器里定位原文件):
-    // 文档 id 形如 "primary:Download/x.txt"(内部存储)或 "0000-0000:Book/x.epub"(SD 卷),
-    // primary 卷 → Environment 外存根路径(/storage/emulated/0), 其他卷 → /storage/<卷id>;
-    // 非文档结构 uri(其他 provider)返回原串兜底。
+    // 还原规则见 util/DocPaths(文档 id 卷根拼接/绝对路径直用+压缩斜杠, 非文档 uri 原串兜底)。
     @Suppress("DEPRECATION")
-    fun sourceAbsolutePath(uri: Uri): String {
-        val docId = documentIdOf(uri) ?: return uri.toString()
-        val idx = docId.indexOf(':')
-        if (idx <= 0 || idx == docId.length - 1) return uri.toString()
-        return absPathOfDocId(docId)
-    }
-
-    // 文档 id "卷id:路径" → 绝对路径。冒号后以 /storage/ 开头视为已是完整绝对路径
-    // (实测文件管理器提供方 com.android.fileexplorer.documents 的 docId 即
-    // "primary:/storage/emulated/0/..." 形态), 直接使用不拼卷根, 否则卷根拼接;
-    // 两种结果都压缩连续斜杠;非 "卷:路径" 结构原样返回
-    @Suppress("DEPRECATION")
-    private fun absPathOfDocId(docId: String): String {
-        val idx = docId.indexOf(':')
-        if (idx <= 0 || idx == docId.length - 1) return docId
-        val sub = docId.substring(idx + 1)
-        if (sub.startsWith("/storage/")) {
-            return sub.replace(Regex("/{2,}"), "/")
-        }
-        val root = if (docId.substring(0, idx) == "primary") {
-            Environment.getExternalStorageDirectory().absolutePath
-        } else "/storage/${docId.substring(0, idx)}"
-        return "$root/$sub".replace(Regex("/{2,}"), "/")
-    }
+    fun sourceAbsolutePath(uri: Uri): String = com.yukino.tool.util.DocPaths.documentAbsolutePath(uri)
 
     // 弹窗展示用大小文本;0/负数视为未知(导入时 querySize 失败落 0)
     internal fun sizeText(bytes: Long): String = when {

@@ -107,6 +107,15 @@ curl -s -X POST -H "Authorization: token $TOKEN" -H "Content-Type: application/o
 
 ## 6. 历史记录
 
+- 2026-10-31：v1.5.77 release（解压详情页显示压缩文件全路径+保存副本：①CompressDetail
+  头部信息行下新增一行压缩文件完整绝对路径（小号灰字可换行，路径末端带"保存"按钮），
+  路径由 SAF uri 按文档 ID 还原，还原不出显示 uri 原串兜底；②点"保存"把压缩包文件
+  本身复制到 Download/tool/（与解压目标同目录），目标同名自动加序号（xxx(1).zip）
+  不覆盖，成功显示"已保存至 完整路径"（绿）/失败红字，保存中按钮置灰显示"保存中…"；
+  ③路径还原逻辑提为公共工具 util/DocPaths，阅读器 BookRegistrar 改为委托同一实现
+  （行为等价，弹窗/悬浮条路径显示不变）。模拟器 debug 实测：路径行显示正确、保存
+  成功且 md5 与源一致、再存生成 (1) 序号副本、阅读器弹窗路径回归通过。注：
+  v1.5.75/76 为并行会话的备忘录备份功能（见 git log），未在本文件单列条目。）
 - 2026-10-29：v1.5.74 release（路径显示修复定稿：文档 ID 冒号后以 /storage/ 开头
   视为已是完整绝对路径直接使用，不再拼卷根——真机实测文件管理器提供方
   com.android.fileexplorer.documents 的 docId 即 "primary:/storage/emulated/0/..."

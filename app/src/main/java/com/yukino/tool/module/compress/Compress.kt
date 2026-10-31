@@ -41,6 +41,7 @@ import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
 import com.yukino.tool.TAG
 import com.yukino.tool.components.text
+import com.yukino.tool.util.DocPaths
 import com.yukino.tool.util.FileNameCompare
 import com.yukino.tool.util.OnTimer
 import com.yukino.tool.util.ValueRef
@@ -265,6 +266,66 @@ fun CompressDetail(
                         it.count?.toString().text()
                     }",
                     fontWeight = FontWeight.Bold
+                )
+            }
+            // 压缩文件全路径 + 保存副本到 Download/tool(同名自动加序号)
+            val saveScope = rememberCoroutineScope()
+            var saving by remember { mutableStateOf(false) }
+            var saveResult by remember { mutableStateOf<String?>(null) }
+            var saveIsError by remember { mutableStateOf(false) }
+            val downloadPath =
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).absolutePath
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = DocPaths.documentAbsolutePath(Uri.parse(url ?: "")),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    text = if (saving) "保存中…" else "保存",
+                    color = Color(0xFF1565C0),
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.clickable(enabled = !saving && url != null) {
+                        saving = true
+                        saveScope.launch(Dispatchers.IO) {
+                            val name = fileInfo?.let { f -> displayName(f.name, f.ext) }
+                                ?.takeIf { it.isNotBlank() } ?: "archive"
+                            try {
+                                val dir = File("$downloadPath/tool")
+                                if (!dir.exists()) dir.mkdirs()
+                                var dst = File(dir, name)
+                                var seq = 1
+                                while (dst.exists()) {
+                                    dst = File(dir, name.substringBeforeLast('.') +
+                                            "(${seq++})" +
+                                            if (name.contains('.')) "." + name.substringAfterLast('.') else "")
+                                }
+                                activity.contentResolver.openInputStream(Uri.parse(url))?.use { input ->
+                                    dst.outputStream().use { output -> input.copyTo(output) }
+                                } ?: throw IllegalStateException("无法读取源文件")
+                                withContext(Dispatchers.Main) {
+                                    saveResult = "已保存至 ${dst.absolutePath}"
+                                    saveIsError = false
+                                }
+                            } catch (e: Exception) {
+                                Log.e(TAG, "save archive copy failed", e)
+                                withContext(Dispatchers.Main) {
+                                    saveResult = "保存失败：${e.message ?: "未知错误"}"
+                                    saveIsError = true
+                                }
+                            } finally {
+                                saving = false
+                            }
+                        }
+                    }
+                )
+            }
+            saveResult?.let {
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (saveIsError) MaterialTheme.colorScheme.error else Color(0xFF2E7D32)
                 )
             }
             errMsg?.let {
